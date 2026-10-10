@@ -4,10 +4,13 @@ import android.media.MediaPlayer
 import android.net.Uri
 import androidx.core.net.toUri
 import android.view.View
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.widget.FrameLayout
+import android.widget.PopupWindow
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.graphics.drawable.toDrawable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -79,6 +82,7 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -221,7 +225,9 @@ fun PlayerScreen(
     var showJimakuDialog by remember(uri) { mutableStateOf(false) }
     var jimakuApiKey by remember { mutableStateOf("") }
     var dictionaryPopupExpansion by remember { mutableStateOf(DictionaryPopupExpansion()) }
-    var dictionaryPopupSize by remember { mutableFloatStateOf(DictionaryPopupSize.DEFAULT) }
+    var dictionaryPopupSize by remember(database) {
+        mutableFloatStateOf(DictionaryPopupSize.load(database))
+    }
     var pronunciationPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var pronunciationFile by remember { mutableStateOf<java.io.File?>(null) }
     val pronunciationClient = remember(database) { PronunciationAudioClient(database, context.cacheDir) }
@@ -322,11 +328,9 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(database) {
-        val popupPreferences = withContext(Dispatchers.IO) {
-            DictionaryPopupExpansion.load(database) to DictionaryPopupSize.load(database)
+        dictionaryPopupExpansion = withContext(Dispatchers.IO) {
+            DictionaryPopupExpansion.load(database)
         }
-        dictionaryPopupExpansion = popupPreferences.first
-        dictionaryPopupSize = popupPreferences.second
     }
 
     LaunchedEffect(lookup, anki, database) {
@@ -785,7 +789,7 @@ fun PlayerScreen(
                                 seekDrag = -1f
                             },
                             valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
                         )
                         Text(formatTime(durationMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
                     }
@@ -807,7 +811,7 @@ fun PlayerScreen(
                                     onValueChange = { setVolume(it) },
                                     onValueChangeFinished = { setVolume(volume, persist = true) },
                                     valueRange = 0f..1f,
-                                    modifier = Modifier.width(88.dp).height(48.dp),
+                                    modifier = Modifier.width(88.dp).height(48.dp).padding(horizontal = 10.dp),
                                 )
                             }
                         }
@@ -926,7 +930,7 @@ fun PlayerScreen(
                             subtitleOffsetInput = snapped.toString()
                         },
                         valueRange = -10_000f..10_000f,
-                        steps = 199,
+                        modifier = Modifier.padding(horizontal = 10.dp),
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("−10 s", style = MaterialTheme.typography.labelSmall)
@@ -1195,10 +1199,6 @@ private fun LookupPopup(
         }
     }
     val density = LocalDensity.current.density
-    val latestEntries = rememberUpdatedState(entries)
-    val latestPlayAudio = rememberUpdatedState(onPlayAudio)
-    val latestMine = rememberUpdatedState(onMine)
-    val latestDismiss = rememberUpdatedState(onDismiss)
     val positionProvider = remember(anchorInPlayer, density) {
         object : PopupPositionProvider {
             override fun calculatePosition(
@@ -1232,111 +1232,35 @@ private fun LookupPopup(
         }
     }
 
-    Popup(
-        popupPositionProvider = positionProvider,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(
-            focusable = true,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = true,
-            clippingEnabled = true,
-        ),
-    ) {
-        BoxWithConstraints {
-            val portrait = maxHeight > maxWidth
-            val popupWidth = (maxWidth * popupSize)
-                .coerceAtMost(if (portrait) 760.dp else 1000.dp)
-            val popupHeight = (maxHeight * popupSize)
-                .coerceAtMost(760.dp)
+    BoxWithConstraints {
+        val portrait = maxHeight > maxWidth
+        val popupWidth = (maxWidth * popupSize)
+            .coerceAtMost(if (portrait) 760.dp else 1000.dp)
+        val popupHeight = (maxHeight * popupSize)
+            .coerceAtMost(760.dp)
 
-            if (pageHtml != null) {
-                Box(
-                    modifier = Modifier
-                        .width(popupWidth)
-                        .height(popupHeight)
-                        .background(scheme.surface),
-                ) {
-                    AndroidView(
-                            modifier = Modifier.fillMaxSize(),
-                            factory = { viewContext ->
-                                WebView(viewContext).apply {
-                                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                                    isVerticalScrollBarEnabled = true
-                                    isHorizontalScrollBarEnabled = false
-                                    settings.apply {
-                                        javaScriptEnabled = false
-                                        domStorageEnabled = false
-                                        allowFileAccess = false
-                                        allowContentAccess = false
-                                        blockNetworkLoads = true
-                                        builtInZoomControls = false
-                                        displayZoomControls = false
-                                        useWideViewPort = true
-                                        loadWithOverviewMode = false
-                                        textZoom = 100
-                                        defaultTextEncodingName = "UTF-8"
-                                    }
-                                    setInitialScale(100)
-                                    webViewClient = object : WebViewClient() {
-                                        private fun handleLookupLink(rawUrl: String?): Boolean {
-                                            val action = runCatching { rawUrl?.toUri() }.getOrNull()
-                                                ?: return true
-                                            if (action.scheme != "nekoplayer") return true
-                                            when (action.host) {
-                                                "close" -> latestDismiss.value()
-                                                "audio", "mine" -> {
-                                                    val index = action.lastPathSegment?.toIntOrNull() ?: return true
-                                                    val entry = latestEntries.value.getOrNull(index) ?: return true
-                                                    if (action.host == "audio") latestPlayAudio.value(entry)
-                                                    else latestMine.value(entry)
-                                                }
-                                            }
-                                            return true
-                                        }
-
-                                        override fun shouldOverrideUrlLoading(
-                                            view: WebView?,
-                                            request: android.webkit.WebResourceRequest,
-                                        ): Boolean = handleLookupLink(request.url.toString())
-
-                                        @Deprecated("Required for compatibility with older Android WebView versions")
-                                        override fun shouldOverrideUrlLoading(
-                                            view: WebView?,
-                                            url: String?,
-                                        ): Boolean = handleLookupLink(url)
-                                    }
-                                    tag = pageHtml
-                                    loadDataWithBaseURL(
-                                        "https://nekoplayer.invalid/",
-                                        pageHtml,
-                                        "text/html",
-                                        "UTF-8",
-                                        null,
-                                    )
-                                }
-                            },
-                            update = { webView ->
-                                if (webView.tag != pageHtml) {
-                                    webView.tag = pageHtml
-                                    webView.loadDataWithBaseURL(
-                                        "https://nekoplayer.invalid/",
-                                        pageHtml,
-                                        "text/html",
-                                        "UTF-8",
-                                        null,
-                                    )
-                                }
-                            },
-                            onRelease = { webView ->
-                                webView.stopLoading()
-                                webView.webViewClient = WebViewClient()
-                                webView.loadUrl("about:blank")
-                                webView.removeAllViews()
-                                webView.destroy()
-                            },
-                        )
-                }
-            } else {
+        if (pageHtml != null) {
+            AnchoredYomitanPopup(
+                pageHtml = pageHtml,
+                popupWidth = popupWidth,
+                popupHeight = popupHeight,
+                anchorInPlayer = anchorInPlayer,
+                entries = entries,
+                onDismiss = onDismiss,
+                onPlayAudio = onPlayAudio,
+                onMine = onMine,
+            )
+        } else {
+            Popup(
+                popupPositionProvider = positionProvider,
+                onDismissRequest = onDismiss,
+                properties = PopupProperties(
+                    focusable = true,
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true,
+                    clippingEnabled = true,
+                ),
+            ) {
                 Column(
                     modifier = Modifier
                         .widthIn(max = 300.dp)
@@ -1348,6 +1272,151 @@ private fun LookupPopup(
                     TextButton(onClick = onDismiss) { Text("Close") }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AnchoredYomitanPopup(
+    pageHtml: String,
+    popupWidth: androidx.compose.ui.unit.Dp,
+    popupHeight: androidx.compose.ui.unit.Dp,
+    anchorInPlayer: Offset,
+    entries: List<DictionaryEntry>,
+    onDismiss: () -> Unit,
+    onPlayAudio: (DictionaryEntry) -> Unit,
+    onMine: (DictionaryEntry) -> Unit,
+) {
+    val context = LocalContext.current
+    val hostView = LocalView.current
+    val density = LocalDensity.current
+    val popupWidthPx = with(density) { popupWidth.roundToPx() }
+    val popupHeightPx = with(density) { popupHeight.roundToPx() }
+    val latestEntries = rememberUpdatedState(entries)
+    val latestPlayAudio = rememberUpdatedState(onPlayAudio)
+    val latestMine = rememberUpdatedState(onMine)
+    val latestDismiss = rememberUpdatedState(onDismiss)
+
+    val webView = remember(context) {
+        WebView(context).apply {
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            isVerticalScrollBarEnabled = true
+            isHorizontalScrollBarEnabled = false
+            settings.apply {
+                javaScriptEnabled = false
+                domStorageEnabled = false
+                allowFileAccess = false
+                allowContentAccess = false
+                blockNetworkLoads = true
+                builtInZoomControls = false
+                displayZoomControls = false
+                useWideViewPort = true
+                loadWithOverviewMode = false
+                textZoom = 100
+                defaultTextEncodingName = "UTF-8"
+            }
+            webViewClient = object : WebViewClient() {
+                private fun handleLookupLink(rawUrl: String?): Boolean {
+                    val action = runCatching { rawUrl?.toUri() }.getOrNull() ?: return true
+                    if (action.scheme != "nekoplayer") return true
+                    when (action.host) {
+                        "close" -> latestDismiss.value()
+                        "audio", "mine" -> {
+                            val index = action.lastPathSegment?.toIntOrNull() ?: return true
+                            val entry = latestEntries.value.getOrNull(index) ?: return true
+                            if (action.host == "audio") latestPlayAudio.value(entry)
+                            else latestMine.value(entry)
+                        }
+                    }
+                    return true
+                }
+
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: android.webkit.WebResourceRequest,
+                ): Boolean = handleLookupLink(request.url.toString())
+
+                @Deprecated("Required for compatibility with older Android WebView versions")
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    url: String?,
+                ): Boolean = handleLookupLink(url)
+            }
+        }
+    }
+    val popupWindow = remember(webView) {
+        PopupWindow(webView, popupWidthPx.coerceAtLeast(1), popupHeightPx.coerceAtLeast(1), true).apply {
+            isClippingEnabled = true
+            isOutsideTouchable = true
+            setBackgroundDrawable(android.graphics.Color.TRANSPARENT.toDrawable())
+            animationStyle = 0
+        }
+    }
+
+    DisposableEffect(popupWindow, webView) {
+        popupWindow.setOnDismissListener { latestDismiss.value() }
+        onDispose {
+            popupWindow.setOnDismissListener(null)
+            if (popupWindow.isShowing) popupWindow.dismiss()
+            webView.stopLoading()
+            webView.webViewClient = WebViewClient()
+            webView.loadUrl("about:blank")
+            webView.removeAllViews()
+            webView.destroy()
+        }
+    }
+
+    LaunchedEffect(pageHtml, popupWidthPx, popupHeightPx, anchorInPlayer, hostView) {
+        if (webView.tag != pageHtml) {
+            webView.tag = pageHtml
+            webView.loadDataWithBaseURL(
+                "https://nekoplayer.invalid/",
+                pageHtml,
+                "text/html",
+                "UTF-8",
+                null,
+            )
+        }
+
+        val rootView = hostView.rootView
+        if (popupWidthPx <= 0 || popupHeightPx <= 0 || rootView.width <= 0 || rootView.height <= 0) {
+            return@LaunchedEffect
+        }
+
+        val hostLocation = IntArray(2)
+        hostView.getLocationInWindow(hostLocation)
+        val margin = with(density) { 12.dp.roundToPx() }
+        val windowWidth = rootView.width
+        val windowHeight = rootView.height
+        val anchorX = if (anchorInPlayer == Offset.Zero) {
+            hostLocation[0] + hostView.width / 2
+        } else {
+            hostLocation[0] + anchorInPlayer.x.roundToInt()
+        }
+        val anchorY = if (anchorInPlayer == Offset.Zero) {
+            hostLocation[1] + hostView.height / 2
+        } else {
+            hostLocation[1] + anchorInPlayer.y.roundToInt()
+        }
+        val maxX = (windowWidth - popupWidthPx - margin).coerceAtLeast(margin)
+        val maxY = (windowHeight - popupHeightPx - margin).coerceAtLeast(margin)
+        val x = (anchorX - popupWidthPx / 2).coerceIn(margin, maxX)
+        val below = anchorY + margin
+        val preferredY = if (below + popupHeightPx <= windowHeight - margin) {
+            below
+        } else {
+            anchorY - popupHeightPx - margin
+        }
+        val y = preferredY.coerceIn(margin, maxY)
+        val rightToLeft = hostView.layoutDirection == View.LAYOUT_DIRECTION_RTL
+        val horizontalOffset = if (rightToLeft) windowWidth - x - popupWidthPx else x
+
+        if (popupWindow.isShowing) {
+            popupWindow.update(horizontalOffset, y, popupWidthPx, popupHeightPx)
+        } else {
+            popupWindow.width = popupWidthPx
+            popupWindow.height = popupHeightPx
+            popupWindow.showAtLocation(rootView, Gravity.TOP or Gravity.START, horizontalOffset, y)
         }
     }
 }

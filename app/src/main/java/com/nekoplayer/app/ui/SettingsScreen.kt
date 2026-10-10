@@ -1331,14 +1331,15 @@ private fun SettingSlider(
             onValueChange = { onChange(snap(it)) },
             valueRange = range,
             onValueChangeFinished = { onFinished(snap(value)) },
-            modifier = Modifier.fillMaxWidth().height(48.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 10.dp),
             track = { sliderState ->
                 val activeColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.48f)
                 val inactiveColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
                 val stopColor = MaterialTheme.colorScheme.primary
                 Canvas(Modifier.fillMaxWidth().height(16.dp)) {
                     val trackHeight = size.height
-                    val cornerRadius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
+                    val endRadius = 5.dp.toPx()
+                    val cornerRadius = CornerRadius(endRadius, endRadius)
                     val progressWidth = size.width * sliderState.coercedValueAsFraction
                     drawRoundRect(
                         color = inactiveColor,
@@ -1357,7 +1358,7 @@ private fun SettingSlider(
                     drawCircle(
                         color = stopColor,
                         radius = 2.dp.toPx(),
-                        center = Offset(size.width - 8.dp.toPx(), trackHeight / 2f),
+                        center = Offset(size.width - endRadius, trackHeight / 2f),
                     )
                 }
             },

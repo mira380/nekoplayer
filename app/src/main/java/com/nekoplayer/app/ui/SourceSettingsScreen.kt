@@ -486,6 +486,7 @@ private fun SeekBarPreferenceControl(preference: SeekBarPreference) {
                 },
                 valueRange = range,
                 enabled = preference.isEnabled,
+                modifier = Modifier.padding(horizontal = 10.dp),
             )
         },
     )
