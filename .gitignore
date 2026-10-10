@@ -12,6 +12,7 @@
 *.apk
 *.aab
 /release/*.sha256
+/release/release/
 **/.cxx/
 **/.externalNativeBuild/
 **/.kotlin/
