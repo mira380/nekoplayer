@@ -1,0 +1,14 @@
+/.gradle/
+/.gradle-build-home/
+**/build/
+/local.properties
+*.iml
+/.idea/
+/.vscode/
+*.jks
+*.keystore
+/keystore.properties
+/.env
+*.apk
+*.aab
+!/release/*.apk
