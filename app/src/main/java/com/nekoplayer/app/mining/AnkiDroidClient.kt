@@ -1,10 +1,11 @@
 package com.nekoplayer.app.mining
 
+import androidx.core.net.toUri
+
 import android.app.Activity
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.text.Html
 import androidx.core.content.FileProvider
 import com.ichi2.anki.api.AddContentApi
@@ -77,7 +78,7 @@ class AnkiDroidClient(
         } catch (_: Exception) {
             false
         }
-        val permissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+        val permissionGranted =
             activity.checkSelfPermission(READ_WRITE_PERMISSION) == PackageManager.PERMISSION_GRANTED
         return AnkiDroidStatus(
             installed = installed,
@@ -156,7 +157,7 @@ class AnkiDroidClient(
         val normalizedTerms = terms.map(::normalizeTerm).filter(String::isNotEmpty).distinct()
         if (cleanDeckName.isEmpty() || normalizedTerms.isEmpty()) return@providerOperation false
 
-        val notesUri = Uri.parse("$CONTENT_URI/notes")
+        val notesUri = "$CONTENT_URI/notes".toUri()
         for (term in normalizedTerms) {
             val search = "deck:\"${escapeSearchText(cleanDeckName)}\" \"${escapeSearchText(term)}\""
             val cursor = activity.contentResolver.query(
@@ -211,7 +212,7 @@ class AnkiDroidClient(
             put("flds", encodedFields)
             put("tags", note.tags.filter(String::isNotBlank).joinToString(" "))
         }
-        val inserted = activity.contentResolver.insert(Uri.parse("$CONTENT_URI/notes"), content)
+        val inserted = activity.contentResolver.insert("$CONTENT_URI/notes".toUri(), content)
             ?: throw IllegalStateException("AnkiDroid did not insert the new card.")
         val id = inserted.lastPathSegment?.toLongOrNull()
             ?: throw IllegalStateException("AnkiDroid returned an invalid card id.")
@@ -221,7 +222,7 @@ class AnkiDroidClient(
     }
 
     private fun moveCardsToDeck(noteId: Long, deckId: Long) {
-        val cardsUri = Uri.parse("$CONTENT_URI/notes/$noteId/cards")
+        val cardsUri = "$CONTENT_URI/notes/$noteId/cards".toUri()
         val cards = activity.contentResolver.query(
             cardsUri,
             arrayOf("ord", "deck_id"),
@@ -279,7 +280,7 @@ class AnkiDroidClient(
                 put("file_uri", contentUri.toString())
                 put("preferred_name", attachment.preferredName.trim().ifEmpty { file.name }.replace(' ', '_'))
             }
-            val inserted = activity.contentResolver.insert(Uri.parse("$CONTENT_URI/media"), values)
+            val inserted = activity.contentResolver.insert("$CONTENT_URI/media".toUri(), values)
                 ?: throw IllegalStateException("AnkiDroid could not import captured media.")
             val name = inserted.lastPathSegment?.substringAfterLast('/')?.takeIf(String::isNotBlank)
                 ?: throw IllegalStateException("AnkiDroid returned an invalid media filename.")

@@ -34,6 +34,7 @@ internal object YomitanPopupHtml {
         metadata: List<DictionaryTermMeta>,
         subtitleContext: String,
         colors: YomitanPopupColors,
+        language: String = "English",
         alreadyMined: Boolean = false,
         expansion: DictionaryPopupExpansion = DictionaryPopupExpansion(),
     ): String {
@@ -56,21 +57,21 @@ internal object YomitanPopupHtml {
                 append(ruby(primary.expression.ifBlank { result.surfaceText }, primary.reading))
                 append("</div>")
                 if (primary.expression != result.surfaceText && result.surfaceText.isNotBlank()) {
-                    append("<div class=\"matched\">Matched: ").append(escape(result.surfaceText)).append("</div>")
+                    append("<div class=\"matched\">").append(localizeUiText("Matched:", language)).append(" ").append(escape(result.surfaceText)).append("</div>")
                 }
                 append("</div><div class=\"popup-actions\"><a class=\"mine\" href=\"nekoplayer://mine/0\" aria-label=\"")
-                    .append(if (alreadyMined) "Already in Anki" else "Add to Anki").append("\">")
+                    .append(localizeUiText(if (alreadyMined) "Already in Anki" else "Add to Anki", language)).append("\">")
                 append(if (alreadyMined) checkIcon(colors.foreground, colors.background) else addIcon(colors.foreground, colors.background))
-                append("</a><a class=\"pronounce\" href=\"nekoplayer://audio/0\" aria-label=\"Play pronunciation\">")
+                append("</a><a class=\"pronounce\" href=\"nekoplayer://audio/0\" aria-label=\"").append(localizeUiText("Play pronunciation", language)).append("\">")
                 append(speakerIcon(colors.foreground)).append("</a></div></header>")
             } else {
                 append("<header class=\"word-header\"><div class=\"word-heading\"><div class=\"word\">")
                 append(escape(result.surfaceText)).append("</div></div></header>")
             }
 
-            appendMetadata(this, matchingMetadata, colors)
+            appendMetadata(this, matchingMetadata, colors, language)
             if (result.deinflectionReasons.isNotEmpty()) {
-                append("<div class=\"form-line\">Form: ")
+                append("<div class=\"form-line\">").append(localizeUiText("Form:", language)).append(" ")
                 append(escape(result.deinflectionReasons.distinct().joinToString(" · ")))
                 append("</div>")
             }
@@ -88,7 +89,7 @@ internal object YomitanPopupHtml {
                 }
                 append("</div></details>")
             }
-            if (entries.isEmpty()) append("<div class=\"empty\">No dictionary entries found.</div>")
+            if (entries.isEmpty()) append("<div class=\"empty\">").append(localizeUiText("No dictionary entries found.", language)).append("</div>")
             append("</main></body></html>")
         }
     }
@@ -179,6 +180,7 @@ internal object YomitanPopupHtml {
         out: StringBuilder,
         metadata: List<MetadataBadge>,
         colors: YomitanPopupColors,
+        language: String,
     ) {
         if (metadata.isEmpty()) return
         val badges = metadata.filter { it.mode != "pitch" }.take(18)
@@ -203,10 +205,10 @@ internal object YomitanPopupHtml {
         val pitches = metadata.filter { it.mode == "pitch" }
             .flatMap { row -> row.pitchAccents.map { row.dictionaryName to it } }
         if (pitches.isNotEmpty()) {
-            out.append("<section class=\"pitch-row\" aria-label=\"Pitch accent\">")
-                .append("<div class=\"pitch-label\">Pitch accent</div><div class=\"pitch-patterns\">")
+            out.append("<section class=\"pitch-row\" aria-label=\"").append(localizeUiText("Pitch accent", language)).append("\">")
+                .append("<div class=\"pitch-label\">").append(localizeUiText("Pitch accent", language)).append("</div><div class=\"pitch-patterns\">")
             pitches.forEach { (dictionaryName, pattern) ->
-                out.append(PitchAccentGraph.render(dictionaryName, pattern, colors))
+                out.append(PitchAccentGraph.render(dictionaryName, pattern, colors, language))
             }
             out.append("</div></section>")
         }

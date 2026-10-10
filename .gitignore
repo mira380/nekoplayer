@@ -11,4 +11,9 @@
 /.env
 *.apk
 *.aab
-!/release/*.apk
+/release/*.sha256
+**/.cxx/
+**/.externalNativeBuild/
+**/.kotlin/
+/captures/
+.DS_Store

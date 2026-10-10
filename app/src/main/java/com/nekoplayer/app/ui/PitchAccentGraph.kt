@@ -114,11 +114,13 @@ internal object PitchAccentGraph {
     fun Card(dictionaryName: String, pattern: PitchAccentPattern) {
         if (pattern.morae.isEmpty()) return
         val colors = MaterialTheme.colorScheme
+        val language = LocalNekoLanguage.current
         val levels = highLevels(pattern)
         val graphWidth = (START_X + (pattern.morae.lastIndex * MORA_STEP) + 14).dp
         val description = buildString {
-            append(pattern.reading).append(", pitch accent ").append(pattern.position)
-            append(" (").append(positionName(pattern.position, pattern.morae.size)).append(')')
+            append(pattern.reading).append("、")
+                .append(localizeUiText("Pitch accent", language)).append(pattern.position)
+            append("、").append(localizeUiText(positionName(pattern.position, pattern.morae.size), language))
             if (pattern.tags.isNotEmpty()) append(", ").append(pattern.tags.joinToString(", "))
         }
 
@@ -226,6 +228,7 @@ internal object PitchAccentGraph {
         dictionaryName: String,
         pattern: PitchAccentPattern,
         colors: YomitanPopupColors,
+        language: String = "English",
     ): String {
         if (pattern.morae.isEmpty()) return ""
         val highLevels = highLevels(pattern)
@@ -234,8 +237,9 @@ internal object PitchAccentGraph {
         val endX = lastX + 12
         val width = endX + 2
         val accessibleLabel = buildString {
-            append(pattern.reading).append(", pitch accent ").append(pattern.position)
-            append(" (").append(positionName(pattern.position, pattern.morae.size)).append(')')
+            append(pattern.reading).append("、")
+                .append(localizeUiText("Pitch accent", language)).append(pattern.position)
+            append("、").append(localizeUiText(positionName(pattern.position, pattern.morae.size), language))
             if (pattern.tags.isNotEmpty()) append(", ").append(pattern.tags.joinToString(", "))
         }
 

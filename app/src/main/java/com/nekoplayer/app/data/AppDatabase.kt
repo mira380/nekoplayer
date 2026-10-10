@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
+import androidx.core.database.sqlite.transaction
+import androidx.core.net.toUri
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -33,13 +35,13 @@ class AppDatabase(context: Context) : Closeable {
         ensureSchema()
     }
 
+    @android.annotation.SuppressLint("DirectDateInstantiation")
     private fun nowUtc(): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
         .apply { timeZone = TimeZone.getTimeZone("UTC") }
         .format(Date())
 
     private fun ensureSchema() {
-        sql.beginTransaction()
-        try {
+        sql.transaction {
             sql.execSQL(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (" +
                     "version INTEGER NOT NULL PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)",
@@ -147,9 +149,6 @@ class AppDatabase(context: Context) : Closeable {
                 )
             }
             sql.version = SCHEMA_VERSION
-            sql.setTransactionSuccessful()
-        } finally {
-            sql.endTransaction()
         }
     }
 
@@ -223,6 +222,57 @@ class AppDatabase(context: Context) : Closeable {
         else -> JSONObject.quote(value.toString())
     }
 
+    @Synchronized
+    fun listSourceLibraryEntries(): List<SourceLibraryEntry> {
+        val stored = readSetting(SOURCE_LIBRARY_KEY) as? JSONArray ?: return emptyList()
+        return buildList(stored.length()) {
+            for (index in 0 until stored.length()) {
+                val item = stored.optJSONObject(index) ?: continue
+                val sourceId = item.optLong("sourceId", -1L)
+                val animeUrl = item.optString("animeUrl").trim()
+                val title = item.optString("title").trim()
+                if (sourceId <= 0L || animeUrl.isEmpty() || title.isEmpty()) continue
+                add(
+                    SourceLibraryEntry(
+                        sourceId = sourceId,
+                        sourceName = item.optString("sourceName").ifBlank { "Video source" },
+                        extensionName = item.optString("extensionName").ifBlank { "Extension" },
+                        animeUrl = animeUrl,
+                        title = title,
+                        thumbnailUrl = item.optString("thumbnailUrl").takeIf { it.isNotBlank() && it != "null" },
+                        description = item.optString("description").takeIf { it.isNotBlank() && it != "null" },
+                        episodeCount = item.optInt("episodeCount", -1).takeIf { it >= 0 },
+                    ),
+                )
+            }
+        }
+    }
+
+    @Synchronized
+    fun containsSourceLibraryEntry(sourceId: Long, animeUrl: String): Boolean =
+        listSourceLibraryEntries().any { it.sourceId == sourceId && it.animeUrl == animeUrl }
+
+    @Synchronized
+    fun saveSourceLibraryEntry(entry: SourceLibraryEntry) {
+        val entries = listSourceLibraryEntries().filterNot { it.key == entry.key } + entry
+        writeSetting(SOURCE_LIBRARY_KEY, JSONArray().apply { entries.forEach { put(it.toJson()) } })
+    }
+
+    @Synchronized
+    fun removeSourceLibraryEntry(sourceId: Long, animeUrl: String) {
+        val entries = listSourceLibraryEntries().filterNot {
+            it.sourceId == sourceId && it.animeUrl == animeUrl
+        }
+        writeSetting(SOURCE_LIBRARY_KEY, JSONArray().apply { entries.forEach { put(it.toJson()) } })
+    }
+
+    @Synchronized
+    fun removeSourceLibraryEntries(keys: Set<String>) {
+        if (keys.isEmpty()) return
+        val entries = listSourceLibraryEntries().filterNot { it.key in keys }
+        writeSetting(SOURCE_LIBRARY_KEY, JSONArray().apply { entries.forEach { put(it.toJson()) } })
+    }
+
     fun listRecent(): List<RecentMedia> {
         val stored = readSetting(RECENT_KEY) as? JSONArray ?: return emptyList()
         return buildList(minOf(stored.length(), RECENT_LIMIT)) {
@@ -233,7 +283,7 @@ class AppDatabase(context: Context) : Closeable {
                 add(
                     RecentMedia(
                         uri = uri,
-                        displayName = item.optString("displayName", File(Uri.parse(uri).lastPathSegment ?: uri).name),
+                        displayName = item.optString("displayName", File(uri.toUri().lastPathSegment ?: uri).name),
                         lastOpenedAt = item.optString("lastOpenedAt"),
                         positionMs = item.optLong("positionMs", 0L).coerceAtLeast(0L),
                         durationMs = item.optLong("durationMs", 0L).coerceAtLeast(0L),
@@ -264,7 +314,7 @@ class AppDatabase(context: Context) : Closeable {
         val existing = old.firstOrNull { it.uri == uri }
         val entry = (existing ?: RecentMedia(
             uri = uri,
-            displayName = File(Uri.parse(uri).lastPathSegment ?: uri).name,
+            displayName = File(uri.toUri().lastPathSegment ?: uri).name,
             lastOpenedAt = nowUtc(),
         )).copy(
             positionMs = positionMs.coerceAtLeast(0L),
@@ -284,6 +334,31 @@ class AppDatabase(context: Context) : Closeable {
 
     override fun close() {
         sql.close()
+    }
+
+    data class SourceLibraryEntry(
+        val sourceId: Long,
+        val sourceName: String,
+        val extensionName: String,
+        val animeUrl: String,
+        val title: String,
+        val thumbnailUrl: String?,
+        val description: String?,
+        val episodeCount: Int? = null,
+    ) {
+        val key: String
+            get() = "$sourceId:$animeUrl"
+
+        fun toJson() = JSONObject().apply {
+            put("sourceId", sourceId)
+            put("sourceName", sourceName)
+            put("extensionName", extensionName)
+            put("animeUrl", animeUrl)
+            put("title", title)
+            put("thumbnailUrl", thumbnailUrl)
+            put("description", description)
+            put("episodeCount", episodeCount)
+        }
     }
 
     data class RecentMedia(
@@ -306,6 +381,7 @@ class AppDatabase(context: Context) : Closeable {
         const val DATABASE_NAME = "app.db"
         const val SCHEMA_VERSION = 5
         const val RECENT_KEY = "recent_media"
+        const val SOURCE_LIBRARY_KEY = "library.videoSourceEntries"
         const val RECENT_LIMIT = 20
     }
 }

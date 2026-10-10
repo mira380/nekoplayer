@@ -3,6 +3,7 @@ package com.nekoplayer.app.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -26,16 +28,16 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.ImportExport
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Style
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Button
@@ -53,12 +55,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -69,9 +74,11 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.data.DictionaryRepository
@@ -87,11 +94,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import android.content.Intent
-import android.net.Uri
+import androidx.core.net.toUri
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.roundToInt
+import java.util.UUID
 
 private data class AnkiSourceField(val key: String, val label: String)
 
@@ -116,8 +124,12 @@ fun SettingsScreen(
     anki: AnkiDroidClient,
     darkMode: Boolean,
     language: String,
+    palette: String,
+    accent: String,
     onDarkModeChanged: (Boolean) -> Unit,
     onLanguageChanged: (String) -> Unit,
+    onPaletteChanged: (String) -> Unit,
+    onAccentChanged: (String) -> Unit,
     onImportDictionary: () -> Unit,
     dictionaryImportStatus: String?,
     dictionaryImportBusy: Boolean,
@@ -261,9 +273,9 @@ fun SettingsScreen(
     }
 
     var autoPause by remember { mutableStateOf(database.readBoolean("playback.autoPause", false)) }
-    var fontSize by remember { mutableStateOf(database.readNumber("subtitles.fontSize", 32.0).toFloat().coerceIn(14f, 48f)) }
-    var bottomInset by remember { mutableStateOf(database.readNumber("subtitles.bottomInsetPx", 112.0).toFloat().coerceIn(0f, 240f)) }
-    var backgroundOpacity by remember { mutableStateOf(database.readNumber("subtitles.backgroundOpacity", 0.72).toFloat().coerceIn(0f, 1f)) }
+    var fontSize by remember { mutableFloatStateOf(database.readNumber("subtitles.fontSize", 32.0).toFloat().coerceIn(14f, 48f)) }
+    var bottomInset by remember { mutableFloatStateOf(database.readNumber("subtitles.bottomInsetPx", 112.0).toFloat().coerceIn(0f, 240f)) }
+    var backgroundOpacity by remember { mutableFloatStateOf(database.readNumber("subtitles.backgroundOpacity", 0.72).toFloat().coerceIn(0f, 1f)) }
     var shadowStyle by remember {
         val storedStyle = database.readString("subtitles.shadowStyle", "")
         mutableStateOf(
@@ -271,16 +283,17 @@ fun SettingsScreen(
                 ?: if (database.readBoolean("subtitles.shadowEnabled", true)) "Soft" else "Off",
         )
     }
-    var vignetteIntensity by remember { mutableStateOf(database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f)) }
-    var prePadding by remember { mutableStateOf(snapToGrid(database.readNumber("capture.audioPrePadding", 900.0).toFloat(), 10f, 0f..5000f)) }
-    var postPadding by remember { mutableStateOf(snapToGrid(database.readNumber("capture.audioPostPadding", 1000.0).toFloat(), 10f, 0f..5000f)) }
-    var screenshotDelay by remember { mutableStateOf(snapToGrid(database.readNumber("capture.screenshotDelayMs", 1000.0).toFloat(), 10f, 0f..30000f)) }
-    var maxWidth by remember { mutableStateOf(snapToGrid(database.readNumber("capture.maxWidth", 0.0).toFloat(), 10f, 0f..4096f)) }
-    var maxHeight by remember { mutableStateOf(snapToGrid(database.readNumber("capture.maxHeight", 0.0).toFloat(), 10f, 0f..4096f)) }
+    var vignetteIntensity by remember { mutableFloatStateOf(database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f)) }
+    var prePadding by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.audioPrePadding", 900.0).toFloat(), 10f, 0f..5000f)) }
+    var postPadding by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.audioPostPadding", 1000.0).toFloat(), 10f, 0f..5000f)) }
+    var screenshotDelay by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.screenshotDelayMs", 1000.0).toFloat(), 10f, 0f..30000f)) }
+    var maxWidth by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.maxWidth", 0.0).toFloat(), 10f, 0f..4096f)) }
+    var maxHeight by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.maxHeight", 0.0).toFloat(), 10f, 0f..4096f)) }
     var trimBlackBars by remember { mutableStateOf(database.readBoolean("capture.trimBlackBars", false)) }
     var playAudioDuringCapture by remember { mutableStateOf(database.readBoolean("capture.playAudioWhileCapture", false)) }
     var screenshotFormat by remember { mutableStateOf(database.readString("capture.screenshotFormat", "PNG")) }
     var jimakuKey by remember { mutableStateOf(database.readString("jimaku.apiKey")) }
+    var autoFetchJimaku by remember { mutableStateOf(database.readBoolean("jimaku.autoFetch", true)) }
     var deck by remember { mutableStateOf(database.readString("anki.deck", "Japanese::Mining")) }
     var noteType by remember { mutableStateOf(database.readString("anki.noteType", "Basic")) }
     var noteTypeFieldTemplates by remember { mutableStateOf(AnkiNoteFieldTemplates.load(database)) }
@@ -422,7 +435,7 @@ fun SettingsScreen(
                     IconButton(
                         onClick = ::returnToSettings,
                         modifier = Modifier.align(Alignment.CenterStart),
-                    ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to settings") }
+                    ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = localizeUiText("Back to settings")) }
                     Text(
                         selectedSection!!,
                         style = MaterialTheme.typography.titleLarge,
@@ -434,11 +447,6 @@ fun SettingsScreen(
         }
         if (selectedSection == "Appearance") {
         item {
-            SettingSection("Theme") {
-                SettingSwitch("Dark theme", darkMode, onChange = onDarkModeChanged)
-            }
-        }
-        item {
             SettingSection("Language") {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("English", "日本語").forEach { option ->
@@ -448,6 +456,50 @@ fun SettingsScreen(
                             label = { Text(option) },
                         )
                     }
+                }
+            }
+        }
+        item {
+            SettingSection("Theme") {
+                SettingSwitch("Dark theme", darkMode, onChange = onDarkModeChanged)
+            }
+        }
+        item {
+            SettingSection(if (darkMode) "Dark palette" else "Light palette") {
+                val palettes = if (darkMode) {
+                    listOf(
+                        ThemePaletteOption("Default", "classic", Color(0xFF0C0F10), Color(0xFF171A1B), Color(0xFFA0CDE0)),
+                        ThemePaletteOption("Warm dusk", "sepia", Color(0xFF13100E), Color(0xFF241E19), Color(0xFFB5A28E)),
+                        ThemePaletteOption("Ink", "ink", Color(0xFF050607), Color(0xFF15191B), Color(0xFF92BDF5)),
+                    )
+                } else {
+                    listOf(
+                        ThemePaletteOption("Default", "classic", Color(0xFFF4F7F8), Color(0xFFE8EEF0), Color(0xFF386A78)),
+                        ThemePaletteOption("Warm paper", "sepia", Color(0xFFF5F0E7), Color(0xFFECE4D7), Color(0xFF8A5A00)),
+                        ThemePaletteOption("Soft mist", "mist", Color(0xFFF1F5F4), Color(0xFFE6EEEC), Color(0xFF08766F)),
+                    )
+                }
+                palettes.forEachIndexed { index, option ->
+                    if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    ThemePaletteRow(option, selected = palette == option.id) { onPaletteChanged(option.id) }
+                }
+            }
+        }
+        item {
+            SettingSection("Accent") {
+                val accents = listOf(
+                    "cyan" to ("Cyan" to Color(0xFFA0CDE0)),
+                    "violet" to ("Orchid" to Color(0xFFB9A3FF)),
+                    "blue" to ("Ocean" to Color(0xFF92BDF5)),
+                    "teal" to ("Jade" to Color(0xFF72D2C6)),
+                    "green" to ("Fern" to Color(0xFF91D29C)),
+                    "amber" to ("Amber" to Color(0xFFFFC66D)),
+                    "coral" to ("Coral" to Color(0xFFFFA99F)),
+                    "pink" to ("Rose" to Color(0xFFF0A3CB)),
+                )
+                accents.forEachIndexed { index, (id, option) ->
+                    if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    AccentColorRow(option.first, option.second, selected = accent == id) { onAccentChanged(id) }
                 }
             }
         }
@@ -525,6 +577,14 @@ fun SettingsScreen(
         }
         item {
             SettingSection("Subtitle search") {
+                SettingSwitch(
+                    "Automatically fetch Jimaku subtitles",
+                    autoFetchJimaku,
+                    "Find and load a matching subtitle when playback starts.",
+                ) {
+                    autoFetchJimaku = it
+                    save("jimaku.autoFetch", it)
+                }
                 OutlinedTextField(
                     value = jimakuKey,
                     onValueChange = { jimakuKey = it },
@@ -550,7 +610,7 @@ fun SettingsScreen(
                             disabledContainerColor = MaterialTheme.colorScheme.primary,
                             disabledContentColor = MaterialTheme.colorScheme.onPrimary,
                         ),
-                        modifier = Modifier.width(220.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                     ) {
                         Box(
                             modifier = Modifier.fillMaxWidth().height(36.dp),
@@ -642,7 +702,7 @@ fun SettingsScreen(
                     HorizontalDivider(Modifier.padding(vertical = 4.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(item.name, fontWeight = FontWeight.SemiBold)
+                            Material3Text(item.name, fontWeight = FontWeight.SemiBold)
                             Text("${item.kind} · ${item.entryCount} entries · ${item.version}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(enabled = index > 0, onClick = {
@@ -651,15 +711,15 @@ fun SettingsScreen(
                                 dictionaries.reorderDictionaries(order)
                                 imports = dictionaries.listDictionaries()
                             }
-                        }) { Icon(Icons.Default.ArrowUpward, contentDescription = "Move up") }
+                        }) { Icon(Icons.Default.ArrowUpward, contentDescription = localizeUiText("Move up")) }
                         IconButton(enabled = index < imports.lastIndex, onClick = {
                             val order = imports.map { it.id }.toMutableList().apply { add(index + 1, removeAt(index)) }
                             scope.launch(Dispatchers.IO) {
                                 dictionaries.reorderDictionaries(order)
                                 imports = dictionaries.listDictionaries()
                             }
-                        }) { Icon(Icons.Default.ArrowDownward, contentDescription = "Move down") }
-                        IconButton(onClick = { removeTarget = item }) { Icon(Icons.Default.Delete, contentDescription = "Remove dictionary", tint = MaterialTheme.colorScheme.error) }
+                        }) { Icon(Icons.Default.ArrowDownward, contentDescription = localizeUiText("Move down")) }
+                        IconButton(onClick = { removeTarget = item }) { Icon(Icons.Default.Delete, contentDescription = localizeUiText("Remove dictionary"), tint = MaterialTheme.colorScheme.error) }
                     }
                 }
             }
@@ -673,9 +733,9 @@ fun SettingsScreen(
                     Button(
                         enabled = !accessBusy,
                         onClick = ::loadAnkiOptions,
-                        modifier = Modifier.width(164.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh AnkiDroid")
+                        Icon(Icons.Default.Refresh, contentDescription = localizeUiText("Refresh AnkiDroid"))
                         Spacer(Modifier.width(8.dp))
                         Text(
                             if (accessBusy) "Loading…" else "Refresh",
@@ -810,13 +870,13 @@ fun SettingsScreen(
                             )
                             IconButton(enabled = index > 0, onClick = {
                                 audioSources = audioSources.toMutableList().apply { add(index - 1, removeAt(index)) }
-                            }) { Icon(Icons.Default.ArrowUpward, contentDescription = "Move source up") }
+                            }) { Icon(Icons.Default.ArrowUpward, contentDescription = localizeUiText("Move source up")) }
                             IconButton(enabled = index < audioSources.lastIndex, onClick = {
                                 audioSources = audioSources.toMutableList().apply { add(index + 1, removeAt(index)) }
-                            }) { Icon(Icons.Default.ArrowDownward, contentDescription = "Move source down") }
+                            }) { Icon(Icons.Default.ArrowDownward, contentDescription = localizeUiText("Move source down")) }
                             if (source.kind.startsWith("custom")) {
                                 IconButton(onClick = { audioSources = audioSources.filterNot { it.name == source.name } }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Remove pronunciation source", tint = MaterialTheme.colorScheme.error)
+                                    Icon(Icons.Default.Delete, contentDescription = localizeUiText("Remove pronunciation source"), tint = MaterialTheme.colorScheme.error)
                                 }
                             }
                             Switch(
@@ -851,11 +911,11 @@ fun SettingsScreen(
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = {
-                        val id = "custom-${System.currentTimeMillis()}"
+                        val id = "custom-${UUID.randomUUID()}"
                         audioSources = audioSources + AudioSourceSetting(id, "custom-url", true, "")
                     }) { Text("Add URL") }
                     OutlinedButton(onClick = {
-                        val id = "custom-${System.currentTimeMillis()}"
+                        val id = "custom-${UUID.randomUUID()}"
                         audioSources = audioSources + AudioSourceSetting(id, "custom-json", true, "")
                     }) { Text("Add JSON") }
                 }
@@ -917,7 +977,7 @@ fun SettingsScreen(
                     }
                     latestReleaseUrl?.let { url ->
                         TextButton(
-                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
+                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) },
                             modifier = Modifier.fillMaxWidth(),
                         ) { Text("Open release notes") }
                     }
@@ -1055,7 +1115,7 @@ private fun SettingsCategoryGroup(
                         )
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = "Open $category",
+                            contentDescription = localizeUiText("Open ${localizeUiText(category)}"),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
                         )
@@ -1087,7 +1147,7 @@ private fun <T> AnkiChoiceRow(
     ) {
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Text(value.ifBlank { "None" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Material3Text(value.ifBlank { localizeUiText("None") }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Box {
             TextButton(onClick = onExpand, enabled = enabled) {
@@ -1097,7 +1157,7 @@ private fun <T> AnkiChoiceRow(
             DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
                 options.forEach { option ->
                     DropdownMenuItem(
-                        text = { Text(optionLabel(option)) },
+                        text = { Material3Text(optionLabel(option)) },
                         onClick = {
                             onDismiss()
                             onSelect(option)
@@ -1126,8 +1186,8 @@ private fun AnkiSourceFieldMappingRow(
     ) {
         Column(Modifier.weight(1f)) {
             Text(source.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Text(
-                destination.ifBlank { "Not mapped" },
+            Material3Text(
+                destination.ifBlank { localizeUiText("Not mapped") },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1135,7 +1195,7 @@ private fun AnkiSourceFieldMappingRow(
         Box {
             TextButton(onClick = onMenuOpen, enabled = enabled) {
                 Text("Choose")
-                Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose ${source.label} field")
+                Icon(Icons.Default.ArrowDropDown, contentDescription = localizeUiText("Choose ${localizeUiText(source.label)} field"))
             }
             DropdownMenu(expanded = menuExpanded, onDismissRequest = onMenuDismiss) {
                 DropdownMenuItem(
@@ -1147,7 +1207,7 @@ private fun AnkiSourceFieldMappingRow(
                 )
                 options.forEach { field ->
                     DropdownMenuItem(
-                        text = { Text(field) },
+                        text = { Material3Text(field) },
                         onClick = {
                             onMenuDismiss()
                             onDestinationChange(field)
@@ -1180,13 +1240,58 @@ private fun SettingSection(title: String, content: @Composable ColumnScope.() ->
     }
 }
 
+private data class ThemePaletteOption(
+    val label: String,
+    val id: String,
+    val background: Color,
+    val surface: Color,
+    val accent: Color,
+)
+
+@Composable
+private fun ThemePaletteRow(option: ThemePaletteOption, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.RadioButton, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Row(
+            Modifier.size(width = 48.dp, height = 30.dp).clip(RoundedCornerShape(7.dp)).background(option.background),
+        ) {
+            Box(Modifier.weight(1f).fillMaxSize().padding(4.dp).clip(RoundedCornerShape(3.dp)).background(option.surface))
+            Box(Modifier.weight(1f).fillMaxSize().padding(vertical = 4.dp, horizontal = 2.dp).clip(RoundedCornerShape(3.dp)).background(option.accent))
+            Box(Modifier.weight(1f).fillMaxSize().padding(4.dp).clip(RoundedCornerShape(3.dp)).background(option.surface.copy(alpha = 0.72f)))
+        }
+        Text(option.label, Modifier.weight(1f), fontWeight = FontWeight.Medium)
+        RadioButton(selected = selected, onClick = null)
+    }
+}
+
+@Composable
+private fun AccentColorRow(label: String, color: Color, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(role = Role.RadioButton, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            Modifier.size(28.dp)
+                .then(if (selected) Modifier.border(2.dp, color, CircleShape).padding(3.dp) else Modifier)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Text(label, Modifier.weight(1f), fontWeight = FontWeight.Medium)
+        RadioButton(selected = selected, onClick = null)
+    }
+}
+
 private fun categoryIcon(category: String) = when (category) {
-    "Anki" -> Icons.Default.ImportExport
-    "Dictionary settings" -> Icons.Default.Book
+    "Anki" -> Icons.Default.Style
+    "Dictionary settings" -> Icons.AutoMirrored.Filled.MenuBook
     "Appearance" -> Icons.Default.ColorLens
     "Playback" -> Icons.Default.PlayArrow
     "Subtitles" -> Icons.Default.Subtitles
-    "Capture and audio" -> Icons.Default.Tune
+    "Capture and audio" -> Icons.Default.GraphicEq
     "About and storage" -> Icons.Default.Info
     else -> Icons.Default.GraphicEq
 }

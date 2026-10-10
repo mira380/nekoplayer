@@ -2,6 +2,7 @@ package com.nekoplayer.app.mining
 
 import android.content.Context
 import android.graphics.Bitmap
+import androidx.core.graphics.scale
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -161,7 +162,11 @@ class MediaCapture(private val context: Context) {
                     0,
                     bytesRead,
                     (sampleTimeUs - firstPresentationTimeUs).coerceAtLeast(0L),
-                    extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC,
+                    if ((extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                        MediaCodec.BUFFER_FLAG_KEY_FRAME
+                    } else {
+                        0
+                    },
                 )
                 buffer.position(0)
                 buffer.limit(bytesRead)
@@ -296,7 +301,7 @@ class MediaCapture(private val context: Context) {
         if (maxWidth <= 0 && maxHeight <= 0) return bitmap
         val size = dimensions(bitmap.width, bitmap.height, maxWidth, maxHeight)
         if (size.first == bitmap.width && size.second == bitmap.height) return bitmap
-        return Bitmap.createScaledBitmap(bitmap, size.first, size.second, true)
+        return bitmap.scale(size.first, size.second, filter = true)
     }
 
     private fun dimensions(width: Int, height: Int, maxWidth: Int, maxHeight: Int): Pair<Int, Int> {

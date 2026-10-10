@@ -57,6 +57,7 @@ internal fun YomitanGlossary(
     }
 }
 
+@Suppress("ModifierParameter")
 @Composable
 private fun GlossaryNode(
     value: Any?,
@@ -65,6 +66,7 @@ private fun GlossaryNode(
     modifier: Modifier = Modifier,
     marker: String? = null,
 ) {
+    // Indentation depth tracks nested lists; dictionary wrapper elements do not add depth.
     when (value) {
         null, JSONObject.NULL -> Unit
         is JSONArray -> {
@@ -103,7 +105,7 @@ private fun GlossaryNode(
             if (tag == "br") {
                 Spacer(modifier.height(4.dp))
             } else if (tag in setOf("ul", "ol")) {
-                GlossaryList(content, compact, depth + 1, ordered = tag == "ol", modifier = modifier)
+                GlossaryList(content, compact, depth, ordered = tag == "ol", modifier = modifier)
             } else if (tag == "li") {
                 Row(
                     verticalAlignment = Alignment.Top,
@@ -128,7 +130,7 @@ private fun GlossaryNode(
                     }
                 }
             } else if (type == "structured-content") {
-                GlossaryNode(content, compact, depth + 1, modifier = modifier)
+                GlossaryNode(content, compact, depth, modifier = modifier)
             } else if (role == "attribution") {
                 Row(
                     modifier = modifier.fillMaxWidth(),
@@ -152,7 +154,7 @@ private fun GlossaryNode(
                     GlossaryNode(
                         content,
                         compact,
-                        depth + 1,
+                        depth,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 7.dp, vertical = 5.dp),
                     )
                 }
@@ -167,7 +169,7 @@ private fun GlossaryNode(
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
-                    GlossaryNode(content, compact, depth + 1, modifier = modifier)
+                    GlossaryNode(content, compact, depth, modifier = modifier)
                 }
             } else if (tag in setOf("div", "p", "section", "article", "blockquote")) {
                 val indent = if (role == "extra-info" || dataClass == "extra-content") 8.dp else 0.dp
@@ -176,7 +178,7 @@ private fun GlossaryNode(
                     modifier = modifier.fillMaxWidth().padding(start = indent),
                     verticalArrangement = Arrangement.spacedBy(spacing),
                 ) {
-                    GlossaryNode(content, compact, depth + 1)
+                    GlossaryNode(content, compact, depth)
                 }
             } else if (type in setOf("image", "image-block") || tag == "img") {
                 val alt = value.optString("alt").ifBlank { value.optString("title") }
@@ -206,7 +208,7 @@ private fun GlossaryNode(
                         },
                     )
                 } else if (content != null) {
-                    GlossaryNode(content, compact, depth + 1, modifier = modifier)
+                    GlossaryNode(content, compact, depth, modifier = modifier)
                 }
             }
         }
@@ -247,7 +249,7 @@ private fun GlossaryChildren(
                     )
                 }
             } else {
-                GlossaryNode(children[index], compact, depth + 1)
+                GlossaryNode(children[index], compact, depth)
                 index++
             }
         }
@@ -285,7 +287,7 @@ private fun GlossaryList(value: Any?, compact: Boolean, depth: Int, ordered: Boo
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.width(18.dp),
                     )
-                    GlossaryNode(child, compact, depth + 1, modifier = Modifier.weight(1f))
+                    GlossaryNode(child, compact, depth, modifier = Modifier.weight(1f))
                 }
             }
         }

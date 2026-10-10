@@ -9,48 +9,129 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-private val AppDarkColors = darkColorScheme(
-    primary = Color(0xFFA0CDE0),
-    onPrimary = Color(0xFF153E4B),
-    primaryContainer = Color(0xFF293E47),
-    onPrimaryContainer = Color(0xFFDEE7EC),
-    secondary = Color(0xFFA0CDE0),
-    onSecondary = Color(0xFF153E4B),
-    secondaryContainer = Color(0xFF293E47),
-    onSecondaryContainer = Color(0xFFA0CDE0),
-    background = Color(0xFF0C0F10),
-    surface = Color(0xFF111415),
-    surfaceVariant = Color(0xFF171A1B),
-    onSurface = Color(0xFFDEE7EC),
-    onSurfaceVariant = Color(0xFFA3ACB1),
-    outline = Color(0xFF6E777B),
-    outlineVariant = Color(0xFF232628),
-    error = Color(0xFFE6A5A5),
-    surfaceTint = Color(0xFFA0CDE0),
+private data class AccentPair(val light: Color, val dark: Color)
+
+private val AccentOptions = mapOf(
+    "cyan" to AccentPair(Color(0xFF386A78), Color(0xFFA0CDE0)),
+    "violet" to AccentPair(Color(0xFF6750A4), Color(0xFFB9A3FF)),
+    "blue" to AccentPair(Color(0xFF2765A8), Color(0xFF92BDF5)),
+    "teal" to AccentPair(Color(0xFF08766F), Color(0xFF72D2C6)),
+    "green" to AccentPair(Color(0xFF367748), Color(0xFF91D29C)),
+    "amber" to AccentPair(Color(0xFF8A5A00), Color(0xFFFFC66D)),
+    "coral" to AccentPair(Color(0xFFB4473E), Color(0xFFFFA99F)),
+    "pink" to AccentPair(Color(0xFF9A3B70), Color(0xFFF0A3CB)),
 )
 
-private val AppLightColors = lightColorScheme(
-    primary = Color(0xFF386A78),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFD3E8EE),
-    onPrimaryContainer = Color(0xFF153E4B),
-    secondary = Color(0xFF386A78),
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFD3E8EE),
-    onSecondaryContainer = Color(0xFF153E4B),
-    background = Color(0xFFF4F7F8),
-    surface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFFE8EEF0),
-    onSurface = Color(0xFF172126),
-    onSurfaceVariant = Color(0xFF4D5B61),
-    outline = Color(0xFF6E777B),
-    outlineVariant = Color(0xFFD4DDE0),
-    error = Color(0xFF9E4148),
-    surfaceTint = Color(0xFF386A78),
-)
+private fun appColorScheme(dark: Boolean, palette: String, accent: String) = run {
+    val accentColor = AccentOptions[accent] ?: AccentOptions.getValue("cyan")
+    val primary = if (dark) accentColor.dark else accentColor.light
+    val onPrimary = if (primary.luminance() > 0.55f) Color(0xFF172126) else Color.White
+    val background: Color
+    val surface: Color
+    val surfaceVariant: Color
+    val onSurface: Color
+    val onSurfaceVariant: Color
+    val outlineVariant: Color
+
+    when {
+        dark && palette == "sepia" -> {
+            background = Color(0xFF13100E)
+            surface = Color(0xFF191512)
+            surfaceVariant = Color(0xFF241E19)
+            onSurface = Color(0xFFEEE5DC)
+            onSurfaceVariant = Color(0xFFB6AAA0)
+            outlineVariant = Color(0xFF342C25)
+        }
+        dark && palette == "ink" -> {
+            background = Color(0xFF050607)
+            surface = Color(0xFF0C0E10)
+            surfaceVariant = Color(0xFF15191B)
+            onSurface = Color(0xFFE2E8EB)
+            onSurfaceVariant = Color(0xFFA4ADB2)
+            outlineVariant = Color(0xFF252A2D)
+        }
+        dark -> {
+            background = Color(0xFF0C0F10)
+            surface = Color(0xFF111415)
+            surfaceVariant = Color(0xFF171A1B)
+            onSurface = Color(0xFFDEE7EC)
+            onSurfaceVariant = Color(0xFFA3ACB1)
+            outlineVariant = Color(0xFF232628)
+        }
+        palette == "sepia" -> {
+            background = Color(0xFFF5F0E7)
+            surface = Color(0xFFFFFCF5)
+            surfaceVariant = Color(0xFFECE4D7)
+            onSurface = Color(0xFF302921)
+            onSurfaceVariant = Color(0xFF665B50)
+            outlineVariant = Color(0xFFD9CFC1)
+        }
+        palette == "mist" -> {
+            background = Color(0xFFF1F5F4)
+            surface = Color(0xFFFFFFFF)
+            surfaceVariant = Color(0xFFE6EEEC)
+            onSurface = Color(0xFF172321)
+            onSurfaceVariant = Color(0xFF52615E)
+            outlineVariant = Color(0xFFD2DEDB)
+        }
+        else -> {
+            background = Color(0xFFF4F7F8)
+            surface = Color(0xFFFFFFFF)
+            surfaceVariant = Color(0xFFE8EEF0)
+            onSurface = Color(0xFF172126)
+            onSurfaceVariant = Color(0xFF4D5B61)
+            outlineVariant = Color(0xFFD4DDE0)
+        }
+    }
+
+    val primaryContainer = primary.copy(alpha = if (dark) 0.24f else 0.14f)
+    val onPrimaryContainer = if (dark) onSurface else Color(0xFF153E4B)
+    if (dark) {
+        darkColorScheme(
+            primary = primary,
+            onPrimary = onPrimary,
+            primaryContainer = primaryContainer,
+            onPrimaryContainer = onPrimaryContainer,
+            secondary = primary,
+            onSecondary = onPrimary,
+            secondaryContainer = primaryContainer,
+            onSecondaryContainer = primary,
+            background = background,
+            surface = surface,
+            surfaceVariant = surfaceVariant,
+            onSurface = onSurface,
+            onSurfaceVariant = onSurfaceVariant,
+            outline = Color(0xFF87949A),
+            outlineVariant = outlineVariant,
+            error = Color(0xFFE6A5A5),
+            surfaceTint = primary,
+        )
+    } else {
+        lightColorScheme(
+            primary = primary,
+            onPrimary = onPrimary,
+            primaryContainer = primaryContainer,
+            onPrimaryContainer = onPrimaryContainer,
+            secondary = primary,
+            onSecondary = onPrimary,
+            secondaryContainer = primaryContainer,
+            onSecondaryContainer = primary,
+            background = background,
+            surface = surface,
+            surfaceVariant = surfaceVariant,
+            onSurface = onSurface,
+            onSurfaceVariant = onSurfaceVariant,
+            outline = Color(0xFF66757B),
+            outlineVariant = outlineVariant,
+            error = Color(0xFF9E4148),
+            surfaceTint = primary,
+        )
+    }
+}
 
 private val AppTypography = Typography().run {
     copy(
@@ -67,27 +148,32 @@ private val AppTypography = Typography().run {
 }
 
 @Composable
-fun NekoTheme(dark: Boolean, content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (dark) AppDarkColors else AppLightColors,
-        typography = AppTypography,
-    ) {
+fun NekoTheme(
+    dark: Boolean,
+    palette: String = "classic",
+    accent: String = "cyan",
+    content: @Composable () -> Unit,
+) {
+    val colors = appColorScheme(dark, palette, accent)
+    MaterialTheme(colorScheme = colors, typography = AppTypography) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background,
-            contentColor = MaterialTheme.colorScheme.onSurface,
+            color = colors.background,
+            contentColor = colors.onSurface,
             content = content,
         )
     }
 }
 
 @Composable
-fun NekoPlayerTheme(dark: Boolean, content: @Composable () -> Unit) {
-    val colors = if (dark) AppDarkColors else AppLightColors
-    MaterialTheme(
-        colorScheme = colors,
-        typography = AppTypography,
-    ) {
+fun NekoPlayerTheme(
+    dark: Boolean,
+    palette: String = "classic",
+    accent: String = "cyan",
+    content: @Composable () -> Unit,
+) {
+    val colors = appColorScheme(dark, palette, accent)
+    MaterialTheme(colorScheme = colors, typography = AppTypography) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = colors.background,

@@ -2,8 +2,10 @@ package com.nekoplayer.app.ui
 
 import android.media.MediaPlayer
 import android.net.Uri
+import androidx.core.net.toUri
 import android.view.View
 import android.view.LayoutInflater
+import android.widget.FrameLayout
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.Canvas
@@ -19,7 +21,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,7 +32,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
@@ -67,6 +67,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -104,7 +105,11 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.nekoplayer.app.MainActivity
@@ -144,6 +149,7 @@ private val PlayerOverlaySurface = Color(0xE6111415)
 private val PlayerOverlayText = Color(0xFFDEE7EC)
 private val PlayerOverlayAccent = Color(0xFFA0CDE0)
 
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 fun PlayerScreen(
     activity: MainActivity,
@@ -153,18 +159,27 @@ fun PlayerScreen(
     uri: Uri,
     displayName: String,
     seriesTitle: String?,
+    modifier: Modifier = Modifier,
+    requestHeaders: Map<String, String> = emptyMap(),
+    subtitleEpisodeName: String? = null,
+    subtitleEpisodeNumber: Int? = null,
     onClose: () -> Unit,
     onPickSubtitle: (((Uri, String) -> Unit) -> Unit),
     onNotify: (String) -> Unit,
-    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val player = remember(uri) {
-        ExoPlayer.Builder(activity).build().apply {
-            setMediaItem(MediaItem.fromUri(uri))
-            prepare()
-        }
+    val player = remember(uri, requestHeaders) {
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(requestHeaders)
+        val dataSourceFactory = DefaultDataSource.Factory(activity, httpDataSourceFactory)
+        ExoPlayer.Builder(activity)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .build()
+            .apply {
+                setMediaItem(MediaItem.fromUri(uri))
+                prepare()
+            }
     }
     val playerView = remember(player) { mutableStateOf<PlayerView?>(null) }
     var positionMs by remember(uri) { mutableLongStateOf(0L) }
@@ -232,6 +247,7 @@ fun PlayerScreen(
     val subtitleVignette = remember(database) { database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f) }
     val subtitleBottom = remember(database) { database.readNumber("subtitles.bottomInsetPx", 112.0).toFloat().coerceIn(0f, 240f) }
     val pauseOnDictionaryLookup = remember(database) { database.readBoolean("playback.autoPause", false) }
+    val autoFetchJimaku = remember(database) { database.readBoolean("jimaku.autoFetch", true) }
 
     LaunchedEffect(subtitleText, activeCue?.id) {
         lookupRequestId++
@@ -418,7 +434,7 @@ fun PlayerScreen(
         }
     }
 
-    fun tapSubtitle(position: androidx.compose.ui.geometry.Offset) {
+    fun tapSubtitle(position: Offset) {
         val layout = subtitleLayout ?: return
         val text = subtitleText
         if (text.isBlank()) return
@@ -433,7 +449,7 @@ fun PlayerScreen(
         if (pauseOnDictionaryLookup) player.pause()
         scope.launch {
             val result = withContext(Dispatchers.IO) {
-                SubtitleScanner().scanContaining(text, offset, ExactTermLookup { terms -> dictionaries.lookupExactTerms(terms) })
+                SubtitleScanner().scanContaining(text, offset) { terms -> dictionaries.lookupExactTerms(terms) }
             }
             if (requestId != lookupRequestId) return@launch
             lookup = result
@@ -525,17 +541,18 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(uri, displayName, seriesTitle, jimakuApiKey, userSelectedSubtitle) {
-        if (jimakuApiKey.isBlank() || userSelectedSubtitle || latestExternalSubtitle.value != null) return@LaunchedEffect
+    LaunchedEffect(uri, displayName, seriesTitle, subtitleEpisodeName, subtitleEpisodeNumber, jimakuApiKey, autoFetchJimaku, userSelectedSubtitle) {
+        if (!autoFetchJimaku || jimakuApiKey.isBlank() || userSelectedSubtitle || latestExternalSubtitle.value != null) return@LaunchedEffect
         val requestedMediaUri = uri.toString()
         val showName = seriesTitle?.takeIf(String::isNotBlank) ?: displayName
         val file = try {
             findAutomaticJimakuSubtitle(
                 showName = showName,
-                episodeFileName = displayName,
+                episodeFileName = subtitleEpisodeName?.takeIf(String::isNotBlank) ?: displayName,
                 apiKey = jimakuApiKey,
                 aniListClient = aniListClient,
                 jimakuClient = jimakuClient,
+                episodeNumber = subtitleEpisodeNumber,
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -633,7 +650,11 @@ fun PlayerScreen(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { viewContext ->
-                (LayoutInflater.from(viewContext).inflate(com.nekoplayer.app.R.layout.player_view, null) as PlayerView).apply {
+                (LayoutInflater.from(viewContext).inflate(
+                    com.nekoplayer.app.R.layout.player_view,
+                    FrameLayout(viewContext),
+                    false,
+                ) as PlayerView).apply {
                     useController = false
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     keepScreenOn = true
@@ -647,10 +668,10 @@ fun PlayerScreen(
             },
         )
         if (subtitleVignette > 0f) {
-            Canvas(Modifier.fillMaxSize()) {
-                val center = Offset(size.width / 2f, size.height / 2f)
-                drawRect(
-                    brush = Brush.radialGradient(
+            Canvas(
+                Modifier.fillMaxSize().drawWithCache {
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val vignetteBrush = Brush.radialGradient(
                         colorStops = arrayOf(
                             0f to Color.Transparent,
                             0.55f to Color.Transparent,
@@ -658,9 +679,10 @@ fun PlayerScreen(
                         ),
                         center = center,
                         radius = hypot(center.x, center.y).coerceAtLeast(1f),
-                    ),
-                )
-            }
+                    )
+                    onDrawBehind { drawRect(brush = vignetteBrush) }
+                },
+            ) {}
         }
         if (subtitleText.isNotBlank()) {
             Material3Text(
@@ -696,11 +718,11 @@ fun PlayerScreen(
                     Modifier.fillMaxWidth().background(PlayerOverlaySurface).padding(horizontal = 8.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Close player", tint = PlayerOverlayText) }
+                    IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = localizeUiText("Close player"), tint = PlayerOverlayText) }
                     Text(displayName, Modifier.weight(1f), color = PlayerOverlayText, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                     Box {
                         IconButton(onClick = { showPlayerMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Player options", tint = PlayerOverlayText)
+                            Icon(Icons.Default.MoreVert, contentDescription = localizeUiText("Player options"), tint = PlayerOverlayText)
                         }
                         DropdownMenu(expanded = showPlayerMenu, onDismissRequest = { showPlayerMenu = false }) {
                             DropdownMenuItem(
@@ -752,7 +774,7 @@ fun PlayerScreen(
                                 }) {
                                     Icon(
                                         if (volume > 0f) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-                                        contentDescription = if (volume > 0f) "Mute" else "Unmute",
+                                        contentDescription = localizeUiText(if (volume > 0f) "Mute" else "Unmute"),
                                         tint = PlayerOverlayText,
                                         modifier = Modifier.size(20.dp),
                                     )
@@ -769,13 +791,13 @@ fun PlayerScreen(
                         val transportControls: @Composable () -> Unit = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { player.seekTo((player.currentPosition - 10_000L).coerceAtLeast(0L)) }) {
-                                    Icon(Icons.Default.Replay10, contentDescription = "Back 10 seconds", tint = PlayerOverlayText)
+                                    Icon(Icons.Default.Replay10, contentDescription = localizeUiText("Back 10 seconds"), tint = PlayerOverlayText)
                                 }
                                 IconButton(onClick = { if (player.isPlaying) player.pause() else player.play() }) {
-                                    Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = if (playing) "Pause" else "Play", tint = PlayerOverlayAccent, modifier = Modifier.size(28.dp))
+                                    Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = localizeUiText(if (playing) "Pause" else "Play"), tint = PlayerOverlayAccent, modifier = Modifier.size(28.dp))
                                 }
                                 IconButton(onClick = { player.seekTo((player.currentPosition + 10_000L).coerceAtMost(durationMs)) }) {
-                                    Icon(Icons.Default.Forward10, contentDescription = "Forward 10 seconds", tint = PlayerOverlayText)
+                                    Icon(Icons.Default.Forward10, contentDescription = localizeUiText("Forward 10 seconds"), tint = PlayerOverlayText)
                                 }
                             }
                         }
@@ -808,7 +830,7 @@ fun PlayerScreen(
                                 }
                                 Box {
                                     IconButton(onClick = { showSubtitleMenu = true }) {
-                                        Icon(Icons.Default.Subtitles, contentDescription = "Subtitle options", tint = PlayerOverlayText, modifier = Modifier.size(20.dp))
+                                        Icon(Icons.Default.Subtitles, contentDescription = localizeUiText("Subtitle options"), tint = PlayerOverlayText, modifier = Modifier.size(20.dp))
                                     }
                                     DropdownMenu(expanded = showSubtitleMenu, onDismissRequest = { showSubtitleMenu = false }) {
                                         DropdownMenuItem(
@@ -1047,6 +1069,7 @@ fun PlayerScreen(
     }
 }
 
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 private fun TrackDialog(
     title: String,
@@ -1071,13 +1094,13 @@ private fun TrackDialog(
                 if (kind == "subtitle") {
                     item {
                         TextButton(onClick = { onOff() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("${if (!useExternal && !embeddedEnabled) "✓  " else ""}Subtitles off", modifier = Modifier.fillMaxWidth())
+                            Text("${if (!useExternal && !embeddedEnabled) "✓  " else ""}${localizeUiText("Subtitles off")}", modifier = Modifier.fillMaxWidth())
                         }
                     }
                     items(externalTracks, key = SubtitleTrack::id) { track ->
                         TextButton(onClick = { onExternal(track) }, modifier = Modifier.fillMaxWidth()) {
                             Text(
-                                "${if (track.id == selectedExternalTrackId) "✓  " else ""}${track.name} (external)",
+                                "${if (track.id == selectedExternalTrackId) "✓  " else ""}${track.name} (${localizeUiText("external")})",
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
@@ -1089,7 +1112,7 @@ private fun TrackDialog(
                         .distinct().joinToString(" · ").ifBlank { "Track ${index + 1}" }
                     val selected = group.isTrackSelected(index)
                     TextButton(onClick = { onSelect(trackType, group, index) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("${if (selected) "✓  " else ""}$label", modifier = Modifier.fillMaxWidth())
+                        Text("${if (selected) "✓  " else ""}${localizeUiText(label)}", modifier = Modifier.fillMaxWidth())
                     }
                 }
                 if (groups.isEmpty() && (kind == "audio" || externalTracks.isEmpty())) {
@@ -1118,8 +1141,9 @@ private fun LookupPopup(
         (result?.entries.orEmpty() + result?.relatedEntries.orEmpty()).take(36)
     }
     val scheme = MaterialTheme.colorScheme
+    val language = LocalNekoLanguage.current
     val pageHtml = remember(
-        result, metadata, subtitleContext, alreadyMined, expansion,
+        result, metadata, subtitleContext, alreadyMined, expansion, language,
         scheme.surface, scheme.onSurface, scheme.onSurfaceVariant,
         scheme.surfaceVariant, scheme.outlineVariant, scheme.primary,
         scheme.onPrimary, scheme.background,
@@ -1139,6 +1163,7 @@ private fun LookupPopup(
                     accentForeground = scheme.onPrimary.toArgb(),
                     isDark = scheme.background.luminance() < 0.5f,
                 ),
+                language = language,
                 alreadyMined = alreadyMined,
                 expansion = expansion,
             )
@@ -1229,7 +1254,7 @@ private fun LookupPopup(
                                     setInitialScale(100)
                                     webViewClient = object : WebViewClient() {
                                         private fun handleLookupLink(rawUrl: String?): Boolean {
-                                            val action = runCatching { Uri.parse(rawUrl) }.getOrNull()
+                                            val action = runCatching { rawUrl?.toUri() }.getOrNull()
                                                 ?: return true
                                             if (action.scheme != "nekoplayer") return true
                                             when (action.host) {

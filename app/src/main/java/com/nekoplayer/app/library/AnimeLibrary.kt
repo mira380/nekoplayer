@@ -1,5 +1,7 @@
 package com.nekoplayer.app.library
 
+import androidx.core.net.toUri
+
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
@@ -110,6 +112,7 @@ class AniListClient(context: Context) {
     private val apiLock = Any()
     @Volatile private var lastApiRequestAt = 0L
 
+    @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
     fun coverFor(showName: String, episodeFileNames: Iterable<String> = emptyList()): File? {
         val queries = searchQueries(showName, episodeFileNames)
         if (queries.isEmpty()) return null
@@ -263,9 +266,10 @@ class AniListClient(context: Context) {
     }
 
     private fun <T> apiRequest(block: () -> T): T = synchronized(apiLock) {
-        val wait = MINIMUM_REQUEST_INTERVAL_MS - (System.currentTimeMillis() - lastApiRequestAt)
+        val now = android.os.SystemClock.elapsedRealtime()
+        val wait = MINIMUM_REQUEST_INTERVAL_MS - (now - lastApiRequestAt)
         if (lastApiRequestAt != 0L && wait > 0) Thread.sleep(wait)
-        lastApiRequestAt = System.currentTimeMillis()
+        lastApiRequestAt = android.os.SystemClock.elapsedRealtime()
         block()
     }
 
@@ -406,7 +410,7 @@ class JimakuSubtitleClient(
         val safeName = file.name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifEmpty { "subtitle.srt" }
         val destination = File(File(cacheDirectory, "jimaku"), "${entryId}_$safeName")
         if (destination.isFile && destination.length() > 0L) return destination
-        val uri = try { Uri.parse(file.url) } catch (error: Exception) {
+        val uri = try { file.url.toUri() } catch (error: Exception) {
             throw LibraryNetworkException("Jimaku returned an unusable download link.", cause = error)
         }
         if (uri.scheme !in setOf("https", "http") || uri.host.isNullOrBlank()) {

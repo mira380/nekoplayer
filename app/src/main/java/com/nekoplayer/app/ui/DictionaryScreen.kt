@@ -33,7 +33,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.compose.material3.Text as Material3Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -188,6 +188,7 @@ fun DictionaryScreen(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
                 singleLine = true,
                 leadingIcon = { androidx.compose.material3.Icon(Icons.Default.Search, contentDescription = null) },
                 placeholder = { Text("Search dictionaries") },
@@ -222,7 +223,7 @@ fun DictionaryScreen(
                         )
                         dictionaries.forEach { name ->
                             DropdownMenuItem(
-                                text = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                text = { Material3Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 onClick = {
                                     selectedDictionary = name
                                     dictionaryMenuExpanded = false
@@ -292,13 +293,13 @@ private fun DictionaryTermCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
+                Material3Text(
                     expression,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
                 if (reading.isNotBlank() && reading != expression) {
-                    Text(
+                    Material3Text(
                         reading,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -347,7 +348,7 @@ private fun DictionaryTermCard(
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
+                        Material3Text(
                             entry.dictionaryName,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Medium,
@@ -356,7 +357,7 @@ private fun DictionaryTermCard(
                         )
                         val tags = entry.termTags.orEmpty() + entry.definitionTags.orEmpty()
                         if (tags.isNotEmpty()) {
-                            Text(
+                            Material3Text(
                                 tags.distinct().joinToString(" · "),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

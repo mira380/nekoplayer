@@ -19,9 +19,12 @@ suspend fun findAutomaticJimakuSubtitle(
     apiKey: String,
     aniListClient: AniListClient,
     jimakuClient: JimakuSubtitleClient,
+    episodeNumber: Int? = null,
 ): File? = withContext(Dispatchers.IO) {
     if (showName.isBlank() || apiKey.isBlank()) return@withContext null
-    val episode = parseJimakuEpisodeNumber(episodeFileName) ?: return@withContext null
+    val episode = episodeNumber?.takeIf { it in 1..300 }
+        ?: parseJimakuEpisodeNumber(episodeFileName)
+        ?: return@withContext null
 
     try {
         val candidates = aniListClient.searchAnimeCandidates(showName, listOf(episodeFileName))

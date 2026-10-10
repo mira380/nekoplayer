@@ -231,6 +231,7 @@ class PronunciationAudioClient(
         return null
     }
 
+    @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
     private fun loadAjattIndex(source: Source): AjattIndex? {
         val archiveUrl = source.urlTemplate?.takeIf(String::isNotBlank) ?: return null
         synchronized(indexLock) {

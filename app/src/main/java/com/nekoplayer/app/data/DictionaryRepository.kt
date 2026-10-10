@@ -2,6 +2,7 @@ package com.nekoplayer.app.data
 
 import android.content.ContentResolver
 import android.database.sqlite.SQLiteDatabase
+import androidx.core.database.sqlite.transaction
 import android.database.sqlite.SQLiteStatement
 import android.net.Uri
 import android.util.JsonReader
@@ -12,7 +13,10 @@ import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
+import java.util.Calendar
 import java.util.Locale
+import java.text.SimpleDateFormat
+import java.util.TimeZone
 import java.util.zip.ZipFile
 
 data class ImportedDictionary(
@@ -112,8 +116,7 @@ class DictionaryRepository(
     // Requested dictionaries come first; the rest keep their existing order.
     fun reorderDictionaries(orderedIds: List<Long>) {
         require(orderedIds.distinct().size == orderedIds.size) { "Repeated dictionary id" }
-        database.beginTransaction()
-        try {
+        database.transaction {
             val known = mutableListOf<Long>()
             database.rawQuery("SELECT id FROM dictionary_catalog ORDER BY sort_order,name COLLATE NOCASE,id", null)
                 .use { cursor -> while (cursor.moveToNext()) known += cursor.getLong(0) }
@@ -125,18 +128,15 @@ class DictionaryRepository(
                     statement.executeUpdateDelete()
                 }
             }
-            database.setTransactionSuccessful()
-        } finally { database.endTransaction() }
+        }
     }
 
     fun deleteDictionary(id: Long) {
-        database.beginTransaction()
-        try {
+        database.transaction {
             database.delete("dictionary_entries", "dictionary_id=?", arrayOf(id.toString()))
             database.delete("dictionary_meta", "dictionary_id=?", arrayOf(id.toString()))
             database.delete("dictionary_catalog", "id=?", arrayOf(id.toString()))
-            database.setTransactionSuccessful()
-        } finally { database.endTransaction() }
+        }
     }
 
     // Exact matches rank ahead of prefixes, followed by dictionary priority and source score.
@@ -175,7 +175,8 @@ class DictionaryRepository(
                 args.toTypedArray(),
             ).use { cursor -> while (cursor.moveToNext()) {
                 val entry = cursorEntry(cursor)
-                found.putIfAbsent("${entry.dictionaryId}:${entry.id}", entry to cursor.getInt(4))
+                val key = "${entry.dictionaryId}:${entry.id}"
+                if (!found.containsKey(key)) found[key] = entry to cursor.getInt(4)
             } }
         }
         return found.values.sortedWith(
@@ -201,12 +202,14 @@ class DictionaryRepository(
                 (chunk + chunk).toTypedArray(),
             ).use { cursor -> while (cursor.moveToNext()) {
                 val id = cursor.getLong(0)
-                found.putIfAbsent(id, Ranked(id, cursor.getInt(8), DictionaryTermMeta(
-                    expression = cursor.getString(1), reading = cursor.getString(2),
-                    mode = cursor.getString(3), sortValue = cursor.getDouble(4),
-                    display = cursor.nullableString(5), detailJson = cursor.nullableString(6),
-                    dictionaryName = cursor.getString(7),
-                )))
+                if (!found.containsKey(id)) {
+                    found[id] = Ranked(id, cursor.getInt(8), DictionaryTermMeta(
+                        expression = cursor.getString(1), reading = cursor.getString(2),
+                        mode = cursor.getString(3), sortValue = cursor.getDouble(4),
+                        display = cursor.nullableString(5), detailJson = cursor.nullableString(6),
+                        dictionaryName = cursor.getString(7),
+                    ))
+                }
             } }
         }
         return found.values.sortedWith(compareBy<Ranked> { it.priority }.thenBy { it.row.sortValue }.thenBy { it.id })
@@ -320,14 +323,10 @@ class DictionaryRepository(
             require(expressions.size == readings.size && expressions.size == scores.size && expressions.size == rawRows.size) {
                 "The native dictionary importer returned an incomplete batch"
             }
-            database.beginTransaction()
-            try {
+            database.transaction {
                 expressions.indices.forEach { index ->
                     bindEntry(statement, dictionaryId, expressions[index], readings[index], scores[index], rawRows[index])
                 }
-                database.setTransactionSuccessful()
-            } finally {
-                database.endTransaction()
             }
         }
         return try {
@@ -344,9 +343,13 @@ class DictionaryRepository(
         val pending = mutableListOf<MetaRow>()
         fun flush() {
             if (pending.isEmpty()) return
-            database.beginTransaction()
-            try { pending.forEach { insertMeta(statement, dictionaryId, it) }; database.setTransactionSuccessful() }
-            finally { database.endTransaction(); pending.clear() }
+            try {
+                database.transaction {
+                    pending.forEach { insertMeta(statement, dictionaryId, it) }
+                }
+            } finally {
+                pending.clear()
+            }
         }
         reader.use {
             it.beginArray()
@@ -384,8 +387,7 @@ class DictionaryRepository(
     }
 
     private fun publish(staged: List<StagedDictionary>) {
-        database.beginTransaction()
-        try {
+        database.transaction {
             staged.forEach { item ->
                 database.delete("dictionary_meta", "dictionary_id IN (SELECT id FROM dictionary_catalog WHERE name=? AND id!=?)", arrayOf(item.name, item.id.toString()))
                 database.delete("dictionary_entries", "dictionary_id IN (SELECT id FROM dictionary_catalog WHERE name=? AND id!=?)", arrayOf(item.name, item.id.toString()))
@@ -393,8 +395,7 @@ class DictionaryRepository(
                 database.execSQL("UPDATE dictionary_catalog SET version=?,entry_count=?,is_ready=1,kind=?,imported_at=? WHERE id=?",
                     arrayOf<Any?>(item.version, item.entryCount, item.kind, nowUtc(), item.id))
             }
-            database.setTransactionSuccessful()
-        } finally { database.endTransaction() }
+        }
     }
 
     private fun stage(name: String, version: String, kind: String): StagedDictionary {
@@ -460,7 +461,10 @@ class DictionaryRepository(
     private fun escapeLike(value: String): String = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     private fun basename(path: String) = path.substringAfterLast('/')
     private fun bankNumber(path: String) = Regex("\\d+").find(basename(path))?.value?.toIntOrNull() ?: 0
-    private fun nowUtc() = java.time.Instant.now().toString()
+    @android.annotation.SuppressLint("DirectCalendarInstanceUsage")
+    private fun nowUtc(): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+        .apply { timeZone = TimeZone.getTimeZone("UTC") }
+        .format(Calendar.getInstance(TimeZone.getTimeZone("UTC")).time)
     private fun android.database.Cursor.nullableString(index: Int): String? = if (isNull(index)) null else getString(index)
     private fun parseTags(value: Any?): List<String>? = when (value) {
         is String -> value.split(Regex("\\s+")).filter(String::isNotEmpty).ifEmpty { null }

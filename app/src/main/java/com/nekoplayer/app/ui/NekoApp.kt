@@ -3,6 +3,7 @@ package com.nekoplayer.app.ui
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import androidx.core.net.toUri
 import android.os.Build
 import android.provider.OpenableColumns
 import android.widget.Toast
@@ -24,15 +25,15 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.ime
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.LibraryBooks
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.LibraryBooks
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.Text
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
@@ -54,6 +55,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.nekoplayer.app.MainActivity
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.data.DictionaryRepository
+import com.nekoplayer.app.extensions.ExtensionManager
 import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.AnimeLibraryEpisode
 import com.nekoplayer.app.library.AnimeLibraryScanner
@@ -67,10 +69,18 @@ import java.io.File
 private enum class AppPage(val label: String) {
     Library("Library"),
     Dictionaries("Dictionaries"),
+    Extensions("Extensions"),
     Settings("Settings"),
 }
 
-data class VideoTarget(val uri: Uri, val displayName: String, val seriesTitle: String? = null)
+data class VideoTarget(
+    val uri: Uri,
+    val displayName: String,
+    val seriesTitle: String? = null,
+    val requestHeaders: Map<String, String> = emptyMap(),
+    val subtitleEpisodeName: String? = null,
+    val subtitleEpisodeNumber: Int? = null,
+)
 
 @Composable
 fun NekoApp(
@@ -85,10 +95,14 @@ fun NekoApp(
     }
     val aniList = remember(context) { AniListClient(context) }
     val snackbar = remember { SnackbarHostState() }
+    val extensionManager = remember(context, database) { ExtensionManager(context, database) }
 
     var page by remember { mutableStateOf(AppPage.Library) }
+    var pendingSourceEntry by remember { mutableStateOf<AppDatabase.SourceLibraryEntry?>(null) }
     var detailScreen by remember { mutableStateOf(false) }
     var darkMode by remember { mutableStateOf(database.readBoolean("appearance.dark", true)) }
+    var palette by remember { mutableStateOf(database.readString("appearance.palette", "classic")) }
+    var accent by remember { mutableStateOf(database.readString("appearance.accent", "cyan")) }
     var language by remember { mutableStateOf(database.readString("appearance.language", "English")) }
     var folderUri by remember { mutableStateOf<String?>(null) }
     var folderUriLoaded by remember { mutableStateOf(false) }
@@ -107,7 +121,7 @@ fun NekoApp(
     val videoPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val callback = videoPermissionCallback
         videoPermissionCallback = null
-        if (granted) callback?.invoke() else scope.launch { snackbar.showSnackbar("Allow video access to open this older file path.") }
+        if (granted) callback?.invoke() else scope.launch { snackbar.showSnackbar(localizeUiText("Allow video access to open this older file path.", language)) }
     }
 
     LaunchedEffect(Unit) {
@@ -124,11 +138,12 @@ fun NekoApp(
             libraryLoading = false
             return@LaunchedEffect
         }
+        val selectedFolderUri = folderUri ?: return@LaunchedEffect
         libraryLoading = true
         libraryError = null
         try {
             libraryEpisodes = withContext(Dispatchers.IO) {
-                val root = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
+                val root = DocumentFile.fromTreeUri(context, selectedFolderUri.toUri())
                     ?: error("The saved library folder is unavailable.")
                 AnimeLibraryScanner().scan(root)
             }
@@ -162,18 +177,41 @@ fun NekoApp(
         return uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: "Video"
     }
 
-    fun openVideo(sourceUri: Uri, name: String, seriesTitle: String? = null) {
+    fun openVideo(
+        sourceUri: Uri,
+        name: String,
+        seriesTitle: String? = null,
+        requestHeaders: Map<String, String> = emptyMap(),
+        subtitleEpisodeName: String? = null,
+        subtitleEpisodeNumber: Int? = null,
+    ) {
         val uri = if (sourceUri.scheme.isNullOrBlank()) Uri.fromFile(File(sourceUri.toString())) else sourceUri
-        if (uri.scheme == "file" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        if (uri.scheme == "file") {
             val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO
             else Manifest.permission.READ_EXTERNAL_STORAGE
             if (ContextCompat.checkSelfPermission(activity, permission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                videoPermissionCallback = { activeVideo = VideoTarget(uri, name, seriesTitle) }
+                videoPermissionCallback = {
+                    activeVideo = VideoTarget(
+                        uri,
+                        name,
+                        seriesTitle,
+                        requestHeaders,
+                        subtitleEpisodeName,
+                        subtitleEpisodeNumber,
+                    )
+                }
                 videoPermissionLauncher.launch(permission)
                 return
             }
         }
-        activeVideo = VideoTarget(uri, name, seriesTitle)
+        activeVideo = VideoTarget(
+            uri,
+            name,
+            seriesTitle,
+            requestHeaders,
+            subtitleEpisodeName,
+            subtitleEpisodeNumber,
+        )
     }
 
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -190,7 +228,7 @@ fun NekoApp(
             grantPersistedAccess(uri)
             val name = displayName(uri)
             if (AnimeLibraryScanner.isVideoName(name)) openVideo(uri, name)
-            else scope.launch { snackbar.showSnackbar("Choose a supported local video file.") }
+            else scope.launch { snackbar.showSnackbar(localizeUiText("Choose a supported local video file.", language)) }
         }
     }
     val importPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { selectedUris ->
@@ -223,7 +261,7 @@ fun NekoApp(
                 }
                 if (failures.isNotEmpty()) {
                     snackbar.showSnackbar(
-                        failures.joinToString("\n") { "$it could not be imported. Choose a valid Yomitan dictionary ZIP." },
+                        failures.joinToString("\n") { localizeUiText("$it could not be imported. Choose a valid Yomitan dictionary ZIP.", language) },
                     )
                 }
             }
@@ -261,12 +299,12 @@ fun NekoApp(
     }
     LaunchedEffect(activeVideo != null) { activity.setPlayerImmersive(activeVideo != null) }
 
-    NekoTheme(darkMode) {
-      provideNekoLanguage(language) {
+    NekoTheme(darkMode, palette, accent) {
+      ProvideNekoLanguage(language) {
         val current = activeVideo
         SideEffect { activity.setSystemBarDarkIcons(enabled = !darkMode && current == null) }
         if (current != null) {
-            NekoPlayerTheme(darkMode) {
+            NekoPlayerTheme(darkMode, palette, accent) {
                 PlayerScreen(
                     activity = activity,
                     database = database,
@@ -275,12 +313,15 @@ fun NekoApp(
                     uri = current.uri,
                     displayName = current.displayName,
                     seriesTitle = current.seriesTitle,
+                    requestHeaders = current.requestHeaders,
+                    subtitleEpisodeName = current.subtitleEpisodeName,
+                    subtitleEpisodeNumber = current.subtitleEpisodeNumber,
                     onClose = { activeVideo = null },
                     onPickSubtitle = { callback ->
                         subtitlePickerCallback = callback
                         subtitlePicker.launch(arrayOf("*/*"))
                     },
-                    onNotify = { message -> Toast.makeText(activity, message, Toast.LENGTH_SHORT).show() },
+                    onNotify = { message -> Toast.makeText(activity, localizeUiText(message, language), Toast.LENGTH_SHORT).show() },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -316,6 +357,10 @@ fun NekoApp(
                             onPickFolder = { folderPicker.launch(null) },
                             onPickVideo = { videoPicker.launch(arrayOf("*/*")) },
                             onOpenVideo = { uri, name, title -> openVideo(uri, name, title) },
+                            onOpenSourceEntry = { entry ->
+                                pendingSourceEntry = entry
+                                page = AppPage.Extensions
+                            },
                             onPickCover = { show -> coverTarget = show; coverPicker.launch(arrayOf("image/*")) },
                             onDetailScreenChanged = { detailScreen = it },
                             modifier = Modifier.fillMaxSize(),
@@ -331,12 +376,32 @@ fun NekoApp(
                             dictionaryImportBusy = dictionaryImportBusy,
                             modifier = Modifier.fillMaxSize(),
                         )
+                        AppPage.Extensions -> {
+                            ExtensionsScreen(
+                                manager = extensionManager,
+                                database = database,
+                                sourceEntryToOpen = pendingSourceEntry,
+                                onSourceEntryOpened = { pendingSourceEntry = null },
+                                onReturnToLibrary = {
+                                    page = AppPage.Library
+                                    pendingSourceEntry = null
+                                    detailScreen = false
+                                },
+                                onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber ->
+                                    openVideo(uri, name, title, headers, episodeName, episodeNumber)
+                                },
+                                onDetailScreenChanged = { detailScreen = it },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
                         AppPage.Settings -> SettingsScreen(
                             database = database,
                             dictionaries = dictionaryRepository,
                             anki = anki,
                             darkMode = darkMode,
                             language = language,
+                            palette = palette,
+                            accent = accent,
                             onDarkModeChanged = { value ->
                                 darkMode = value
                                 scope.launch(Dispatchers.IO) { database.writeSetting("appearance.dark", value) }
@@ -344,6 +409,14 @@ fun NekoApp(
                             onLanguageChanged = { value ->
                                 language = value
                                 scope.launch(Dispatchers.IO) { database.writeSetting("appearance.language", value) }
+                            },
+                            onPaletteChanged = { value ->
+                                palette = value
+                                scope.launch(Dispatchers.IO) { database.writeSetting("appearance.palette", value) }
+                            },
+                            onAccentChanged = { value ->
+                                accent = value
+                                scope.launch(Dispatchers.IO) { database.writeSetting("appearance.accent", value) }
                             },
                             onImportDictionary = {
                                 dictionaryImportStatus = null
@@ -367,8 +440,9 @@ fun NekoApp(
                     ) {
                         AppPage.entries.forEach { destination ->
                             val icon = when (destination) {
-                                AppPage.Library -> Icons.Default.LibraryBooks
-                                AppPage.Dictionaries -> Icons.Default.MenuBook
+                                AppPage.Library -> Icons.AutoMirrored.Filled.LibraryBooks
+                                AppPage.Dictionaries -> Icons.AutoMirrored.Filled.MenuBook
+                                AppPage.Extensions -> Icons.Default.VideoLibrary
                                 AppPage.Settings -> Icons.Default.Settings
                             }
                             NavigationBarItem(

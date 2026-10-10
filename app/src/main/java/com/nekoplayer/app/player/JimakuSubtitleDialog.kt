@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -52,6 +53,7 @@ import com.nekoplayer.app.library.JimakuSubtitleClient
 import com.nekoplayer.app.library.filterJimakuFilesByEpisode
 import com.nekoplayer.app.library.parseJimakuEpisodeNumber
 import com.nekoplayer.app.ui.Text
+import com.nekoplayer.app.ui.localizeUiText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -206,7 +208,7 @@ fun JimakuSubtitleDialog(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Load subtitles", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                    IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, contentDescription = "Close") }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, contentDescription = localizeUiText("Close")) }
                 }
                 Spacer(Modifier.height(6.dp))
                 HorizontalDivider()
@@ -248,11 +250,12 @@ fun JimakuSubtitleDialog(
                                 value = searchText,
                                 onValueChange = { searchText = it },
                                 modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp),
                                 singleLine = true,
                                 label = { Text("Search another title") },
                                 trailingIcon = {
                                     IconButton(onClick = { searchAniList(searchText, automatic = false) }, enabled = searchText.isNotBlank()) {
-                                        Icon(Icons.Rounded.Search, contentDescription = "Search Jimaku")
+                                        Icon(Icons.Rounded.Search, contentDescription = localizeUiText("Search Jimaku"))
                                     }
                                 },
                             )
@@ -269,7 +272,7 @@ fun JimakuSubtitleDialog(
                         Spacer(Modifier.height(8.dp))
                         LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 390.dp)) {
                             items(candidates, key = AniListCandidate::id) { candidate ->
-                                ChoiceRow(candidate.title, "AniList match", null) {
+                                ChoiceRow(candidate.title, localizeUiText("AniList match"), null) {
                                     loadCollections(candidate, automaticFetch)
                                 }
                             }
@@ -323,8 +326,8 @@ private fun ChoiceRow(
     ) {
         if (leading != null) { leading(); Spacer(Modifier.width(12.dp)) }
         Column(Modifier.weight(1f)) {
-            Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-            if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Material3Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+            if (subtitle != null) Material3Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         trailing?.let { Text(it, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }

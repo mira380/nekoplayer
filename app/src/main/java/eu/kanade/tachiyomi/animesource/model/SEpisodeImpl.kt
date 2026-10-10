@@ -1,0 +1,43 @@
+// Adapted from Watchbox-Android (GPL-3.0), https://github.com/Nicartjay/Watchbox-Android.
+// Modified for nekoplayer; see the repository LICENSE.
+
+package eu.kanade.tachiyomi.animesource.model
+
+/**
+ * Default [SEpisode] holder handed to extensions by [SEpisode.create].
+ *
+ * See the note in [SAnime] for why this package mirrors the Aniyomi ABI.
+ */
+@Suppress("PropertyName", "VariableNaming")
+class SEpisodeImpl : SEpisode {
+
+    override var url: String = ""
+
+    override var name: String = ""
+
+    override var date_upload: Long = 0
+
+    /** `-1f` means "unknown"; the host falls back to list position. */
+    override var episode_number: Float = -1f
+
+    override var scanlator: String? = null
+
+    override var fillermark: Boolean = false
+
+    override var summary: String? = null
+
+    override var preview_url: String? = null
+
+    override var memo: kotlinx.serialization.json.JsonObject =
+        kotlinx.serialization.json.JsonObject(emptyMap())
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is SEpisode) return false
+        return url == other.url
+    }
+
+    override fun hashCode(): Int = url.hashCode()
+
+    override fun toString(): String = "SEpisode(url=$url, name=$name)"
+}
