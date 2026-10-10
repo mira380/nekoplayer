@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,19 +19,24 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -39,7 +45,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -59,11 +64,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.documentfile.provider.DocumentFile
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.AnimeLibraryEpisode
-import com.nekoplayer.app.library.AnimeLibraryScanner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -75,45 +78,27 @@ fun LibraryScreen(
     database: AppDatabase,
     aniList: AniListClient,
     folderUri: String?,
+    episodes: List<AnimeLibraryEpisode>,
+    loading: Boolean,
+    error: String?,
     coverVersion: Int,
     onPickFolder: () -> Unit,
     onPickVideo: () -> Unit,
     onOpenVideo: (Uri, String, String?) -> Unit,
     onPickCover: (String) -> Unit,
+    onDetailScreenChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    var episodes by remember { mutableStateOf<List<AnimeLibraryEpisode>>(emptyList()) }
     var recent by remember { mutableStateOf(emptyList<AppDatabase.RecentMedia>()) }
     var covers by remember { mutableStateOf(database.readSetting("library.customCovers") as? org.json.JSONObject ?: org.json.JSONObject()) }
     var search by remember { mutableStateOf("") }
     var expandedShow by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
     var coverUrlTarget by remember { mutableStateOf<String?>(null) }
     var coverUrl by remember { mutableStateOf("") }
     val expandedMenus = remember { mutableStateMapOf<String, Boolean>() }
+    val gridState = rememberLazyGridState()
 
-    LaunchedEffect(folderUri) {
-        if (folderUri.isNullOrBlank()) {
-            episodes = emptyList()
-            return@LaunchedEffect
-        }
-        loading = true
-        error = null
-        try {
-            episodes = withContext(Dispatchers.IO) {
-                val root = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
-                    ?: error("The saved library folder is unavailable.")
-                AnimeLibraryScanner().scan(root)
-            }
-        } catch (failure: Exception) {
-            error = failure.message ?: "The library folder could not be scanned."
-            episodes = emptyList()
-        } finally {
-            loading = false
-        }
-    }
     LaunchedEffect(Unit) { recent = withContext(Dispatchers.IO) { database.listRecent() } }
     LaunchedEffect(coverVersion) {
         covers = withContext(Dispatchers.IO) {
@@ -124,102 +109,126 @@ fun LibraryScreen(
     val groups = episodes.groupBy { it.showName }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
     val visibleGroups = groups.filterKeys { search.isBlank() || it.contains(search, ignoreCase = true) }
     val selectedEpisodes = expandedShow?.let { name -> groups[name] }.orEmpty()
+    BackHandler(enabled = expandedShow != null) { expandedShow = null }
+    LaunchedEffect(expandedShow) { onDetailScreenChanged(expandedShow != null) }
 
-    Column(modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                label = { Text("Find a show") },
-            )
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-        ) {
-            TextButton(onClick = onPickFolder) {
-                Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Choose folder", style = MaterialTheme.typography.labelLarge)
+    if (expandedShow != null && selectedEpisodes.isNotEmpty()) {
+        ShowDetailScreen(
+            showName = expandedShow.orEmpty(),
+            episodes = selectedEpisodes,
+            recent = recent,
+            onBack = { expandedShow = null },
+            onOpenVideo = { episode ->
+                onOpenVideo(episode.uri, episode.displayName, episode.showName)
+                expandedShow = null
+            },
+            modifier = modifier,
+        )
+    } else Column(modifier.fillMaxSize()) {
+        if (episodes.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    label = { Text("Search") },
+                )
             }
-            TextButton(onClick = onPickVideo) {
-                Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Open video", style = MaterialTheme.typography.labelLarge)
+        }
+        if (episodes.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
+                TextButton(onClick = onPickFolder) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Choose folder", style = MaterialTheme.typography.labelLarge)
+                }
+                TextButton(onClick = onPickVideo) {
+                    Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Open video", style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
 
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-        error?.let { Text(it, Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
 
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 108.dp),
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (folderUri.isNullOrBlank()) {
-                item {
-                    EmptyLibraryCard(onPickFolder = onPickFolder, onPickVideo = onPickVideo)
-                }
-            } else if (!loading && visibleGroups.isEmpty() && error == null) {
-                item {
-                    EmptyLibraryCard(
-                        onPickFolder = onPickFolder,
-                        onPickVideo = onPickVideo,
-                        title = if (episodes.isEmpty()) "No videos found" else "No matching shows",
-                        detail = if (episodes.isEmpty()) "Choose a folder containing local anime episodes." else "Try a shorter show name.",
-                    )
-                }
-            }
-            items(visibleGroups.toList(), key = { "show:${it.first}" }) { (showName, showEpisodes) ->
-                val customCover = covers.optString(showName).takeIf { it.isNotBlank() }
-                ShowCard(
-                    context = context,
-                    client = aniList,
-                    showName = showName,
-                    episodeCount = showEpisodes.size,
-                    episodeNames = showEpisodes.take(8).map { it.displayName },
-                    coverSource = customCover,
-                    menuExpanded = expandedMenus[showName] == true,
-                    onToggle = { expandedShow = showName },
-                    onMenu = { expandedMenus[showName] = true },
-                    onDismissMenu = { expandedMenus[showName] = false },
-                    onSetUrl = {
-                        coverUrlTarget = showName
-                        coverUrl = customCover.orEmpty().takeIf { it.startsWith("http") }.orEmpty()
+        if (episodes.isEmpty() && !loading) {
+            val noFolderSelected = folderUri.isNullOrBlank()
+            Box(
+                Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                EmptyLibraryCard(
+                    onPickFolder = onPickFolder,
+                    onPickVideo = onPickVideo,
+                    title = when {
+                        error != null -> "Folder unavailable"
+                        noFolderSelected -> "Build your library"
+                        else -> "No videos found"
                     },
-                    onPickLocal = { onPickCover(showName) },
-                    onRemoveCover = {
-                        covers = org.json.JSONObject(covers.toString()).apply { remove(showName) }
-                        database.writeSetting("library.customCovers", covers)
+                    detail = error ?: if (noFolderSelected) {
+                        "Scan a folder of local episodes or open one video directly."
+                    } else {
+                        "Choose a folder containing local anime episodes."
                     },
                 )
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 148.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                state = gridState,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (episodes.isNotEmpty() && !loading && visibleGroups.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        EmptyLibraryCard(
+                            onPickFolder = onPickFolder,
+                            onPickVideo = onPickVideo,
+                            title = "No matching shows",
+                            detail = "Try a shorter show name.",
+                        )
+                    }
+                }
+                items(visibleGroups.toList(), key = { "show:${it.first}" }) { (showName, showEpisodes) ->
+                    val customCover = covers.optString(showName).takeIf { it.isNotBlank() }
+                    ShowCard(
+                        context = context,
+                        client = aniList,
+                        showName = showName,
+                        episodeCount = showEpisodes.size,
+                        episodeNames = showEpisodes.take(8).map { it.displayName },
+                        coverSource = customCover,
+                        menuExpanded = expandedMenus[showName] == true,
+                        onToggle = { expandedShow = showName },
+                        onMenu = { expandedMenus[showName] = true },
+                        onDismissMenu = { expandedMenus[showName] = false },
+                        onSetUrl = {
+                            coverUrlTarget = showName
+                            coverUrl = customCover.orEmpty().takeIf { it.startsWith("http") }.orEmpty()
+                        },
+                        onPickLocal = { onPickCover(showName) },
+                        onRemoveCover = {
+                            covers = org.json.JSONObject(covers.toString()).apply { remove(showName) }
+                            database.writeSetting("library.customCovers", covers)
+                        },
+                    )
+                }
             }
         }
     }
 
-    if (expandedShow != null && selectedEpisodes.isNotEmpty()) {
-        AlertDialog(
-            onDismissRequest = { expandedShow = null },
-            title = { Text(expandedShow.orEmpty(), maxLines = 2, overflow = TextOverflow.Ellipsis) },
-            text = {
-                LazyColumnEpisodes(selectedEpisodes, recent) { episode ->
-                    onOpenVideo(episode.uri, episode.displayName, episode.showName)
-                    expandedShow = null
-                }
-            },
-            confirmButton = { TextButton(onClick = { expandedShow = null }) { Text("Close") } },
-        )
-    }
 
     if (coverUrlTarget != null) {
         AlertDialog(
@@ -263,28 +272,69 @@ private fun EmptyLibraryCard(
     title: String = "Build your library",
     detail: String = "Scan a folder of local episodes or open one video directly.",
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.fillMaxWidth().padding(22.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+    Card(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(24.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = onPickFolder) { Text("Choose folder") }
-                OutlinedButton(onClick = onPickVideo) { Text("Open video") }
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Button(onClick = onPickFolder, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Choose folder")
+                }
+                TextButton(onClick = onPickVideo, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Open video")
+                }
             }
         }
     }
 }
 
 @Composable
-private fun LazyColumnEpisodes(
+private fun ShowDetailScreen(
+    showName: String,
     episodes: List<AnimeLibraryEpisode>,
     recent: List<AppDatabase.RecentMedia>,
-    onClick: (AnimeLibraryEpisode) -> Unit,
+    onBack: () -> Unit,
+    onOpenVideo: (AnimeLibraryEpisode) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 440.dp)) {
-        items(episodes, key = { it.uri.toString() }) { episode ->
-            val saved = recent.firstOrNull { it.uri == episode.uri.toString() }
-            EpisodeRow(episode, saved) { onClick(episode) }
+    Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Box(Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to library")
+            }
+            Text(
+                showName,
+                modifier = Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = 56.dp),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+        }
+        Text(
+            "${episodes.size} episodes",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
+        )
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
+        ) {
+            items(episodes, key = { it.uri.toString() }) { episode ->
+                val saved = recent.firstOrNull { it.uri == episode.uri.toString() }
+                EpisodeRow(episode, saved) { onOpenVideo(episode) }
+            }
         }
     }
 }
@@ -312,7 +362,7 @@ private fun ShowCard(
         }
     }
     Column(Modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClick = onToggle)) {
+        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClick = onToggle)) {
             if (loadedBitmap != null) {
                 Image(loadedBitmap!!.asImageBitmap(), contentDescription = "$showName artwork", modifier = Modifier.fillMaxWidth().aspectRatio(0.68f), contentScale = ContentScale.Crop)
             } else {

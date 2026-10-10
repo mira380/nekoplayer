@@ -315,35 +315,26 @@ class DictionaryRepository(
     }
 
     private fun readTermBank(input: InputStream, dictionaryId: Long): Int {
-        val reader = JsonReader(InputStreamReader(input, StandardCharsets.UTF_8))
-        var count = 0; var batch = 0
         val statement = database.compileStatement("INSERT INTO dictionary_entries(dictionary_id,expression,reading,score,entry_json) VALUES(?,?,?,?,?)")
-        var transactionOpen = false
-        fun beginBatch() { database.beginTransaction(); transactionOpen = true }
-        fun finishBatch(commit: Boolean) {
-            if (!transactionOpen) return
-            if (commit) database.setTransactionSuccessful()
-            database.endTransaction(); transactionOpen = false
-        }
-        beginBatch()
-        try { reader.use {
-            it.beginArray()
-            while (it.hasNext()) {
-                val value = readValue(it) as? List<*> ?: continue
-                if (value.size < 7) continue
-                val expression = value[0] as? String ?: continue
-                if (expression.isEmpty()) continue
-                val reading = value.getOrNull(1) as? String ?: ""
-                val score = (value.getOrNull(4) as? Number)?.toInt() ?: 0
-                val raw = value.toJsonArray().toString()
-                bindEntry(statement, dictionaryId, expression, reading, score, raw); count++; batch++
-                if (batch >= BATCH_SIZE) { finishBatch(true); batch = 0; beginBatch() }
+        val consumer = NativeTermBankBatchConsumer { expressions, readings, scores, rawRows ->
+            require(expressions.size == readings.size && expressions.size == scores.size && expressions.size == rawRows.size) {
+                "The native dictionary importer returned an incomplete batch"
             }
-            it.endArray()
-        }; finishBatch(batch > 0) }
-        catch (error: Throwable) { finishBatch(false); throw error }
-        finally { statement.close() }
-        return count
+            database.beginTransaction()
+            try {
+                expressions.indices.forEach { index ->
+                    bindEntry(statement, dictionaryId, expressions[index], readings[index], scores[index], rawRows[index])
+                }
+                database.setTransactionSuccessful()
+            } finally {
+                database.endTransaction()
+            }
+        }
+        return try {
+            NativeYomitanTermBank.parseTermBank(input, consumer)
+        } finally {
+            statement.close()
+        }
     }
 
     private fun readMetaBank(input: InputStream, dictionaryId: Long): Int {

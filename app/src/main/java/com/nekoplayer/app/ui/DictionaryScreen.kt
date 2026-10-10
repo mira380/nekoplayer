@@ -20,7 +20,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -45,14 +48,20 @@ import androidx.compose.ui.unit.dp
 import com.nekoplayer.app.data.DictionaryEntry
 import com.nekoplayer.app.data.DictionaryRepository
 import com.nekoplayer.app.data.DictionaryTermMeta
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 @Composable
 fun DictionaryScreen(
     repository: DictionaryRepository,
     refreshKey: Int,
+    onImportDictionary: () -> Unit,
+    dictionaryImportStatus: String?,
+    dictionaryImportBusy: Boolean,
     modifier: Modifier = Modifier,
 ) {
     var query by remember { mutableStateOf("") }
@@ -63,13 +72,32 @@ fun DictionaryScreen(
     var dictionaryMenuExpanded by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var dictionaryListLoading by remember { mutableStateOf(true) }
 
     LaunchedEffect(refreshKey) {
-        dictionaries = withContext(Dispatchers.IO) {
-            repository.listDictionaries().filter { it.kind == "term" }.map { it.name }
+        dictionaryListLoading = true
+        try {
+            val loadedDictionaries = withContext(Dispatchers.IO) {
+                repository.listDictionaries().filter { it.kind == "term" }.map { it.name }
+            }
+            dictionaries = loadedDictionaries
+            if (selectedDictionary?.let { it !in loadedDictionaries } == true) selectedDictionary = null
+            message = null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            message = "Couldn’t load dictionaries. Try again in a moment."
+        } finally {
+            if (currentCoroutineContext().isActive) dictionaryListLoading = false
         }
     }
-    LaunchedEffect(query, selectedDictionary, refreshKey) {
+    LaunchedEffect(query, selectedDictionary, refreshKey, dictionaries) {
+        if (dictionaries.isEmpty()) {
+            results = emptyList()
+            metadata = emptyList()
+            searching = false
+            return@LaunchedEffect
+        }
         val term = query.trim()
         if (term.isEmpty()) {
             results = emptyList()
@@ -89,101 +117,159 @@ fun DictionaryScreen(
             results = pair.first.filter { selectedDictionary == null || it.dictionaryName == selectedDictionary }
             metadata = pair.second
             message = null
-        } catch (failure: Exception) {
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
             results = emptyList()
             metadata = emptyList()
-            message = failure.message ?: "Dictionary search failed."
+            message = "Search failed. Try a different word."
         } finally {
-            searching = false
+            if (currentCoroutineContext().isActive) searching = false
         }
     }
 
-    Column(modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp)) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            leadingIcon = { androidx.compose.material3.Icon(Icons.Default.Search, contentDescription = null) },
-            placeholder = { Text("Search") },
-        )
-        if (dictionaries.isNotEmpty()) {
-            Box(modifier = Modifier.padding(vertical = 6.dp)) {
-                FilterChip(
-                    selected = selectedDictionary != null,
-                    onClick = { dictionaryMenuExpanded = true },
-                    modifier = Modifier.widthIn(max = 280.dp),
-                    label = {
-                        Text(
-                            selectedDictionary ?: "All dictionaries",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    trailingIcon = {
-                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                    },
-                )
-                DropdownMenu(
-                    expanded = dictionaryMenuExpanded,
-                    onDismissRequest = { dictionaryMenuExpanded = false },
+    Column(modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
+        if (dictionaryListLoading && dictionaries.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        } else if (dictionaries.isEmpty()) {
+            Box(
+                Modifier.fillMaxSize().padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(24.dp),
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("All dictionaries") },
-                        onClick = {
-                            selectedDictionary = null
-                            dictionaryMenuExpanded = false
-                        },
-                    )
-                    dictionaries.forEach { name ->
-                        DropdownMenuItem(
-                            text = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            onClick = {
-                                selectedDictionary = name
-                                dictionaryMenuExpanded = false
-                            },
+                    Column(
+                        Modifier.fillMaxWidth().padding(22.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "Import some dictionaries",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
                         )
+                        Text(
+                            "Add a Yomitan dictionary to search for words and definitions.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Button(
+                            enabled = !dictionaryImportBusy,
+                            onClick = onImportDictionary,
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                disabledContainerColor = MaterialTheme.colorScheme.primary,
+                                disabledContentColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
+                        ) {
+                            Icon(Icons.Default.ImportExport, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (dictionaryImportBusy) "Importing…" else "Import dictionaries")
+                        }
+                        if (dictionaryImportBusy) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                            Text(
+                                dictionaryImportStatus ?: "Preparing dictionaries…",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        message?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
             }
-        }
-        if (searching) {
-            LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 2.dp))
-        }
-        message?.let {
-            Text(
-                it,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(vertical = 10.dp),
-                style = MaterialTheme.typography.bodyMedium,
+        } else {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                leadingIcon = { androidx.compose.material3.Icon(Icons.Default.Search, contentDescription = null) },
+                placeholder = { Text("Search dictionaries") },
             )
-        }
-
-        val groups = results.groupBy { it.expression to it.reading }.toList()
-        if (query.isNotBlank() && !searching && results.isEmpty() && message == null) {
-            Text(
-                "No matching entries.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 14.dp),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            items(groups, key = { it.first.first + "\u001f" + it.first.second }) { (key, entries) ->
-                DictionaryTermCard(
-                    expression = key.first,
-                    reading = key.second,
-                    entries = entries,
-                    metadata = metadata.filter {
-                        it.expression == key.first || it.reading == key.first ||
-                            it.expression == key.second || it.reading == key.second
-                    },
+            if (dictionaries.isNotEmpty()) {
+                Box(modifier = Modifier.padding(vertical = 6.dp)) {
+                    FilterChip(
+                        selected = selectedDictionary != null,
+                        onClick = { dictionaryMenuExpanded = true },
+                        modifier = Modifier.widthIn(max = 280.dp),
+                        label = {
+                            Text(
+                                selectedDictionary ?: "All dictionaries",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        trailingIcon = {
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        },
+                    )
+                    DropdownMenu(
+                        expanded = dictionaryMenuExpanded,
+                        onDismissRequest = { dictionaryMenuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("All dictionaries") },
+                            onClick = {
+                                selectedDictionary = null
+                                dictionaryMenuExpanded = false
+                            },
+                        )
+                        dictionaries.forEach { name ->
+                            DropdownMenuItem(
+                                text = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                onClick = {
+                                    selectedDictionary = name
+                                    dictionaryMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            if (searching) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 2.dp))
+            }
+            message?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium,
                 )
+            }
+
+            val groups = results.groupBy { it.expression to it.reading }.toList()
+            if (query.isNotBlank() && !searching && results.isEmpty() && message == null) {
+                Text(
+                    "No matching entries. Try another word or check the selected dictionary.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 14.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(groups, key = { it.first.first + "\u001f" + it.first.second }) { (key, entries) ->
+                    DictionaryTermCard(
+                        expression = key.first,
+                        reading = key.second,
+                        entries = entries,
+                        metadata = metadata.filter {
+                            it.expression == key.first || it.reading == key.first ||
+                                it.expression == key.second || it.reading == key.second
+                        },
+                    )
+                }
             }
         }
     }
@@ -199,10 +285,10 @@ private fun DictionaryTermCard(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 13.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {

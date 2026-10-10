@@ -1,5 +1,6 @@
 package com.nekoplayer.app.ui
 
+import com.nekoplayer.app.data.DictionaryTermMeta
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +70,44 @@ internal object PitchAccentGraph {
                 PitchAccentPattern(reading.trim(), position, morae, tags)
             }.distinctBy { it.reading to (it.position to it.tags) }
         }.getOrDefault(emptyList())
+    }
+
+    fun renderAnkiField(
+        metadata: List<DictionaryTermMeta>,
+        expression: String,
+        reading: String,
+    ): String {
+        val patterns = metadata.asSequence()
+            .filter { it.mode.equals("pitch", ignoreCase = true) }
+            .filter { it.expression == expression || it.reading == reading }
+            .flatMap { row ->
+                parse(row.detailJson, row.reading.ifBlank { reading }).asSequence()
+                    .map { row.dictionaryName to it }
+            }
+            .distinctBy { (dictionary, pattern) ->
+                "$dictionary\u0000${pattern.reading}\u0000${pattern.position}\u0000${pattern.tags.joinToString()}"
+            }
+            .toList()
+        if (patterns.isEmpty()) return ""
+
+        val colors = YomitanPopupColors(
+            background = 0xFFF4F1FA.toInt(),
+            foreground = 0xFF27232D.toInt(),
+            secondary = 0xFF625D6B.toInt(),
+            surface = 0xFFFFFFFF.toInt(),
+            divider = 0xFFD8D2E0.toInt(),
+            accent = 0xFF7255B5.toInt(),
+            accentForeground = 0xFFFFFFFF.toInt(),
+            isDark = false,
+        )
+        return buildString {
+            append("<style>").append(styles(colors)).append("</style>")
+            append("<div style=\"display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px;\">")
+            patterns.forEach { (dictionaryName, pattern) ->
+                append(render(dictionaryName, pattern, colors))
+            }
+            append("</div>")
+        }
     }
 
     @Composable

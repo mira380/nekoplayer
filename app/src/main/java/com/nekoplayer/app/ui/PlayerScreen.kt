@@ -135,11 +135,14 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.hypot
-import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+
+private val PlayerOverlaySurface = Color(0xE6111415)
+private val PlayerOverlayText = Color(0xFFDEE7EC)
+private val PlayerOverlayAccent = Color(0xFFA0CDE0)
 
 @Composable
 fun PlayerScreen(
@@ -256,7 +259,7 @@ fun PlayerScreen(
                 embeddedSubtitle = nextText
             }
             override fun onPlayerError(error: PlaybackException) {
-                errorMessage = error.localizedMessage ?: "This video could not be played."
+                errorMessage = "This video could not be played. Try another file or check its format."
             }
         }
         player.addListener(listener)
@@ -345,11 +348,7 @@ fun PlayerScreen(
 
     fun playPronunciation(entry: DictionaryEntry) {
         scope.launch {
-            val fieldMap = withContext(Dispatchers.IO) {
-                database.readSetting("anki.fieldMap") as? JSONObject ?: JSONObject()
-            }
-            val field = fieldMap.optString("pronunciationAudio", "Pronunciation Audio").trim()
-            val asset = pronunciationClient.resolve(entry, destinationField = field)
+            val asset = pronunciationClient.resolve(entry, destinationField = "Pronunciation Audio")
             if (asset == null) {
                 onNotify("No pronunciation audio is available for this word.")
                 return@launch
@@ -381,12 +380,12 @@ fun PlayerScreen(
                     true
                 }
                 nextPlayer.prepareAsync()
-            } catch (error: Exception) {
+            } catch (_: Exception) {
                 nextPlayer.release()
                 pronunciationFile?.delete()
                 pronunciationPlayer = null
                 pronunciationFile = null
-                onNotify(error.message ?: "Pronunciation audio could not be played.")
+                onNotify("Pronunciation audio could not be played.")
             }
         }
     }
@@ -684,24 +683,24 @@ fun PlayerScreen(
             )
         }
         if (isBuffering && errorMessage == null) {
-            Text("Loading video…", Modifier.align(Alignment.Center), color = Color.White.copy(alpha = 0.75f))
+            Text("Loading video…", Modifier.align(Alignment.Center), color = PlayerOverlayText.copy(alpha = 0.8f))
         }
         errorMessage?.let { message ->
-            Surface(Modifier.align(Alignment.Center).padding(24.dp), color = Color(0xDD1A1A21), shape = RoundedCornerShape(12.dp)) {
-                Text(message, Modifier.padding(18.dp), color = Color.White)
+            Surface(Modifier.align(Alignment.Center).padding(24.dp), color = Color(0xF2171A1B), shape = RoundedCornerShape(16.dp)) {
+                Text(message, Modifier.padding(18.dp), color = PlayerOverlayText)
             }
         }
         if (showControls) {
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
                 Row(
-                    Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.48f)).padding(horizontal = 8.dp, vertical = 2.dp),
+                    Modifier.fillMaxWidth().background(PlayerOverlaySurface).padding(horizontal = 8.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Close player", tint = Color.White) }
-                    Text(displayName, Modifier.weight(1f), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Close player", tint = PlayerOverlayText) }
+                    Text(displayName, Modifier.weight(1f), color = PlayerOverlayText, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                     Box {
                         IconButton(onClick = { showPlayerMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Player options", tint = Color.White)
+                            Icon(Icons.Default.MoreVert, contentDescription = "Player options", tint = PlayerOverlayText)
                         }
                         DropdownMenu(expanded = showPlayerMenu, onDismissRequest = { showPlayerMenu = false }) {
                             DropdownMenuItem(
@@ -730,9 +729,9 @@ fun PlayerScreen(
                         }
                     }
                 }
-                Column(Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.56f)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+                Column(Modifier.fillMaxWidth().background(PlayerOverlaySurface).padding(horizontal = 12.dp, vertical = 4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(formatTime(if (seekDrag >= 0f) seekDrag.roundToLong() else positionMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                        Text(formatTime(if (seekDrag >= 0f) seekDrag.roundToLong() else positionMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
                         Slider(
                             value = (if (seekDrag >= 0f) seekDrag else positionMs.toFloat()).coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
                             onValueChange = { seekDrag = it },
@@ -743,7 +742,7 @@ fun PlayerScreen(
                             valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
                             modifier = Modifier.weight(1f),
                         )
-                        Text(formatTime(durationMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                        Text(formatTime(durationMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
                     }
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
                         val volumeControls: @Composable () -> Unit = {
@@ -754,7 +753,7 @@ fun PlayerScreen(
                                     Icon(
                                         if (volume > 0f) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                                         contentDescription = if (volume > 0f) "Mute" else "Unmute",
-                                        tint = Color.White,
+                                        tint = PlayerOverlayText,
                                         modifier = Modifier.size(20.dp),
                                     )
                                 }
@@ -770,13 +769,13 @@ fun PlayerScreen(
                         val transportControls: @Composable () -> Unit = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { player.seekTo((player.currentPosition - 10_000L).coerceAtLeast(0L)) }) {
-                                    Icon(Icons.Default.Replay10, contentDescription = "Back 10 seconds", tint = Color.White)
+                                    Icon(Icons.Default.Replay10, contentDescription = "Back 10 seconds", tint = PlayerOverlayText)
                                 }
                                 IconButton(onClick = { if (player.isPlaying) player.pause() else player.play() }) {
-                                    Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = if (playing) "Pause" else "Play", tint = Color.White, modifier = Modifier.size(28.dp))
+                                    Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = if (playing) "Pause" else "Play", tint = PlayerOverlayAccent, modifier = Modifier.size(28.dp))
                                 }
                                 IconButton(onClick = { player.seekTo((player.currentPosition + 10_000L).coerceAtMost(durationMs)) }) {
-                                    Icon(Icons.Default.Forward10, contentDescription = "Forward 10 seconds", tint = Color.White)
+                                    Icon(Icons.Default.Forward10, contentDescription = "Forward 10 seconds", tint = PlayerOverlayText)
                                 }
                             }
                         }
@@ -787,7 +786,7 @@ fun PlayerScreen(
                                     modifier = Modifier.width(58.dp).heightIn(min = 48.dp),
                                     contentPadding = PaddingValues(horizontal = 2.dp),
                                 ) {
-                                    Text("${selectedSpeed}×", color = Color.White, style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false)
+                                    Text("${selectedSpeed}×", color = PlayerOverlayAccent, style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false)
                                 }
                                 TextButton(
                                     onClick = {
@@ -799,11 +798,17 @@ fun PlayerScreen(
                                     modifier = Modifier.width(80.dp).heightIn(min = 48.dp),
                                     contentPadding = PaddingValues(horizontal = 2.dp),
                                 ) {
-                                    Text("Sub ${formatSubtitleOffset(subtitleOffsetMs)}", color = Color.White, style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false)
+                                    Text(
+                                        "Sub ${formatSubtitleOffset(subtitleOffsetMs)}",
+                                        color = if (externalSubtitle != null) PlayerOverlayAccent else PlayerOverlayText.copy(alpha = 0.58f),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
                                 }
                                 Box {
                                     IconButton(onClick = { showSubtitleMenu = true }) {
-                                        Icon(Icons.Default.Subtitles, contentDescription = "Subtitle options", tint = Color.White, modifier = Modifier.size(20.dp))
+                                        Icon(Icons.Default.Subtitles, contentDescription = "Subtitle options", tint = PlayerOverlayText, modifier = Modifier.size(20.dp))
                                     }
                                     DropdownMenu(expanded = showSubtitleMenu, onDismissRequest = { showSubtitleMenu = false }) {
                                         DropdownMenuItem(
@@ -980,8 +985,8 @@ fun PlayerScreen(
                         onNotify("Select a subtitle cue before mining a card.")
                         return@launch
                     }
-                    val permission = try { awaitAnkiWritePermission(anki) } catch (error: Exception) {
-                        onNotify(error.message ?: "AnkiDroid access could not be requested.")
+                    val permission = try { awaitAnkiWritePermission(anki) } catch (_: Exception) {
+                        onNotify("AnkiDroid access could not be requested.")
                         return@launch
                     }
                     if (!permission) {
@@ -1002,11 +1007,7 @@ fun PlayerScreen(
                     }
                     try {
                         if (!playAudio) player.volume = 0f
-                        val fieldMap = withContext(Dispatchers.IO) {
-                            database.readSetting("anki.fieldMap") as? JSONObject ?: JSONObject()
-                        }
-                        val pronunciationField = fieldMap.optString("pronunciationAudio", "Pronunciation Audio").trim()
-                        val pronunciation = pronunciationClient.resolve(entry, destinationField = pronunciationField)
+                        val pronunciation = pronunciationClient.resolve(entry, destinationField = "Pronunciation Audio")
                         AnkiDroidMiningWorkflow(context, database, anki).mine(
                             uri = uri,
                             sentence = sentence,
@@ -1020,8 +1021,8 @@ fun PlayerScreen(
                         )
                         lookup = null
                         lookupMessage = null
-                    } catch (error: Exception) {
-                        onNotify(error.message ?: "Card could not be added.")
+                    } catch (_: Exception) {
+                        onNotify("Card could not be added to AnkiDroid.")
                     } finally {
                         player.volume = originalVolume
                     }

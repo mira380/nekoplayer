@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.nekoplayer.app"
     compileSdk = 36
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.nekoplayer.app"
@@ -13,6 +14,19 @@ android {
         targetSdk = 36
         versionCode = 2
         versionName = "0.1.0"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildFeatures {
@@ -42,4 +56,5 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.9.0")
     implementation("androidx.media3:media3-ui:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("com.github.ankidroid:Anki-Android:api-v1.1.0")
 }

@@ -9,6 +9,7 @@ import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -192,36 +193,73 @@ class MediaCapture(private val context: Context) {
         var bitmap: Bitmap? = null
         var cropped: Bitmap? = null
         var scaled: Bitmap? = null
+        var fallbackUsed = false
+        var sourceSize: Pair<Int, Int>? = null
+        var expectedSize: Pair<Int, Int>? = null
+        var primarySize: Pair<Int, Int>? = null
+        var decodedSize: Pair<Int, Int>? = null
         try {
             retriever.setDataSource(context, uri)
-            bitmap = if (
+            sourceSize = sourceDimensions(retriever)
+            expectedSize = sourceSize?.let { (width, height) ->
+                dimensions(width, height, settings.maxWidth, settings.maxHeight)
+            }
+            val primaryFrame = retriever.getFrameAtTime(
+                targetMs * 1_000L,
+                MediaMetadataRetriever.OPTION_CLOSEST,
+            ) ?: throw IOException("A frame could not be captured at this position.")
+            var decodedFrame = primaryFrame
+            primarySize = primaryFrame.width to primaryFrame.height
+            decodedSize = primarySize
+            val requestedSize = expectedSize
+            if (
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 &&
-                (settings.maxWidth > 0 || settings.maxHeight > 0)
+                requestedSize != null && isMateriallySmaller(primaryFrame, requestedSize)
             ) {
-                val dimensions = requestedFrameSize(retriever, settings.maxWidth, settings.maxHeight)
-                retriever.getScaledFrameAtTime(
-                    targetMs * 1_000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST,
-                    dimensions.first,
-                    dimensions.second,
-                )
-            } else {
-                retriever.getFrameAtTime(targetMs * 1_000L, MediaMetadataRetriever.OPTION_CLOSEST)
-            } ?: throw IOException("A frame could not be captured at this position.")
+                val retryFrame = try {
+                    retriever.getScaledFrameAtTime(
+                        targetMs * 1_000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST,
+                        requestedSize.first,
+                        requestedSize.second,
+                    )
+                } catch (_: RuntimeException) {
+                    null
+                }
+                if (retryFrame != null && pixelCount(retryFrame) > pixelCount(primaryFrame)) {
+                    decodedFrame = retryFrame
+                    decodedSize = retryFrame.width to retryFrame.height
+                    fallbackUsed = true
+                    primaryFrame.recycle()
+                } else {
+                    retryFrame?.recycle()
+                }
+            }
+            bitmap = decodedFrame
 
-            cropped = if (settings.trimBlackBars) cropDarkBars(bitmap!!) else bitmap!!
-            scaled = scaleToBounds(cropped, settings.maxWidth, settings.maxHeight)
+            cropped = if (settings.trimBlackBars) cropDarkBars(decodedFrame) else decodedFrame
+            val outputBitmap = scaleToBounds(cropped, settings.maxWidth, settings.maxHeight)
+            scaled = outputBitmap
             output.outputStream().use { stream ->
                 val format = if (settings.screenshotFormat.equals("png", ignoreCase = true)) {
                     Bitmap.CompressFormat.PNG
                 } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    Bitmap.CompressFormat.WEBP_LOSSY
+                    Bitmap.CompressFormat.WEBP_LOSSLESS
                 } else {
                     @Suppress("DEPRECATION")
                     Bitmap.CompressFormat.WEBP
                 }
-                if (!scaled!!.compress(format, 92, stream)) throw IOException("The screenshot could not be encoded.")
+                if (!outputBitmap.compress(format, 100, stream)) throw IOException("The screenshot could not be encoded.")
             }
+            Log.d(
+                TAG,
+                "Mining image source=${sourceSize?.asSizeLabel() ?: "unknown"} " +
+                    "expected=${expectedSize?.asSizeLabel() ?: "unknown"} " +
+                    "primary=${primarySize.asSizeLabel()} " +
+                    "decoder=${decodedSize.asSizeLabel()} " +
+                    "usedFallback=$fallbackUsed output=${outputBitmap.width}x${outputBitmap.height} " +
+                    "bytes=${output.length()} format=${settings.screenshotFormat}",
+            )
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             if (error is IOException) throw error
@@ -234,12 +272,25 @@ class MediaCapture(private val context: Context) {
         }
     }
 
-    private fun requestedFrameSize(retriever: MediaMetadataRetriever, maxWidth: Int, maxHeight: Int): Pair<Int, Int> {
-        val sourceWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 1920
-        val sourceHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1080
-        val bounds = dimensions(sourceWidth, sourceHeight, maxWidth, maxHeight)
-        return Pair(bounds.first.coerceAtLeast(2), bounds.second.coerceAtLeast(2))
+    private fun sourceDimensions(retriever: MediaMetadataRetriever): Pair<Int, Int>? {
+        val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            ?.takeIf { it > 0 } ?: return null
+        val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            ?.takeIf { it > 0 } ?: return null
+        val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull()
+        return if (rotation == 90 || rotation == 270) height to width else width to height
     }
+
+    private fun isMateriallySmaller(bitmap: Bitmap, expectedSize: Pair<Int, Int>): Boolean {
+        val expectedPixels = expectedSize.first.toLong() * expectedSize.second
+        val actualPixels = pixelCount(bitmap)
+        return actualPixels < expectedPixels / 2L &&
+            (bitmap.width < expectedSize.first * 3 / 4 || bitmap.height < expectedSize.second * 3 / 4)
+    }
+
+    private fun pixelCount(bitmap: Bitmap): Long = bitmap.width.toLong() * bitmap.height
+
+    private fun Pair<Int, Int>.asSizeLabel(): String = "${first}x$second"
 
     private fun scaleToBounds(bitmap: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
         if (maxWidth <= 0 && maxHeight <= 0) return bitmap
@@ -298,6 +349,7 @@ class MediaCapture(private val context: Context) {
             (color and 0xff) <= DARK_CHANNEL_THRESHOLD
 
     private companion object {
+        const val TAG = "MediaCapture"
         const val INITIAL_SAMPLE_BUFFER_BYTES = 256 * 1024
         const val MAX_SAMPLE_BYTES = 64L * 1024L * 1024L
         const val DARK_CHANNEL_THRESHOLD = 14

@@ -5,10 +5,9 @@ import android.net.Uri
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.data.DictionaryEntry
 import com.nekoplayer.app.data.DictionaryTermMeta
+import com.nekoplayer.app.ui.PitchAccentGraph
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.io.File
 
 class AnkiDroidMiningWorkflow(
     private val context: Context,
@@ -49,46 +48,69 @@ class AnkiDroidMiningWorkflow(
             ?: throw IllegalArgumentException("AnkiDroid note type ‘$noteTypeName’ was not found.")
         val fields = client.fields(noteType.id)
         val fieldSet = fields.toSet()
-        val configured = database.readSetting("anki.fieldMap") as? JSONObject ?: JSONObject()
-        fun mapped(key: String, fallback: String): String = configured.optString(key, fallback).trim()
-        val values = linkedMapOf<String, String>()
-        fun put(key: String, fallback: String, value: String, required: Boolean = false) {
-            if (value.isBlank()) return
-            val field = mapped(key, fallback)
-            if (field.isBlank()) {
-                if (required) throw IllegalArgumentException("Choose an Anki field for $key in Settings.")
-                return
-            }
-            if (field !in fieldSet) {
-                if (required) throw IllegalArgumentException("Anki note type is missing the mapped field ‘$field’.")
-                return
-            }
-            values[field] = value
+        val templates = AnkiNoteFieldTemplates.forNoteType(
+            noteTypeName = noteType.name,
+            fields = fields,
+            mappings = AnkiNoteFieldTemplates.load(database),
+            legacyFieldMap = database.readSetting("anki.fieldMap"),
+        )
+        val orderedEntries = (listOf(mainEntry) + allEntries).distinctBy { it.dictionaryId to it.id }
+        val expressionFields = AnkiNoteFieldTemplates.destinations(templates, "expression").filter(fieldSet::contains)
+        val definitionFields = AnkiNoteFieldTemplates.destinations(templates, "definition").filter(fieldSet::contains)
+        val singleGlossaryFields = AnkiNoteFieldTemplates.destinations(templates, "singleGlossary").filter(fieldSet::contains)
+        val glossaryFields = AnkiNoteFieldTemplates.destinations(templates, "glossary").filter(fieldSet::contains)
+        if (expressionFields.isEmpty()) {
+            throw IllegalArgumentException("Map an Anki field to {expression} in the selected note type's settings.")
+        }
+        if (definitionFields.isEmpty() && singleGlossaryFields.isEmpty() && glossaryFields.isEmpty()) {
+            throw IllegalArgumentException("Map an Anki field to {definition}, {single-glossary}, or {glossary} in the selected note type's settings.")
         }
 
-        val orderedEntries = (listOf(mainEntry) + allEntries).distinctBy { it.dictionaryId to it.id }
-        val definitionField = mapped("definition", "Definition")
-        val glossaryField = mapped("glossary", "Glossary")
-        val separateGlossary = glossaryField.isNotBlank() && glossaryField != definitionField && glossaryField in fieldSet
-        val glossaryFields = AnkiGlossaryHtml.buildFields(orderedEntries, mainEntry, separateGlossary)
-        put("expression", "Expression", expression, required = true)
-        put("reading", "Reading", mainEntry.reading.trim())
-        put("definition", "Definition", glossaryFields.mainDefinition, required = true)
-        if (separateGlossary && !glossaryFields.glossary.isNullOrBlank()) values[glossaryField] = glossaryFields.glossary
-        put("sentence", "Sentence", boldMinedWord(cleanSentence, expression, surfaceText))
+        val selectedDefinitionFields = definitionFields + singleGlossaryFields
+        val separateGlossary = glossaryFields.any { it !in selectedDefinitionFields }
+        val glossaryData = AnkiGlossaryHtml.buildFields(orderedEntries, mainEntry, separateGlossary)
+        val allGlossary = glossaryData.glossary ?: glossaryData.mainDefinition
+        val singleGlossary = AnkiGlossaryHtml.renderMainDefinition(mainEntry)
         val frequency = metadata.firstOrNull {
             it.mode == "freq" && (it.expression == mainEntry.expression || it.reading == mainEntry.reading)
         }?.display.orEmpty()
-        put("frequency", "Frequency", frequency)
+        val templateValues = buildMap {
+            putAll(
+                mapOf(
+                    "expression" to expression,
+                    "reading" to mainEntry.reading.trim(),
+                    "furiganaPlain" to furiganaPlain(expression, mainEntry.reading),
+                    "definition" to if (separateGlossary) glossaryData.mainDefinition else allGlossary,
+                    "singleGlossary" to singleGlossary,
+                    "pitchAccent" to PitchAccentGraph.renderAnkiField(metadata, expression, mainEntry.reading),
+                    "glossary" to if (separateGlossary || definitionFields.isEmpty()) allGlossary else "",
+                    "sentence" to boldMinedWord(cleanSentence, expression, surfaceText),
+                    "frequency" to frequency,
+                    "selectionText" to surfaceText,
+                    "sentenceAudio" to "",
+                    "pronunciationAudio" to "",
+                    "screenshot" to "",
+                ),
+            )
+            orderedEntries.map { it.dictionaryName.trim() }
+                .filter(String::isNotEmpty)
+                .distinct()
+                .forEach { dictionaryName ->
+                    put(
+                        "single-glossary-$dictionaryName",
+                        AnkiGlossaryHtml.render(orderedEntries.filter { it.dictionaryName.trim() == dictionaryName }),
+                    )
+                }
+        }
+        val values = templates.mapNotNull { (field, template) ->
+            if (field !in fieldSet || template.isBlank()) return@mapNotNull null
+            val rendered = AnkiNoteFieldTemplates.render(template, templateValues)
+            rendered.takeIf(String::isNotBlank)?.let { field to it }
+        }.toMap(linkedMapOf())
 
-        val audioField = mapped("sentenceAudio", "Sentence Audio")
-        val imageField = mapped("screenshot", "Picture")
-        if (audioField.isBlank() || audioField !in fieldSet) {
-            throw IllegalArgumentException("Anki note type is missing the mapped sentence audio field ‘$audioField’.")
-        }
-        if (imageField.isBlank() || imageField !in fieldSet) {
-            throw IllegalArgumentException("Anki note type is missing the mapped picture field ‘$imageField’.")
-        }
+        val sentenceAudioFields = AnkiNoteFieldTemplates.destinations(templates, "sentenceAudio").filter(fieldSet::contains)
+        val imageFields = AnkiNoteFieldTemplates.destinations(templates, "screenshot").filter(fieldSet::contains)
+        val pronunciationFields = AnkiNoteFieldTemplates.destinations(templates, "pronunciationAudio").filter(fieldSet::contains)
 
         val settings = CaptureSettings(
             prePaddingMs = database.readNumber("capture.audioPrePadding", 900.0).toLong().coerceIn(0L, 5_000L),
@@ -101,11 +123,10 @@ class AnkiDroidMiningWorkflow(
         )
         var captured: CapturedMedia? = null
         try {
-            val media = capture.capture(uri, cueStartMs, settings, cueEndMs = cueEndMs)
-            captured = media
+            val media = if (sentenceAudioFields.isNotEmpty() || imageFields.isNotEmpty()) {
+                capture.capture(uri, cueStartMs, settings, cueEndMs = cueEndMs).also { captured = it }
+            } else null
             val safeName = expression.replace(Regex("[^\\p{L}\\p{N}_-]+"), "_").trim('_').take(48).ifBlank { "card" }
-            val audioPreferred = "sentence_$safeName.m4a"
-            val imagePreferred = "screenshot_$safeName.${media.screenshotFile.extension}"
             client.createNote(
                 AnkiDroidNote(
                     deckId = deck.id,
@@ -113,21 +134,31 @@ class AnkiDroidMiningWorkflow(
                     modelFields = fields,
                     fieldValues = values,
                     attachments = buildList {
-                        add(AnkiDroidAttachment(
-                            file = media.audioFile,
-                            preferredName = audioPreferred,
-                            mimeType = "audio/mp4",
-                            destinationField = audioField,
-                            isImage = false,
-                        ))
-                        add(AnkiDroidAttachment(
-                            file = media.screenshotFile,
-                            preferredName = imagePreferred,
-                            mimeType = "image/${media.screenshotFile.extension}",
-                            destinationField = imageField,
-                            isImage = true,
-                        ))
-                        pronunciationAttachment?.let { add(it) }
+                        if (media != null) {
+                            sentenceAudioFields.forEach { field ->
+                                add(AnkiDroidAttachment(
+                                    file = media.audioFile,
+                                    preferredName = "sentence_$safeName.m4a",
+                                    mimeType = "audio/mp4",
+                                    destinationField = field,
+                                    isImage = false,
+                                ))
+                            }
+                            imageFields.forEach { field ->
+                                add(AnkiDroidAttachment(
+                                    file = media.screenshotFile,
+                                    preferredName = "screenshot_$safeName.${media.screenshotFile.extension}",
+                                    mimeType = "image/${media.screenshotFile.extension}",
+                                    destinationField = field,
+                                    isImage = true,
+                                ))
+                            }
+                        }
+                        if (pronunciationFields.isNotEmpty() && pronunciationAttachment != null) {
+                            pronunciationFields.forEach { field ->
+                                add(pronunciationAttachment.copy(destinationField = field))
+                            }
+                        }
                     },
                     tags = listOf("nekoplayer"),
                 ),
@@ -155,3 +186,10 @@ private fun escapeHtml(value: String): String = value
     .replace("&", "&amp;")
     .replace("<", "&lt;")
     .replace(">", "&gt;")
+
+private fun furiganaPlain(expression: String, reading: String): String {
+    val safeExpression = escapeHtml(expression)
+    val safeReading = escapeHtml(reading.trim())
+    if (safeReading.isEmpty() || safeReading == expression) return safeExpression
+    return "<ruby>$safeExpression<rt>$safeReading</rt></ruby>"
+}

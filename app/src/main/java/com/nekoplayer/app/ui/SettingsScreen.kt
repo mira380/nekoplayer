@@ -1,6 +1,8 @@
 package com.nekoplayer.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -22,20 +24,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Book
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.animation.Crossfade
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -63,32 +65,48 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.data.DictionaryRepository
 import com.nekoplayer.app.data.ImportedDictionary
 import com.nekoplayer.app.mining.AnkiDroidClient
 import com.nekoplayer.app.mining.AnkiDroidDeck
 import com.nekoplayer.app.mining.AnkiDroidNoteType
+import com.nekoplayer.app.mining.AnkiNoteFieldTemplates
 import com.nekoplayer.app.mining.PronunciationAudioPresets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import android.content.Intent
+import android.net.Uri
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.math.roundToInt
 
-private val defaultFieldMap = linkedMapOf(
-    "expression" to "Expression",
-    "reading" to "Reading",
-    "definition" to "Definition",
-    "glossary" to "Glossary",
-    "sentence" to "Sentence",
-    "sentenceAudio" to "Sentence Audio",
-    "pronunciationAudio" to "Pronunciation Audio",
-    "screenshot" to "Picture",
-    "frequency" to "Frequency",
+private data class AnkiSourceField(val key: String, val label: String)
+
+private val ankiSourceFields = listOf(
+    AnkiSourceField("expression", "Expression"),
+    AnkiSourceField( key = "expressionFurigana", label = "Expression Furigana"),
+    AnkiSourceField("reading", "Reading"),
+    AnkiSourceField("pronunciationAudio", "Pronunciation Audio"),
+    AnkiSourceField("definition", "Definition"),
+    AnkiSourceField("glossary", "Glossary"),
+    AnkiSourceField("sentence", "Sentence"),
+    AnkiSourceField("sentenceAudio", "Sentence Audio"),
+    AnkiSourceField("screenshot", "Picture"),
+    AnkiSourceField("frequency", "Frequency"),
+    AnkiSourceField("pitchAccent", "Pitch Accent"),
 )
 
 @Composable
@@ -104,8 +122,10 @@ fun SettingsScreen(
     dictionaryImportStatus: String?,
     dictionaryImportBusy: Boolean,
     refreshKey: Int,
+    onDetailScreenChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var imports by remember { mutableStateOf(emptyList<ImportedDictionary>()) }
     var popupExpansionMode by remember(database) {
@@ -117,20 +137,111 @@ fun SettingsScreen(
     var removeTarget by remember { mutableStateOf<ImportedDictionary?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var accessBusy by remember { mutableStateOf(false) }
-    var ankiRefreshSucceeded by remember { mutableStateOf(false) }
     var noteTypes by remember { mutableStateOf(emptyList<AnkiDroidNoteType>()) }
     var decks by remember { mutableStateOf(emptyList<AnkiDroidDeck>()) }
     var noteFields by remember { mutableStateOf(emptyList<String>()) }
+    var noteFieldsLoading by remember { mutableStateOf(false) }
     var noteTypeMenu by remember { mutableStateOf(false) }
     var deckMenu by remember { mutableStateOf(false) }
     var openFieldMenu by remember { mutableStateOf<String?>(null) }
     var selectedSection by remember { mutableStateOf<String?>(null) }
-    val listState = rememberLazyListState()
+    var cacheBytes by remember { mutableStateOf<Long?>(null) }
+    var cacheScanning by remember { mutableStateOf(false) }
+    var cacheClearing by remember { mutableStateOf(false) }
+    var confirmCacheClear by remember { mutableStateOf(false) }
+    var cacheError by remember { mutableStateOf<String?>(null) }
+    var checkingRelease by remember { mutableStateOf(false) }
+    var latestRelease by remember { mutableStateOf<String?>(null) }
+    var latestReleaseUrl by remember { mutableStateOf<String?>(null) }
+    var releaseError by remember { mutableStateOf<String?>(null) }
+    val appVersion = remember(context) {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
+            .getOrNull() ?: "Unknown"
+    }
+    val settingsListState = rememberLazyListState()
+    val detailListState = rememberLazyListState()
     val activeImportStep = remember(dictionaryImportStatus) {
         Regex("^Importing (\\d+) of (\\d+)$").find(dictionaryImportStatus.orEmpty())
     }
     val importStepNumber = activeImportStep?.groupValues?.getOrNull(1)?.toIntOrNull()
     val importStepCount = activeImportStep?.groupValues?.getOrNull(2)?.toIntOrNull()
+
+    fun scanTemporaryCache() {
+        if (cacheScanning || cacheClearing) return
+        scope.launch {
+            cacheScanning = true
+            cacheError = null
+            try {
+                cacheBytes = withContext(Dispatchers.IO) {
+                    context.cacheDir.walkTopDown().filter(File::isFile).sumOf { it.length() }
+                }
+            } catch (_: Exception) {
+                cacheError = "Couldn’t scan app storage. Try again."
+            } finally {
+                cacheScanning = false
+            }
+        }
+    }
+
+    fun clearTemporaryCache() {
+        if (cacheClearing || dictionaryImportBusy) return
+        scope.launch {
+            cacheClearing = true
+            cacheError = null
+            try {
+                val (sizeAfterCleanup, allFilesRemoved) = withContext(Dispatchers.IO) {
+                    val children = context.cacheDir.listFiles().orEmpty()
+                    val removed = children.all { child -> child.deleteRecursively() }
+                    val remainingBytes = context.cacheDir.walkTopDown().filter(File::isFile).sumOf { it.length() }
+                    remainingBytes to removed
+                }
+                cacheBytes = sizeAfterCleanup
+                if (!allFilesRemoved) cacheError = "Some temporary files could not be removed."
+                confirmCacheClear = false
+            } catch (_: Exception) {
+                cacheError = "Couldn’t clear app storage. Try again."
+            } finally {
+                cacheClearing = false
+            }
+        }
+    }
+
+    fun checkForUpdates() {
+        if (checkingRelease) return
+        scope.launch {
+            checkingRelease = true
+            releaseError = null
+            latestRelease = null
+            latestReleaseUrl = null
+            try {
+                val release = withContext(Dispatchers.IO) {
+                    val connection = (URL("https://api.github.com/repos/mira380/nekoplayer/releases/latest")
+                        .openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 8000
+                        readTimeout = 10000
+                        setRequestProperty("Accept", "application/vnd.github+json")
+                        setRequestProperty("User-Agent", "nekoplayer-android")
+                    }
+                    try {
+                        if (connection.responseCode !in 200..299) error("Release check failed")
+                        JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+                latestRelease = release.optString("tag_name").takeIf(String::isNotBlank)
+                latestReleaseUrl = release.optString("html_url").takeIf(String::isNotBlank)
+                if (latestRelease == null) releaseError = "Couldn’t read the latest release information."
+            } catch (_: Exception) {
+                releaseError = "Couldn’t check for updates. Check your connection and try again."
+            } finally {
+                checkingRelease = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { scanTemporaryCache() }
+    LaunchedEffect(selectedSection) { onDetailScreenChanged(selectedSection != null) }
 
     fun returnToSettings() {
         selectedSection = null
@@ -172,22 +283,49 @@ fun SettingsScreen(
     var jimakuKey by remember { mutableStateOf(database.readString("jimaku.apiKey")) }
     var deck by remember { mutableStateOf(database.readString("anki.deck", "Japanese::Mining")) }
     var noteType by remember { mutableStateOf(database.readString("anki.noteType", "Basic")) }
-    var ankiFields by remember { mutableStateOf(loadFieldMap(database)) }
+    var noteTypeFieldTemplates by remember { mutableStateOf(AnkiNoteFieldTemplates.load(database)) }
     var audioSources by remember { mutableStateOf(loadAudioSources(database)) }
 
     fun save(key: String, value: Any?) {
         scope.launch(Dispatchers.IO) { database.writeSetting(key, value) }
     }
 
+    suspend fun seedNoteTypeTemplates(name: String, fields: List<String>) {
+        if (fields.isEmpty()) return
+        val legacyFieldMap = withContext(Dispatchers.IO) { database.readSetting("anki.fieldMap") }
+        val seeded = AnkiNoteFieldTemplates.forNoteType(
+            noteTypeName = name,
+            fields = fields,
+            mappings = noteTypeFieldTemplates,
+            legacyFieldMap = legacyFieldMap,
+        )
+        noteTypeFieldTemplates = noteTypeFieldTemplates + (name to seeded)
+    }
+
+    fun updateSourceFieldDestination(sourceToken: String, destinationField: String) {
+        val mappings = noteTypeFieldTemplates[noteType].orEmpty().toMutableMap()
+        mappings.toMap().forEach { (field, template) ->
+            if (AnkiNoteFieldTemplates.containsToken(template, sourceToken)) {
+                mappings[field] = removeAnkiTemplateToken(template, sourceToken)
+            }
+        }
+        if (destinationField.isNotBlank()) {
+            val current = mappings[destinationField].orEmpty().trim()
+            val sourceTemplate = "{$sourceToken}"
+            mappings[destinationField] = if (current.isBlank()) sourceTemplate else "$current $sourceTemplate"
+        }
+        noteTypeFieldTemplates = noteTypeFieldTemplates + (noteType to mappings)
+    }
+
     fun loadAnkiOptions() {
         if (accessBusy) return
         message = null
-        ankiRefreshSucceeded = false
         accessBusy = true
+        noteFieldsLoading = false
         anki.requestWritePermission { permissionResult ->
             scope.launch {
                 val allowed = permissionResult.getOrElse { error ->
-                    message = error.message ?: "Could not request AnkiDroid access."
+                    message = "Couldn’t request AnkiDroid access. Try again."
                     false
                 }
                 if (!allowed) {
@@ -197,23 +335,34 @@ fun SettingsScreen(
                 }
                 runCatching {
                     val loadedTypes = withContext(Dispatchers.IO) { anki.noteTypes() }
-                    val loadedDecks = withContext(Dispatchers.IO) { anki.decks() }
+                    val loadedDecks = runCatching { withContext(Dispatchers.IO) { anki.decks() } }
                     val current = loadedTypes.firstOrNull { it.name.equals(noteType, ignoreCase = true) }
-                    val loadedFields = current?.let { type -> withContext(Dispatchers.IO) { anki.fields(type.id) } }.orEmpty()
-                    Triple(loadedTypes, loadedDecks, loadedFields)
+                        ?: loadedTypes.firstOrNull()
+                    val loadedFields = current?.let { type ->
+                        runCatching { withContext(Dispatchers.IO) { anki.fields(type.id) } }
+                    }
+                    Triple(loadedTypes, loadedDecks, current to loadedFields)
                 }.fold(
-                    onSuccess = { (loadedTypes, loadedDecks, loadedFields) ->
+                    onSuccess = { (loadedTypes, loadedDecks, currentAndFields) ->
+                        val (current, fieldsResult) = currentAndFields
+                        val loadedFields = fieldsResult?.getOrDefault(emptyList()).orEmpty()
                         noteTypes = loadedTypes
-                        decks = loadedDecks
+                        decks = loadedDecks.getOrDefault(emptyList())
                         noteFields = loadedFields
-                        if (loadedDecks.none { it.name == deck } && loadedDecks.isNotEmpty()) deck = loadedDecks.first().name
-                        if (loadedFields.isNotEmpty()) {
-                            ankiFields = suggestFieldMappings(defaultFieldMap, loadedFields, ankiFields)
+                        current?.let {
+                            noteType = it.name
+                            seedNoteTypeTemplates(it.name, loadedFields)
                         }
-                        message = if (loadedTypes.isEmpty()) "No AnkiDroid note types found." else null
-                        ankiRefreshSucceeded = loadedTypes.isNotEmpty()
+                        if (decks.none { it.name == deck } && decks.isNotEmpty()) deck = decks.first().name
+                        message = when {
+                            loadedTypes.isEmpty() -> "No AnkiDroid note types found."
+                            fieldsResult?.isFailure == true -> fieldsResult.exceptionOrNull()?.message ?: "Could not load AnkiDroid fields."
+                            loadedDecks.isFailure -> loadedDecks.exceptionOrNull()?.message ?: "Could not load AnkiDroid decks."
+                            fieldsResult?.isSuccess == true && loadedFields.isEmpty() -> "No fields found for ${current?.name ?: "the selected note type"}."
+                            else -> null
+                        }
                     },
-                    onFailure = { error -> message = error.message ?: "Could not load AnkiDroid note types." },
+                    onFailure = { message = "Couldn’t load AnkiDroid note types. Try refreshing." },
                 )
                 accessBusy = false
             }
@@ -223,17 +372,16 @@ fun SettingsScreen(
     LaunchedEffect(refreshKey) {
         imports = withContext(Dispatchers.IO) { dictionaries.listDictionaries() }
     }
-    LaunchedEffect(ankiRefreshSucceeded) {
-        if (ankiRefreshSucceeded) {
-            delay(900)
-            ankiRefreshSucceeded = false
-        }
+    LaunchedEffect(selectedSection) {
+        if (selectedSection != null) detailListState.scrollToItem(0)
+        if (selectedSection == "Anki" && noteTypes.isEmpty()) loadAnkiOptions()
     }
-    LaunchedEffect(selectedSection) { listState.scrollToItem(0) }
     LaunchedEffect(jimakuKey) { delay(450); save("jimaku.apiKey", jimakuKey) }
     LaunchedEffect(deck) { delay(450); save("anki.deck", deck) }
     LaunchedEffect(noteType) { delay(450); save("anki.noteType", noteType) }
-    LaunchedEffect(ankiFields) { save("anki.fieldMap", ankiFields) }
+    LaunchedEffect(noteTypeFieldTemplates) {
+        save(AnkiNoteFieldTemplates.SETTING_KEY, AnkiNoteFieldTemplates.encode(noteTypeFieldTemplates))
+    }
     LaunchedEffect(audioSources) {
         delay(400L)
         save("audio.pronunciationSources", audioSources.map { it.toJson() })
@@ -241,29 +389,40 @@ fun SettingsScreen(
 
     LazyColumn(
         modifier.fillMaxSize(),
-        state = listState,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        state = if (selectedSection == null) settingsListState else detailListState,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(if (selectedSection == null) 24.dp else 8.dp),
     ) {
         if (selectedSection == null) {
             item {
                 Text(
                     "Settings",
+                    modifier = Modifier.fillMaxWidth().padding(top = 20.dp),
                     style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.fillMaxWidth().padding(top = 32.dp, bottom = 24.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
                 )
             }
-            item { SettingsCategoryGroup(listOf("Anki", "Dictionaries", "Appearance", "Playback", "Subtitles"), selected = { selectedSection = it }) }
-            item { SettingsCategoryGroup(listOf("Capture & Mining", "Pronunciation Audio"), selected = { selectedSection = it }, title = "More settings") }
+            item {
+                SettingsCategoryGroup(
+                    listOf(
+                        "Appearance",
+                        "Playback",
+                        "Subtitles",
+                        "Dictionary settings",
+                        "Anki",
+                        "Capture and audio",
+                        "About and storage",
+                    ),
+                    selected = { selectedSection = it },
+                )
+            }
         } else {
             item {
                 Box(Modifier.fillMaxWidth().height(56.dp)) {
                     IconButton(
                         onClick = ::returnToSettings,
                         modifier = Modifier.align(Alignment.CenterStart),
-                    ) { Icon(Icons.Default.ArrowBack, contentDescription = "Back to settings") }
+                    ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to settings") }
                     Text(
                         selectedSection!!,
                         style = MaterialTheme.typography.titleLarge,
@@ -343,6 +502,28 @@ fun SettingsScreen(
             }
         }
         item {
+            SettingSection("Subtitle preview") {
+                Box(
+                    Modifier.fillMaxWidth()
+                        .heightIn(min = 120.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.background),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    Text(
+                        "日本語字幕のプレビュー",
+                        modifier = Modifier.fillMaxWidth()
+                            .padding(bottom = (bottomInset / 4f).dp.coerceIn(8.dp, 40.dp))
+                            .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = backgroundOpacity))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        color = androidx.compose.ui.graphics.Color.White,
+                        fontSize = fontSize.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+            }
+        }
+        item {
             SettingSection("Subtitle search") {
                 OutlinedTextField(
                     value = jimakuKey,
@@ -355,13 +536,12 @@ fun SettingsScreen(
         }
         }
 
-        if (selectedSection == "Dictionaries") {
+        if (selectedSection == "Dictionary settings") {
         item {
             SettingSection("Import") {
-                Text("Select a Yomitan dictionary ZIP archive", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.Start,
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
                 ) {
                     Button(
                         enabled = !dictionaryImportBusy,
@@ -449,7 +629,15 @@ fun SettingsScreen(
         }
         item {
             SettingSection("Installed dictionaries") {
-                if (imports.isEmpty()) Text("No dictionaries yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (imports.isEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Import some dictionaries", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Add a Yomitan dictionary to look up words and definitions.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 imports.forEachIndexed { index, item ->
                     HorizontalDivider(Modifier.padding(vertical = 4.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -481,22 +669,16 @@ fun SettingsScreen(
         if (selectedSection == "Anki") {
         item {
             SettingSection("AnkiDroid") {
-                Text("Create cards in AnkiDroid.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                     Button(
                         enabled = !accessBusy,
                         onClick = ::loadAnkiOptions,
                         modifier = Modifier.width(164.dp),
                     ) {
-                        Crossfade(targetState = ankiRefreshSucceeded) { refreshed ->
-                            Icon(
-                                if (refreshed) Icons.Default.Check else Icons.Default.Refresh,
-                                contentDescription = if (refreshed) "Fields refreshed" else "Refresh fields",
-                            )
-                        }
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh AnkiDroid")
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (accessBusy) "Loading…" else if (noteTypes.isEmpty()) "Load fields" else "Refresh fields",
+                            if (accessBusy) "Loading…" else "Refresh",
                             maxLines = 1,
                         )
                     }
@@ -508,97 +690,85 @@ fun SettingsScreen(
         }
         item {
             SettingSection("Card defaults") {
-                Box(Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = deck,
-                        onValueChange = {},
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Default deck") },
-                        trailingIcon = { IconButton(enabled = decks.isNotEmpty(), onClick = { deckMenu = true }) { Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose default deck") } },
-                        readOnly = true,
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        singleLine = true,
-                    )
-                    DropdownMenu(expanded = deckMenu, onDismissRequest = { deckMenu = false }) {
-                        decks.forEach { option ->
-                            DropdownMenuItem(text = { Text(option.name) }, onClick = { deck = option.name; deckMenu = false })
-                        }
-                    }
-                }
-                Box(Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = noteType,
-                        onValueChange = {},
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Note type") },
-                        trailingIcon = {
-                            IconButton(enabled = noteTypes.isNotEmpty(), onClick = { noteTypeMenu = true }) {
-                                Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose note type")
-                            }
-                        },
-                        readOnly = true,
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        singleLine = true,
-                    )
-                    DropdownMenu(expanded = noteTypeMenu, onDismissRequest = { noteTypeMenu = false }) {
-                        noteTypes.forEach { type ->
-                            DropdownMenuItem(
-                                text = { Text(type.name) },
-                                onClick = {
-                                    noteType = type.name
-                                    noteTypeMenu = false
-                                    scope.launch {
-                                        runCatching { withContext(Dispatchers.IO) { anki.fields(type.id) } }
-                                            .onSuccess { fields ->
-                                                noteFields = fields
-                                                ankiFields = suggestFieldMappings(defaultFieldMap, fields, ankiFields)
-                                            }
-                                            .onFailure { message = it.message ?: "Could not load AnkiDroid fields." }
+                AnkiChoiceRow(
+                    label = "Deck",
+                    value = deck,
+                    enabled = decks.isNotEmpty(),
+                    expanded = deckMenu,
+                    onExpand = { deckMenu = true },
+                    onDismiss = { deckMenu = false },
+                    options = decks,
+                    optionLabel = { it.name },
+                    onSelect = { deck = it.name },
+                )
+                HorizontalDivider()
+                AnkiChoiceRow(
+                    label = "Model",
+                    value = noteType,
+                    enabled = noteTypes.isNotEmpty(),
+                    expanded = noteTypeMenu,
+                    onExpand = { noteTypeMenu = true },
+                    onDismiss = { noteTypeMenu = false },
+                    options = noteTypes,
+                    optionLabel = { it.name },
+                    onSelect = { type ->
+                        noteType = type.name
+                        noteFields = emptyList()
+                        noteFieldsLoading = true
+                        message = null
+                        scope.launch {
+                            runCatching { withContext(Dispatchers.IO) { anki.fields(type.id) } }
+                                .onSuccess { fields ->
+                                    if (noteType == type.name) {
+                                        noteFields = fields
+                                        noteFieldsLoading = false
+                                        message = if (fields.isEmpty()) "No fields found for ${type.name}." else null
+                                        seedNoteTypeTemplates(type.name, fields)
                                     }
-                                },
-                            )
+                                }
+                                .onFailure {
+                                    if (noteType == type.name) {
+                                        noteFields = emptyList()
+                                        noteFieldsLoading = false
+                                        message = "Couldn’t load AnkiDroid fields. Try again."
+                                    }
+                                }
                         }
-                    }
-                }
+                    },
+                )
             }
         }
         item {
             SettingSection("Field mapping") {
-                defaultFieldMap.keys.forEach { key ->
-                    Box(Modifier.fillMaxWidth()) {
-                        OutlinedTextField(
-                            value = ankiFields[key].orEmpty(),
-                            onValueChange = {},
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text(ankiFieldLabel(key)) },
-                            trailingIcon = {
-                                IconButton(enabled = noteFields.isNotEmpty(), onClick = { openFieldMenu = key }) {
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose ${ankiFieldLabel(key)} field")
-                                }
-                            },
-                            readOnly = true,
-                            textStyle = MaterialTheme.typography.bodyMedium,
-                            singleLine = true,
-                        )
-                        DropdownMenu(expanded = openFieldMenu == key, onDismissRequest = { openFieldMenu = null }) {
-                            DropdownMenuItem(
-                                text = { Text("Not mapped") },
-                                onClick = { ankiFields = ankiFields + (key to ""); openFieldMenu = null },
-                            )
-                            noteFields.forEach { field ->
-                                DropdownMenuItem(
-                                    text = { Text(field) },
-                                    onClick = { ankiFields = ankiFields + (key to field); openFieldMenu = null },
-                                )
-                            }
+                if (noteFields.isEmpty()) {
+                    Text(
+                        if (accessBusy || noteFieldsLoading) "Loading fields…" else "Refresh fields to load the selected note type.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                ankiSourceFields.forEachIndexed { index, source ->
+                    if (index > 0) HorizontalDivider()
+                    val destination = noteTypeFieldTemplates[noteType].orEmpty().entries
+                        .firstOrNull { (field, template) ->
+                            field in noteFields && AnkiNoteFieldTemplates.containsToken(template, source.key)
                         }
-                    }
+                        ?.key.orEmpty()
+                    AnkiSourceFieldMappingRow(
+                        source = source,
+                        destination = destination,
+                        options = noteFields,
+                        enabled = noteFields.isNotEmpty(),
+                        menuExpanded = openFieldMenu == source.key,
+                        onMenuOpen = { openFieldMenu = source.key },
+                        onMenuDismiss = { openFieldMenu = null },
+                        onDestinationChange = { updateSourceFieldDestination(source.key, it) },
+                    )
                 }
             }
         }
         }
 
-        if (selectedSection == "Capture & Mining") {
+        if (selectedSection == "Capture and audio") {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 SettingSection("Audio capture") {
@@ -607,13 +777,13 @@ fun SettingsScreen(
             }
             SettingSection("Picture") {
                 SettingSlider("Picture delay", "${screenshotDelay.roundToInt()} ms", screenshotDelay, 0f..30000f, { screenshotDelay = it }, snapStep = 10f) { save("capture.screenshotDelayMs", it.toDouble()) }
-                SettingSwitch("Crop black bars", trimBlackBars) { trimBlackBars = it; save("capture.trimBlackBars", it) }
                 SettingSlider("Maximum picture width", if (maxWidth == 0f) "Original size" else "${maxWidth.roundToInt()} px", maxWidth, 0f..4096f, { maxWidth = it }, snapStep = 10f) { save("capture.maxWidth", it.toDouble()) }
                 SettingSlider("Maximum picture height", if (maxHeight == 0f) "Original size" else "${maxHeight.roundToInt()} px", maxHeight, 0f..4096f, { maxHeight = it }, snapStep = 10f) { save("capture.maxHeight", it.toDouble()) }
                 Text("Picture format", style = MaterialTheme.typography.labelLarge)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("PNG", "WebP").forEach { format -> FilterChip(selected = screenshotFormat == format, onClick = { screenshotFormat = format; save("capture.screenshotFormat", format) }, label = { Text(format) }) }
                 }
+                SettingSwitch("Crop black bars", trimBlackBars) { trimBlackBars = it; save("capture.trimBlackBars", it) }
             }
             SettingSection("Mining") {
                 SettingSwitch("Play audio during capture", playAudioDuringCapture) { playAudioDuringCapture = it; save("capture.playAudioWhileCapture", it) }
@@ -622,7 +792,7 @@ fun SettingsScreen(
         }
         }
 
-        if (selectedSection == "Pronunciation Audio") {
+        if (selectedSection == "Capture and audio") {
         item {
             SettingSection("Pronunciation sources") {
                 audioSources.forEachIndexed { index, source ->
@@ -692,6 +862,93 @@ fun SettingsScreen(
             }
         }
         }
+
+        if (selectedSection == "About and storage") {
+            item {
+                SettingSection("Storage") {
+                    Text(
+                        "Temporary files and downloaded artwork. Imported dictionaries and saved settings are stored separately.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("App cache", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                when {
+                                    cacheScanning -> "Scanning…"
+                                    cacheBytes != null -> formatBytes(cacheBytes!!)
+                                    else -> "Not scanned"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = ::scanTemporaryCache, enabled = !cacheScanning && !cacheClearing) {
+                            Text("Scan")
+                        }
+                    }
+                    cacheError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    Button(
+                        onClick = { confirmCacheClear = true },
+                        enabled = !cacheClearing && !dictionaryImportBusy,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                    ) {
+                        Text(if (cacheClearing) "Clearing…" else "Clear temporary cache")
+                    }
+                }
+            }
+            item {
+                SettingSection("Updates") {
+                    latestRelease?.let { version ->
+                        val isCurrent = version.removePrefix("v").equals(appVersion.removePrefix("v"), ignoreCase = true)
+                        Text(
+                            if (isCurrent) "Installed version $appVersion is current."
+                            else "Latest release: $version · Installed: $appVersion",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    releaseError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    Button(
+                        onClick = ::checkForUpdates,
+                        enabled = !checkingRelease,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                    ) {
+                        Text(if (checkingRelease) "Checking…" else "Check for updates")
+                    }
+                    latestReleaseUrl?.let { url ->
+                        TextButton(
+                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Open release notes") }
+                    }
+                }
+            }
+            item {
+                SettingSection("nekoplayer") {
+                    Text(
+                        "Version $appVersion",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
+    }
+
+    if (confirmCacheClear) {
+        AlertDialog(
+            onDismissRequest = { confirmCacheClear = false },
+            title = { Text("Clear temporary cache?") },
+            text = {
+                Text("This removes temporary files and downloaded artwork. Imported dictionaries and library settings stay on this device.")
+            },
+            confirmButton = {
+                TextButton(onClick = ::clearTemporaryCache) { Text("Clear cache") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmCacheClear = false }) { Text("Cancel") }
+            },
+        )
     }
 
     removeTarget?.let { item ->
@@ -722,11 +979,6 @@ private data class AudioSourceSetting(val name: String, val kind: String, val en
     }
 }
 
-private fun loadFieldMap(database: AppDatabase): Map<String, String> {
-    val saved = database.readSetting("anki.fieldMap") as? JSONObject ?: return defaultFieldMap
-    return defaultFieldMap.mapValues { (key, value) -> saved.optString(key, value) }
-}
-
 private fun loadAudioSources(database: AppDatabase): List<AudioSourceSetting> {
     val saved = database.readSetting("audio.pronunciationSources") as? org.json.JSONArray
     if (saved == null) return defaultAudioSources()
@@ -744,6 +996,12 @@ private fun loadAudioSources(database: AppDatabase): List<AudioSourceSetting> {
             "jisho" to "jisho",
         )
     return if (legacyDefault) defaultAudioSources() else sources
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes < 1024L -> "${bytes} B"
+    bytes < 1024L * 1024L -> "${(bytes / 1024.0).roundToInt()} KB"
+    else -> "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB"
 }
 
 private fun defaultAudioSources() = PronunciationAudioPresets.defaults.map {
@@ -774,7 +1032,7 @@ private fun SettingsCategoryGroup(
             )
         }
         Card(
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         ) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
@@ -796,7 +1054,7 @@ private fun SettingsCategoryGroup(
                             fontWeight = FontWeight.Medium,
                         )
                         Icon(
-                            Icons.Default.ArrowForward,
+                            Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = "Open $category",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
@@ -809,6 +1067,103 @@ private fun SettingsCategoryGroup(
             }
         }
     }
+}
+
+@Composable
+private fun <T> AnkiChoiceRow(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    expanded: Boolean,
+    onExpand: () -> Unit,
+    onDismiss: () -> Unit,
+    options: List<T>,
+    optionLabel: (T) -> String,
+    onSelect: (T) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(enabled = enabled, onClick = onExpand),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            Text(value.ifBlank { "None" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Box {
+            TextButton(onClick = onExpand, enabled = enabled) {
+                Text("Choose")
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(optionLabel(option)) },
+                        onClick = {
+                            onDismiss()
+                            onSelect(option)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnkiSourceFieldMappingRow(
+    source: AnkiSourceField,
+    destination: String,
+    options: List<String>,
+    enabled: Boolean,
+    menuExpanded: Boolean,
+    onMenuOpen: () -> Unit,
+    onMenuDismiss: () -> Unit,
+    onDestinationChange: (String) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 50.dp).clickable(enabled = enabled, onClick = onMenuOpen),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(source.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            Text(
+                destination.ifBlank { "Not mapped" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box {
+            TextButton(onClick = onMenuOpen, enabled = enabled) {
+                Text("Choose")
+                Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose ${source.label} field")
+            }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = onMenuDismiss) {
+                DropdownMenuItem(
+                    text = { Text("Not mapped") },
+                    onClick = {
+                        onMenuDismiss()
+                        onDestinationChange("")
+                    },
+                )
+                options.forEach { field ->
+                    DropdownMenuItem(
+                        text = { Text(field) },
+                        onClick = {
+                            onMenuDismiss()
+                            onDestinationChange(field)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun removeAnkiTemplateToken(template: String, token: String): String {
+    val remaining = Regex("\\{([^{}]+)\\}").replace(template) { match ->
+        if (AnkiNoteFieldTemplates.containsToken(match.value, token)) "" else match.value
+    }
+    return remaining.replace(Regex("\\s+"), " ").trim()
 }
 
 @Composable
@@ -827,58 +1182,13 @@ private fun SettingSection(title: String, content: @Composable ColumnScope.() ->
 
 private fun categoryIcon(category: String) = when (category) {
     "Anki" -> Icons.Default.ImportExport
-    "Dictionaries" -> Icons.Default.Book
+    "Dictionary settings" -> Icons.Default.Book
     "Appearance" -> Icons.Default.ColorLens
     "Playback" -> Icons.Default.PlayArrow
     "Subtitles" -> Icons.Default.Subtitles
-    "Capture & Mining" -> Icons.Default.Tune
+    "Capture and audio" -> Icons.Default.Tune
+    "About and storage" -> Icons.Default.Info
     else -> Icons.Default.GraphicEq
-}
-
-private val fieldAliases = mapOf(
-    "expression" to listOf("expression", "term", "word", "vocabulary", "vocab", "front", "headword", "japanese"),
-    "reading" to listOf("reading", "kana", "furigana", "readingtext"),
-    "definition" to listOf("definition", "meaning", "gloss", "translation", "back", "english"),
-    "glossary" to listOf("glossary", "definitions", "dictionary", "dictionaryentry", "yomitan", "termhtml"),
-    "sentence" to listOf("sentence", "context", "example", "examplesentence", "japanesesentence"),
-    "sentenceAudio" to listOf("sentenceaudio", "sentencesound", "audiosentence", "audio"),
-    "pronunciationAudio" to listOf("pronunciationaudio", "wordaudio", "expressionaudio", "vocabularyaudio", "sound"),
-    "screenshot" to listOf("screenshot", "image", "picture", "capture"),
-    "frequency" to listOf("frequency", "freq", "rank", "wordfrequency"),
-)
-
-private fun normalizeFieldName(value: String): String = value.lowercase().filter(Char::isLetterOrDigit)
-
-private fun suggestFieldMappings(
-    mappingKeys: Map<String, String>,
-    fields: List<String>,
-    current: Map<String, String>,
-): Map<String, String> {
-    val available = fields.associateBy(::normalizeFieldName)
-    val result = linkedMapOf<String, String>()
-    val claimed = mutableSetOf<String>()
-
-    mappingKeys.keys.forEach { key ->
-        val selected = current[key].orEmpty()
-        val actual = fields.firstOrNull { it.equals(selected, ignoreCase = true) }
-        if (actual != null && claimed.add(normalizeFieldName(actual))) result[key] = actual
-    }
-    mappingKeys.keys.forEach { key ->
-        if (key in result) return@forEach
-        val aliases = fieldAliases[key].orEmpty().map(::normalizeFieldName)
-        val candidate = aliases.asSequence().mapNotNull(available::get)
-            .firstOrNull { normalizeFieldName(it) !in claimed }
-            ?: fields.firstOrNull { field ->
-                val normalized = normalizeFieldName(field)
-                normalized.isNotBlank() && aliases.any { alias ->
-                    alias.length >= 5 && alias != "audio" && alias != "sound" && alias != "front" && alias != "back" &&
-                        (normalized.contains(alias) || alias.contains(normalized))
-                } && normalized !in claimed
-            }
-        result[key] = candidate.orEmpty()
-        candidate?.let { claimed += normalizeFieldName(it) }
-    }
-    return result
 }
 
 @Composable
@@ -889,7 +1199,7 @@ private fun SettingCard(spacing: androidx.compose.ui.unit.Dp = 6.dp, content: @C
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(spacing), content = content)
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(spacing), content = content)
         }
     }
 }
@@ -911,6 +1221,7 @@ private fun SettingSwitch(label: String, checked: Boolean, detail: String? = nul
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun SettingSlider(
     label: String,
     valueLabel: String,
@@ -932,6 +1243,35 @@ private fun SettingSlider(
             valueRange = range,
             onValueChangeFinished = { onFinished(snap(value)) },
             modifier = Modifier.fillMaxWidth().height(48.dp),
+            track = { sliderState ->
+                val activeColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.48f)
+                val inactiveColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                val stopColor = MaterialTheme.colorScheme.primary
+                Canvas(Modifier.fillMaxWidth().height(16.dp)) {
+                    val trackHeight = size.height
+                    val cornerRadius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
+                    val progressWidth = size.width * sliderState.coercedValueAsFraction
+                    drawRoundRect(
+                        color = inactiveColor,
+                        topLeft = Offset.Zero,
+                        size = Size(size.width, trackHeight),
+                        cornerRadius = cornerRadius,
+                    )
+                    if (progressWidth > 0f) {
+                        drawRoundRect(
+                            color = activeColor,
+                            topLeft = Offset.Zero,
+                            size = Size(progressWidth, trackHeight),
+                            cornerRadius = cornerRadius,
+                        )
+                    }
+                    drawCircle(
+                        color = stopColor,
+                        radius = 2.dp.toPx(),
+                        center = Offset(size.width - 8.dp.toPx(), trackHeight / 2f),
+                    )
+                }
+            },
         )
     }
 }
@@ -941,20 +1281,6 @@ private fun snapToGrid(value: Float, step: Float, range: ClosedFloatingPointRang
     if (step <= 0f) return bounded
     return ((bounded / step).roundToInt() * step).coerceIn(range.start, range.endInclusive)
 }
-
-private val ankiFieldLabels = mapOf(
-    "expression" to "Expression",
-    "reading" to "Reading",
-    "definition" to "Definition",
-    "glossary" to "Glossary",
-    "sentence" to "Sentence",
-    "sentenceAudio" to "Sentence Audio",
-    "pronunciationAudio" to "Pronunciation Audio",
-    "screenshot" to "Picture",
-    "frequency" to "Frequency",
-)
-
-private fun ankiFieldLabel(key: String): String = ankiFieldLabels[key] ?: key.replaceFirstChar(Char::uppercase)
 
 private fun audioSourceLabel(source: AudioSourceSetting, index: Int): String = when (source.kind) {
     "jpod101" -> "JapanesePod101"

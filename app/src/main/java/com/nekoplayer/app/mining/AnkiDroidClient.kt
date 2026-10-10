@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.text.Html
 import androidx.core.content.FileProvider
+import com.ichi2.anki.api.AddContentApi
 import java.io.File
 import java.text.Normalizer
 
@@ -59,12 +60,15 @@ class AnkiDroidClient(
     private val fileProviderAuthority: String = "${activity.packageName}.nekoplayer_media",
 ) {
     @Volatile private var permissionRequestPending = false
+    private val contentApi by lazy(LazyThreadSafetyMode.NONE) {
+        AddContentApi(activity.applicationContext)
+    }
 
     fun status(): AnkiDroidStatus {
-        val provider = try {
-            activity.packageManager.resolveContentProvider(ANKIDROID_AUTHORITY, PackageManager.GET_META_DATA)
+        val apiEnabled = try {
+            AddContentApi.getAnkiDroidPackageName(activity.applicationContext) != null
         } catch (_: Exception) {
-            null
+            false
         }
         val installed = try {
             activity.packageManager.getApplicationInfo(ANKIDROID_PACKAGE, 0).enabled
@@ -73,7 +77,6 @@ class AnkiDroidClient(
         } catch (_: Exception) {
             false
         }
-        val apiEnabled = provider?.enabled == true
         val permissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
             activity.checkSelfPermission(READ_WRITE_PERMISSION) == PackageManager.PERMISSION_GRANTED
         return AnkiDroidStatus(
@@ -130,53 +133,21 @@ class AnkiDroidClient(
     }
 
     fun decks(): List<AnkiDroidDeck> = providerOperation {
-        val result = mutableListOf<AnkiDroidDeck>()
-        val cursor = activity.contentResolver.query(
-            Uri.parse("$CONTENT_URI/decks"),
-            arrayOf("deck_id", "deck_name"),
-            null,
-            null,
-            null,
-        ) ?: throw IllegalStateException("AnkiDroid returned no deck list.")
-        cursor.use {
-            val idColumn = it.getColumnIndexOrThrow("deck_id")
-            val nameColumn = it.getColumnIndexOrThrow("deck_name")
-            while (it.moveToNext()) result += AnkiDroidDeck(it.getLong(idColumn), it.getString(nameColumn).orEmpty())
-        }
-        result
+        val result = contentApi.deckList
+            ?: throw IllegalStateException("AnkiDroid returned no deck list.")
+        result.map { (id, name) -> AnkiDroidDeck(id, name) }
     }
 
     fun noteTypes(): List<AnkiDroidNoteType> = providerOperation {
-        val result = mutableListOf<AnkiDroidNoteType>()
-        val cursor = activity.contentResolver.query(
-            Uri.parse("$CONTENT_URI/models"),
-            arrayOf("_id", "name"),
-            null,
-            null,
-            null,
-        ) ?: throw IllegalStateException("AnkiDroid returned no note types.")
-        cursor.use {
-            val idColumn = it.getColumnIndexOrThrow("_id")
-            val nameColumn = it.getColumnIndexOrThrow("name")
-            while (it.moveToNext()) result += AnkiDroidNoteType(it.getLong(idColumn), it.getString(nameColumn).orEmpty())
-        }
-        result
+        val result = contentApi.modelList
+            ?: throw IllegalStateException("AnkiDroid returned no note types.")
+        result.map { (id, name) -> AnkiDroidNoteType(id, name) }
     }
 
     fun fields(noteTypeId: Long): List<String> = providerOperation {
         if (noteTypeId <= 0) throw IllegalArgumentException("A note type id is required.")
-        val cursor = activity.contentResolver.query(
-            Uri.parse("$CONTENT_URI/models/$noteTypeId"),
-            arrayOf("field_names"),
-            null,
-            null,
-            null,
-        ) ?: throw IllegalStateException("AnkiDroid returned no note type fields.")
-        cursor.use {
-            if (!it.moveToFirst()) throw IllegalArgumentException("The selected AnkiDroid note type was not found.")
-            val encoded = it.getString(it.getColumnIndexOrThrow("field_names")).orEmpty()
-            if (encoded.isEmpty()) emptyList() else encoded.split(FIELD_SEPARATOR)
-        }
+        contentApi.getFieldList(noteTypeId)?.toList()
+            ?: throw IllegalStateException("AnkiDroid returned no note type fields.")
     }
 
     // Checks complete field values without changing AnkiDroid's duplicate-note behavior.
@@ -240,15 +211,47 @@ class AnkiDroidClient(
             put("flds", encodedFields)
             put("tags", note.tags.filter(String::isNotBlank).joinToString(" "))
         }
-        val insertUri = Uri.parse("$CONTENT_URI/notes").buildUpon()
-            .appendQueryParameter("deckId", note.deckId.toString())
-            .build()
-        val inserted = activity.contentResolver.insert(insertUri, content)
+        val inserted = activity.contentResolver.insert(Uri.parse("$CONTENT_URI/notes"), content)
             ?: throw IllegalStateException("AnkiDroid did not insert the new card.")
         val id = inserted.lastPathSegment?.toLongOrNull()
             ?: throw IllegalStateException("AnkiDroid returned an invalid card id.")
         if (id <= 0L) throw IllegalStateException("AnkiDroid did not confirm card creation.")
+        moveCardsToDeck(id, note.deckId)
         id
+    }
+
+    private fun moveCardsToDeck(noteId: Long, deckId: Long) {
+        val cardsUri = Uri.parse("$CONTENT_URI/notes/$noteId/cards")
+        val cards = activity.contentResolver.query(
+            cardsUri,
+            arrayOf("ord", "deck_id"),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            val orderColumn = cursor.getColumnIndexOrThrow("ord")
+            val deckColumn = cursor.getColumnIndexOrThrow("deck_id")
+            buildList<Pair<Int, Long>> {
+                while (cursor.moveToNext()) {
+                    add(cursor.getInt(orderColumn) to cursor.getLong(deckColumn))
+                }
+            }
+        } ?: throw IllegalStateException("AnkiDroid did not return the cards created for this note.")
+        if (cards.isEmpty()) throw IllegalStateException("AnkiDroid created the note without any cards.")
+
+        for ((order, currentDeckId) in cards) {
+            if (currentDeckId == deckId) continue
+            val cardUri = Uri.withAppendedPath(cardsUri, order.toString())
+            val changed = activity.contentResolver.update(
+                cardUri,
+                ContentValues().apply { put("deck_id", deckId) },
+                null,
+                null,
+            )
+            if (changed != 1) {
+                throw IllegalStateException("AnkiDroid created the note but could not move its card to the selected deck.")
+            }
+        }
     }
 
     private fun importAttachment(attachment: AnkiDroidAttachment): String {

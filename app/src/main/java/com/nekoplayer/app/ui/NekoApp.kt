@@ -13,10 +13,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.only
@@ -29,6 +31,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Text
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
@@ -51,6 +55,7 @@ import com.nekoplayer.app.MainActivity
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.data.DictionaryRepository
 import com.nekoplayer.app.library.AniListClient
+import com.nekoplayer.app.library.AnimeLibraryEpisode
 import com.nekoplayer.app.library.AnimeLibraryScanner
 import com.nekoplayer.app.mining.AnkiDroidClient
 import kotlinx.coroutines.Dispatchers
@@ -82,9 +87,15 @@ fun NekoApp(
     val snackbar = remember { SnackbarHostState() }
 
     var page by remember { mutableStateOf(AppPage.Library) }
+    var detailScreen by remember { mutableStateOf(false) }
     var darkMode by remember { mutableStateOf(database.readBoolean("appearance.dark", true)) }
     var language by remember { mutableStateOf(database.readString("appearance.language", "English")) }
     var folderUri by remember { mutableStateOf<String?>(null) }
+    var folderUriLoaded by remember { mutableStateOf(false) }
+    var libraryEpisodes by remember { mutableStateOf<List<AnimeLibraryEpisode>>(emptyList()) }
+    var libraryLoading by remember { mutableStateOf(false) }
+    var libraryError by remember { mutableStateOf<String?>(null) }
+    var libraryScanRequest by remember { mutableIntStateOf(0) }
     var activeVideo by remember { mutableStateOf<VideoTarget?>(null) }
     var coverVersion by remember { mutableIntStateOf(0) }
     var dictionaryVersion by remember { mutableIntStateOf(0) }
@@ -101,6 +112,32 @@ fun NekoApp(
 
     LaunchedEffect(Unit) {
         folderUri = withContext(Dispatchers.IO) { database.readSetting("library.folderPath") as? String }
+        libraryLoading = !folderUri.isNullOrBlank()
+        folderUriLoaded = true
+    }
+
+    LaunchedEffect(folderUri, folderUriLoaded, libraryScanRequest) {
+        if (!folderUriLoaded) return@LaunchedEffect
+        if (folderUri.isNullOrBlank()) {
+            libraryEpisodes = emptyList()
+            libraryError = null
+            libraryLoading = false
+            return@LaunchedEffect
+        }
+        libraryLoading = true
+        libraryError = null
+        try {
+            libraryEpisodes = withContext(Dispatchers.IO) {
+                val root = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
+                    ?: error("The saved library folder is unavailable.")
+                AnimeLibraryScanner().scan(root)
+            }
+        } catch (_: Exception) {
+            libraryError = "Couldn’t scan this folder. Choose it again or pick another folder."
+            libraryEpisodes = emptyList()
+        } finally {
+            libraryLoading = false
+        }
     }
 
     fun grantPersistedAccess(uri: Uri) {
@@ -143,6 +180,8 @@ fun NekoApp(
         if (uri != null) {
             grantPersistedAccess(uri)
             folderUri = uri.toString()
+            libraryLoading = true
+            libraryScanRequest += 1
             scope.launch(Dispatchers.IO) { database.writeSetting("library.folderPath", uri.toString()) }
         }
     }
@@ -164,7 +203,7 @@ fun NekoApp(
             dictionaryImportStatus = null
             dictionaryImportBusy = true
             scope.launch {
-                val failures = mutableListOf<Pair<String, String>>()
+                val failures = mutableListOf<String>()
                 try {
                     uris.forEachIndexed { index, uri ->
                         val name = displayName(uri)
@@ -174,8 +213,8 @@ fun NekoApp(
                             dictionaryVersion += 1
                         } catch (error: kotlinx.coroutines.CancellationException) {
                             throw error
-                        } catch (error: Exception) {
-                            failures += name to (error.message ?: "Unknown error")
+                        } catch (_: Exception) {
+                            failures += name
                         }
                     }
                 } finally {
@@ -184,7 +223,7 @@ fun NekoApp(
                 }
                 if (failures.isNotEmpty()) {
                     snackbar.showSnackbar(
-                        failures.joinToString("\n") { (name, error) -> "$name: $error" },
+                        failures.joinToString("\n") { "$it could not be imported. Choose a valid Yomitan dictionary ZIP." },
                     )
                 }
             }
@@ -227,49 +266,69 @@ fun NekoApp(
         val current = activeVideo
         SideEffect { activity.setSystemBarDarkIcons(enabled = !darkMode && current == null) }
         if (current != null) {
-            PlayerScreen(
-                activity = activity,
-                database = database,
-                dictionaries = dictionaryRepository,
-                anki = anki,
-                uri = current.uri,
-                displayName = current.displayName,
-                seriesTitle = current.seriesTitle,
-                onClose = { activeVideo = null },
-                onPickSubtitle = { callback ->
-                    subtitlePickerCallback = callback
-                    subtitlePicker.launch(arrayOf("*/*"))
-                },
-                onNotify = { message -> Toast.makeText(activity, message, Toast.LENGTH_SHORT).show() },
-                modifier = Modifier.fillMaxSize(),
-            )
+            NekoPlayerTheme(darkMode) {
+                PlayerScreen(
+                    activity = activity,
+                    database = database,
+                    dictionaries = dictionaryRepository,
+                    anki = anki,
+                    uri = current.uri,
+                    displayName = current.displayName,
+                    seriesTitle = current.seriesTitle,
+                    onClose = { activeVideo = null },
+                    onPickSubtitle = { callback ->
+                        subtitlePickerCallback = callback
+                        subtitlePicker.launch(arrayOf("*/*"))
+                    },
+                    onNotify = { message -> Toast.makeText(activity, message, Toast.LENGTH_SHORT).show() },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         } else {
             val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+            val safeSides = if (detailScreen) {
+                WindowInsetsSides.Top + WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
+            } else {
+                WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+            }
             Column(
                 Modifier
                     .fillMaxSize()
-                    .windowInsetsPadding(
-                        WindowInsets.safeDrawing.only(
-                            WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
-                        ),
-                    ),
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(safeSides))
+                    .windowInsetsPadding(WindowInsets.ime),
             ) {
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    when (page) {
+                Box(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    Box(
+                        Modifier.fillMaxHeight().widthIn(max = 720.dp).fillMaxWidth(),
+                    ) {
+                        when (page) {
                         AppPage.Library -> LibraryScreen(
                             database = database,
                             aniList = aniList,
                             folderUri = folderUri,
+                            episodes = libraryEpisodes,
+                            loading = !folderUriLoaded || libraryLoading,
+                            error = libraryError,
                             coverVersion = coverVersion,
                             onPickFolder = { folderPicker.launch(null) },
                             onPickVideo = { videoPicker.launch(arrayOf("*/*")) },
                             onOpenVideo = { uri, name, title -> openVideo(uri, name, title) },
                             onPickCover = { show -> coverTarget = show; coverPicker.launch(arrayOf("image/*")) },
+                            onDetailScreenChanged = { detailScreen = it },
                             modifier = Modifier.fillMaxSize(),
                         )
                         AppPage.Dictionaries -> DictionaryScreen(
                             repository = dictionaryRepository,
                             refreshKey = dictionaryVersion,
+                            onImportDictionary = {
+                                dictionaryImportStatus = null
+                                importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+                            },
+                            dictionaryImportStatus = dictionaryImportStatus,
+                            dictionaryImportBusy = dictionaryImportBusy,
                             modifier = Modifier.fillMaxSize(),
                         )
                         AppPage.Settings -> SettingsScreen(
@@ -293,15 +352,18 @@ fun NekoApp(
                             dictionaryImportStatus = dictionaryImportStatus,
                             dictionaryImportBusy = dictionaryImportBusy,
                             refreshKey = dictionaryVersion,
+                            onDetailScreenChanged = { detailScreen = it },
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
+                    }
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(8.dp))
                 }
-                if (!imeVisible) {
+                if (!imeVisible && !detailScreen) {
                     NavigationBar(
                         containerColor = MaterialTheme.colorScheme.surface,
                         contentColor = MaterialTheme.colorScheme.onSurface,
+                        tonalElevation = 0.dp,
                     ) {
                         AppPage.entries.forEach { destination ->
                             val icon = when (destination) {
@@ -311,9 +373,16 @@ fun NekoApp(
                             }
                             NavigationBarItem(
                                 selected = page == destination,
-                                onClick = { page = destination },
+                                onClick = { page = destination; detailScreen = false },
                                 icon = { Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp)) },
                                 label = { Text(destination.label) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
                             )
                         }
                     }
