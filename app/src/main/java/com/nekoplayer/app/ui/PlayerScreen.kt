@@ -163,6 +163,7 @@ fun PlayerScreen(
     requestHeaders: Map<String, String> = emptyMap(),
     subtitleEpisodeName: String? = null,
     subtitleEpisodeNumber: Int? = null,
+    sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
     onClose: () -> Unit,
     onPickSubtitle: (((Uri, String) -> Unit) -> Unit),
     onNotify: (String) -> Unit,
@@ -220,6 +221,7 @@ fun PlayerScreen(
     var showJimakuDialog by remember(uri) { mutableStateOf(false) }
     var jimakuApiKey by remember { mutableStateOf("") }
     var dictionaryPopupExpansion by remember { mutableStateOf(DictionaryPopupExpansion()) }
+    var dictionaryPopupSize by remember { mutableFloatStateOf(DictionaryPopupSize.DEFAULT) }
     var pronunciationPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var pronunciationFile by remember { mutableStateOf<java.io.File?>(null) }
     val pronunciationClient = remember(database) { PronunciationAudioClient(database, context.cacheDir) }
@@ -285,16 +287,28 @@ fun PlayerScreen(
             playerView.value?.player = null
             val currentPosition = player.currentPosition.coerceAtLeast(0L)
             val currentDuration = player.duration.takeIf { it > 0L } ?: 0L
-            scope.launch(Dispatchers.IO) { database.saveProgress(uri.toString(), currentPosition, currentDuration) }
+            scope.launch(Dispatchers.IO) {
+                database.saveProgress(uri.toString(), currentPosition, currentDuration)
+                sourceProgressIdentity?.let {
+                    database.saveSourceEpisodeProgress(it, uri.toString(), currentPosition, currentDuration)
+                }
+            }
             player.release()
         }
     }
 
-    LaunchedEffect(player, uri) {
-        val recent = withContext(Dispatchers.IO) { database.listRecent().firstOrNull { it.uri == uri.toString() } }
-        withContext(Dispatchers.IO) { database.recordOpened(uri, displayName) }
-        val knownDuration = player.duration.takeIf { it > 0L } ?: recent?.durationMs ?: 0L
-        val saved = recent?.positionMs ?: 0L
+    LaunchedEffect(player, uri, sourceProgressIdentity) {
+        val (recent, sourceProgress) = withContext(Dispatchers.IO) {
+            val recent = database.listRecent().firstOrNull { it.uri == uri.toString() }
+            val sourceProgress = sourceProgressIdentity?.let(database::sourceEpisodeProgress)
+            database.recordOpened(uri, displayName)
+            recent to sourceProgress
+        }
+        val knownDuration = player.duration.takeIf { it > 0L }
+            ?: sourceProgress?.durationMs
+            ?: recent?.durationMs
+            ?: 0L
+        val saved = sourceProgress?.positionMs ?: recent?.positionMs ?: 0L
         val resumePosition = if (knownDuration > 0 && saved >= knownDuration - 10_000L) 0L else saved
         if (resumePosition > 0L) player.seekTo(resumePosition)
         player.playWhenReady = true
@@ -308,7 +322,11 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(database) {
-        dictionaryPopupExpansion = withContext(Dispatchers.IO) { DictionaryPopupExpansion.load(database) }
+        val popupPreferences = withContext(Dispatchers.IO) {
+            DictionaryPopupExpansion.load(database) to DictionaryPopupSize.load(database)
+        }
+        dictionaryPopupExpansion = popupPreferences.first
+        dictionaryPopupSize = popupPreferences.second
     }
 
     LaunchedEffect(lookup, anki, database) {
@@ -340,7 +358,12 @@ fun PlayerScreen(
                 lastSavedAt = positionMs
                 val savedPosition = positionMs
                 val savedDuration = durationMs
-                withContext(Dispatchers.IO) { database.saveProgress(uri.toString(), savedPosition, savedDuration) }
+                withContext(Dispatchers.IO) {
+                    database.saveProgress(uri.toString(), savedPosition, savedDuration)
+                    sourceProgressIdentity?.let {
+                        database.saveSourceEpisodeProgress(it, uri.toString(), savedPosition, savedDuration)
+                    }
+                }
             }
             delay(250L)
         }
@@ -990,6 +1013,7 @@ fun PlayerScreen(
             metadata = lookupMetadata,
             alreadyMined = lookupWordAlreadyMined,
             expansion = dictionaryPopupExpansion,
+            popupSize = dictionaryPopupSize,
             anchorInPlayer = lookupAnchor,
             subtitleContext = activeCue?.plainText ?: embeddedSubtitle,
             onDismiss = {
@@ -1131,6 +1155,7 @@ private fun LookupPopup(
     metadata: List<com.nekoplayer.app.data.DictionaryTermMeta>,
     alreadyMined: Boolean,
     expansion: DictionaryPopupExpansion,
+    popupSize: Float,
     anchorInPlayer: Offset,
     subtitleContext: String,
     onDismiss: () -> Unit,
@@ -1219,9 +1244,9 @@ private fun LookupPopup(
     ) {
         BoxWithConstraints {
             val portrait = maxHeight > maxWidth
-            val popupWidth = (maxWidth * if (portrait) 0.94f else 0.92f)
+            val popupWidth = (maxWidth * popupSize)
                 .coerceAtMost(if (portrait) 760.dp else 1000.dp)
-            val popupHeight = (maxHeight * if (portrait) 0.74f else 0.88f)
+            val popupHeight = (maxHeight * popupSize)
                 .coerceAtMost(760.dp)
 
             if (pageHtml != null) {

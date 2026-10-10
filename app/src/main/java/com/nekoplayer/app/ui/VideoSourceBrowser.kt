@@ -107,6 +107,11 @@ private fun SEpisode.sortingNumber(): Float? {
         ?.takeIf { it.isFinite() && it >= 0f }
 }
 
+private fun formatProgressTime(milliseconds: Long): String {
+    val seconds = milliseconds.coerceAtLeast(0L) / 1_000L
+    return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+}
+
 private fun LinkageError.toExtensionRuntimeMessage(apiVersion: Double): String {
     val detail = message?.lineSequence()?.firstOrNull()?.trim()?.take(160)
         ?.takeIf(String::isNotBlank)
@@ -121,7 +126,15 @@ internal fun VideoSourceBrowser(
     database: AppDatabase,
     initialAnime: SAnime?,
     onBack: () -> Unit,
-    onPlayVideo: (android.net.Uri, String, String?, Map<String, String>, String?, Int?) -> Unit,
+    onPlayVideo: (
+        android.net.Uri,
+        String,
+        String?,
+        Map<String, String>,
+        String?,
+        Int?,
+        AppDatabase.SourceProgressIdentity?,
+    ) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val source = item.source
@@ -136,6 +149,15 @@ internal fun VideoSourceBrowser(
     var selectedAnime by remember(source.id) { mutableStateOf<SAnime?>(null) }
     var selectedAnimeArtworkUrl by remember(source.id) { mutableStateOf<String?>(null) }
     var selectedAnimeUrl by remember(source.id) { mutableStateOf<String?>(null) }
+    var sourceProgressAnimeUrl by remember(source.id, initialAnime?.url) {
+        mutableStateOf(initialAnime?.url)
+    }
+    var savedSourceProgress by remember(source.id, initialAnime?.url) {
+        mutableStateOf<AppDatabase.SourceEpisodeProgress?>(null)
+    }
+    var pendingContinueProgress by remember(source.id, initialAnime?.url) {
+        mutableStateOf<AppDatabase.SourceEpisodeProgress?>(null)
+    }
     var details by remember(source.id) { mutableStateOf<SAnime?>(null) }
     var seasons by remember(source.id) { mutableStateOf<List<SAnime>>(emptyList()) }
     var episodes by remember(source.id) { mutableStateOf<List<SEpisode>>(emptyList()) }
@@ -195,6 +217,7 @@ internal fun VideoSourceBrowser(
     }
 
     fun openAnime(anime: SAnime, loadCatalogueAfter: Boolean = false) {
+        if (selectedAnime == null) sourceProgressAnimeUrl = anime.url
         selectedAnime = anime
         selectedAnimeArtworkUrl = anime.thumbnail_url
             ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
@@ -247,7 +270,48 @@ internal fun VideoSourceBrowser(
         }
     }
 
-    fun openEpisode(episode: SEpisode) {
+    fun playVideoChoice(choice: StreamChoice, episode: SEpisode) {
+        val url = choice.video.videoUrl
+        if (url.isNullOrBlank()) {
+            error = "This source did not resolve a direct video stream."
+            return
+        }
+        val sourceHeaders = choice.video.headers
+        val headers = buildMap {
+            if (sourceHeaders != null) {
+                for (headerIndex in 0 until sourceHeaders.size) {
+                    put(sourceHeaders.name(headerIndex), sourceHeaders.value(headerIndex))
+                }
+            }
+        }
+        val episodeNumber = episode.episode_number
+            .takeIf { it.isFinite() && it >= 1f && it % 1f == 0f }
+            ?.toInt()
+        val detailAnimeUrl = selectedAnimeUrl ?: selectedAnime?.url.orEmpty()
+        val progressIdentity = sourceProgressAnimeUrl
+            ?.takeIf(String::isNotBlank)
+            ?.let { seriesAnimeUrl ->
+                AppDatabase.SourceProgressIdentity(
+                    sourceId = source.id,
+                    seriesAnimeUrl = seriesAnimeUrl,
+                    detailAnimeUrl = detailAnimeUrl.ifBlank { seriesAnimeUrl },
+                    episodeUrl = episode.url,
+                    episodeName = episode.name,
+                    episodeNumber = episodeNumber,
+                )
+            }
+        onPlayVideo(
+            url.toUri(),
+            choice.label.ifBlank { episode.name },
+            selectedAnime?.title,
+            headers,
+            episode.name,
+            episodeNumber,
+            progressIdentity,
+        )
+    }
+
+    fun openEpisode(episode: SEpisode, autoPlayFirst: Boolean = false) {
         selectedEpisode = episode
         streamChoices = emptyList()
         scope.launch {
@@ -303,7 +367,11 @@ internal fun VideoSourceBrowser(
                     }
                 }
                 streamChoices = choices
-                if (choices.isEmpty()) error = "This episode has no playable video streams."
+                if (choices.isEmpty()) {
+                    error = "This episode has no playable video streams."
+                } else if (autoPlayFirst) {
+                    playVideoChoice(choices.first(), episode)
+                }
             } catch (linkage: LinkageError) {
                 error = linkage.toExtensionRuntimeMessage(item.extension.libVersion)
             } catch (_: Exception) {
@@ -326,11 +394,68 @@ internal fun VideoSourceBrowser(
                 selectedAnime = null
                 selectedAnimeArtworkUrl = null
                 selectedAnimeUrl = null
+                sourceProgressAnimeUrl = null
+                savedSourceProgress = null
+                pendingContinueProgress = null
                 details = null
                 episodes = emptyList()
                 error = null
             }
             else -> onBack()
+        }
+    }
+
+    LaunchedEffect(source.id, sourceProgressAnimeUrl) {
+        val seriesUrl = sourceProgressAnimeUrl
+        savedSourceProgress = if (seriesUrl.isNullOrBlank()) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                database.latestUnfinishedSourceProgress(source.id, seriesUrl)
+            }
+        }
+    }
+
+    LaunchedEffect(pendingContinueProgress, selectedAnimeUrl, episodes, busy) {
+        val progress = pendingContinueProgress ?: return@LaunchedEffect
+        if (progress.identity.detailAnimeUrl != selectedAnimeUrl) return@LaunchedEffect
+        val episode = episodes.firstOrNull { it.url == progress.identity.episodeUrl }
+            ?: episodes.firstOrNull {
+                progress.identity.episodeNumber != null &&
+                    it.sortingNumber() == progress.identity.episodeNumber.toFloat()
+            }
+        if (episode != null) {
+            pendingContinueProgress = null
+            openEpisode(episode, autoPlayFirst = true)
+        } else if (!busy && details != null) {
+            pendingContinueProgress = null
+            error = "The saved episode is no longer available from this source."
+        }
+    }
+
+    fun continueSourceProgress(progress: AppDatabase.SourceEpisodeProgress) {
+        if (busy) return
+        val targetDetailUrl = progress.identity.detailAnimeUrl
+        if (targetDetailUrl == selectedAnimeUrl) {
+            val episode = episodes.firstOrNull { it.url == progress.identity.episodeUrl }
+                ?: episodes.firstOrNull {
+                    progress.identity.episodeNumber != null &&
+                        it.sortingNumber() == progress.identity.episodeNumber.toFloat()
+                }
+            if (episode == null) {
+                error = "The saved episode is no longer available from this source."
+            } else {
+                openEpisode(episode, autoPlayFirst = true)
+            }
+            return
+        }
+
+        val season = seasons.firstOrNull { it.url == targetDetailUrl }
+        if (season == null) {
+            error = "The saved season is no longer available from this source."
+        } else {
+            pendingContinueProgress = progress
+            openAnime(season)
         }
     }
 
@@ -353,6 +478,9 @@ internal fun VideoSourceBrowser(
                             selectedAnime = null
                             selectedAnimeArtworkUrl = null
                             selectedAnimeUrl = null
+                            sourceProgressAnimeUrl = null
+                            savedSourceProgress = null
+                            pendingContinueProgress = null
                             details = null
                             episodes = emptyList()
                         }
@@ -488,12 +616,18 @@ internal fun VideoSourceBrowser(
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             verticalAlignment = Alignment.Top,
                         ) {
-                            SourceArtwork(
-                                imageUrl = animeArtworkUrl,
-                                contentDescription = anime?.title?.let { "$it cover art" },
-                                source = source as? AnimeHttpSource,
-                                modifier = Modifier.width(104.dp).height(154.dp),
-                            )
+                            Column(
+                                Modifier.width(104.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                SourceArtwork(
+                                    imageUrl = animeArtworkUrl,
+                                    contentDescription = anime?.title?.let { "$it cover art" },
+                                    source = source as? AnimeHttpSource,
+                                    modifier = Modifier.fillMaxWidth().height(154.dp),
+                                )
+                            }
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Material3Text(anime?.title.orEmpty(), style = MaterialTheme.typography.titleMedium)
                                 val synopsis = anime?.description
@@ -588,15 +722,25 @@ internal fun VideoSourceBrowser(
                         item { Text("Seasons", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
                     }
                     items(seasons, key = { "${source.id}:season:${it.url}" }) { season ->
+                        val seasonProgress = savedSourceProgress?.takeIf {
+                            it.identity.detailAnimeUrl == season.url
+                        }
                         Card(
-                            onClick = { openAnime(season) },
+                            onClick = {
+                                if (seasonProgress != null) continueSourceProgress(seasonProgress)
+                                else openAnime(season)
+                            },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(18.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         ) {
                             Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Material3Text(season.title, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                                Text("Open", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                                Text(
+                                    if (seasonProgress != null) localizeUiText("Continue") else "Open",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
                             }
                         }
                     }
@@ -674,19 +818,65 @@ internal fun VideoSourceBrowser(
                             item { EmptyCard("No matching episodes", "Try a different episode title or number.") }
                         }
                         items(visibleEpisodes, key = { "${source.id}:${it.url}" }) { episode ->
+                            val episodeProgress = savedSourceProgress?.takeIf { progress ->
+                                progress.identity.detailAnimeUrl == selectedAnimeUrl &&
+                                    (progress.identity.episodeUrl == episode.url ||
+                                        (progress.identity.episodeNumber != null &&
+                                            episode.sortingNumber() == progress.identity.episodeNumber.toFloat()))
+                            }
                             Card(
-                                onClick = { openEpisode(episode) },
+                                onClick = {
+                                    openEpisode(episode, autoPlayFirst = episodeProgress != null)
+                                },
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(18.dp),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                             ) {
                                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Material3Text(
-                                        episode.name,
+                                    Column(
                                         modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.bodyLarge,
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Material3Text(
+                                            episode.name,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                        )
+                                        episodeProgress?.let { progress ->
+                                            if (progress.durationMs > 0L) {
+                                                val fraction = (progress.positionMs.toFloat() / progress.durationMs)
+                                                    .coerceIn(0f, 1f)
+                                                Box(
+                                                    Modifier.fillMaxWidth()
+                                                        .height(4.dp)
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                                ) {
+                                                    Box(
+                                                        Modifier.fillMaxWidth(fraction)
+                                                            .fillMaxSize()
+                                                            .background(MaterialTheme.colorScheme.primary),
+                                                    )
+                                                }
+                                            }
+                                            Text(
+                                                if (progress.durationMs > 0L) {
+                                                    "${formatProgressTime(progress.positionMs)} / ${formatProgressTime(progress.durationMs)}"
+                                                } else {
+                                                    formatProgressTime(progress.positionMs)
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        if (episodeProgress != null) localizeUiText("Continue") else "Play",
+                                        color = MaterialTheme.colorScheme.primary,
+                                        style = MaterialTheme.typography.labelLarge,
                                     )
-                                    Text("Play", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                                 }
                             }
                         }
@@ -697,29 +887,7 @@ internal fun VideoSourceBrowser(
                     items(streamChoices, key = { "${it.label}:${it.video.videoUrl.orEmpty()}" }) { choice ->
                         Card(
                             onClick = {
-                                val url = choice.video.videoUrl
-                                if (!url.isNullOrBlank()) {
-                                    val sourceHeaders = choice.video.headers
-                                    val headers = buildMap {
-                                        if (sourceHeaders != null) {
-                                            for (headerIndex in 0 until sourceHeaders.size) {
-                                                put(sourceHeaders.name(headerIndex), sourceHeaders.value(headerIndex))
-                                            }
-                                        }
-                                    }
-                                    onPlayVideo(
-                                        url.toUri(),
-                                        choice.label.ifBlank { selectedEpisode?.name ?: "Video" },
-                                        selectedAnime?.title,
-                                        headers,
-                                        selectedEpisode?.name,
-                                        selectedEpisode?.episode_number
-                                            ?.takeIf { it.isFinite() && it >= 1f && it % 1f == 0f }
-                                            ?.toInt(),
-                                    )
-                                } else {
-                                    error = "This source did not resolve a direct video stream."
-                                }
+                                selectedEpisode?.let { playVideoChoice(choice, it) }
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(18.dp),

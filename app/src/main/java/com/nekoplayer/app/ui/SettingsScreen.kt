@@ -32,7 +32,6 @@ import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Style
@@ -146,6 +145,9 @@ fun SettingsScreen(
     var expandedPopupDictionaries by remember(database) {
         mutableStateOf(DictionaryPopupExpansion.load(database).customDictionaryNames)
     }
+    var popupSize by remember(database) {
+        mutableFloatStateOf(DictionaryPopupSize.load(database))
+    }
     var removeTarget by remember { mutableStateOf<ImportedDictionary?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var accessBusy by remember { mutableStateOf(false) }
@@ -172,11 +174,6 @@ fun SettingsScreen(
     }
     val settingsListState = rememberLazyListState()
     val detailListState = rememberLazyListState()
-    val activeImportStep = remember(dictionaryImportStatus) {
-        Regex("^Importing (\\d+) of (\\d+)$").find(dictionaryImportStatus.orEmpty())
-    }
-    val importStepNumber = activeImportStep?.groupValues?.getOrNull(1)?.toIntOrNull()
-    val importStepCount = activeImportStep?.groupValues?.getOrNull(2)?.toIntOrNull()
 
     fun scanTemporaryCache() {
         if (cacheScanning || cacheClearing) return
@@ -603,42 +600,12 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    Button(
-                        enabled = !dictionaryImportBusy,
-                        onClick = onImportDictionary,
-                        colors = ButtonDefaults.buttonColors(
-                            disabledContainerColor = MaterialTheme.colorScheme.primary,
-                            disabledContentColor = MaterialTheme.colorScheme.onPrimary,
-                        ),
+                    DictionaryImportButton(
+                        onImportDictionary = onImportDictionary,
+                        dictionaryImportStatus = dictionaryImportStatus,
+                        dictionaryImportBusy = dictionaryImportBusy,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().height(36.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.ImportExport, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    if (dictionaryImportBusy && importStepNumber != null && importStepCount != null) {
-                                        "Importing $importStepNumber of $importStepCount"
-                                    } else if (dictionaryImportBusy) {
-                                        "Importing…"
-                                    } else {
-                                        "Import dictionaries"
-                                    },
-                                    maxLines = 1,
-                                )
-                            }
-                            if (dictionaryImportBusy) {
-                                LinearProgressIndicator(
-                                    modifier = Modifier.fillMaxWidth().height(3.dp).align(Alignment.BottomCenter),
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                    trackColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.24f),
-                                )
-                            }
-                        }
-                    }
+                    )
                 }
             }
         }
@@ -685,6 +652,23 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+        }
+        item {
+            SettingSection("Popup size") {
+                Text(
+                    "Controls popup width and height relative to available screen.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SettingSlider(
+                    label = "Popup size",
+                    valueLabel = "${(popupSize * 100f).roundToInt()}%",
+                    value = popupSize,
+                    range = DictionaryPopupSize.MIN..DictionaryPopupSize.MAX,
+                    onChange = { popupSize = it },
+                    snapStep = 0.05f,
+                    onFinished = { save(DictionaryPopupSize.SETTING, it.toDouble()) },
+                )
             }
         }
         item {

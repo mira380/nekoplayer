@@ -156,27 +156,12 @@ fun DictionaryScreen(
                             "Add a Yomitan dictionary to search for words and definitions.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Button(
-                            enabled = !dictionaryImportBusy,
-                            onClick = onImportDictionary,
+                        DictionaryImportButton(
+                            onImportDictionary = onImportDictionary,
+                            dictionaryImportStatus = dictionaryImportStatus,
+                            dictionaryImportBusy = dictionaryImportBusy,
                             modifier = Modifier.fillMaxWidth().height(52.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                disabledContainerColor = MaterialTheme.colorScheme.primary,
-                                disabledContentColor = MaterialTheme.colorScheme.onPrimary,
-                            ),
-                        ) {
-                            Icon(Icons.Default.ImportExport, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (dictionaryImportBusy) "Importing…" else "Import dictionaries")
-                        }
-                        if (dictionaryImportBusy) {
-                            LinearProgressIndicator(Modifier.fillMaxWidth())
-                            Text(
-                                dictionaryImportStatus ?: "Preparing dictionaries…",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
+                        )
                         message?.let {
                             Text(it, color = MaterialTheme.colorScheme.error)
                         }
@@ -271,6 +256,57 @@ fun DictionaryScreen(
                         },
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun DictionaryImportButton(
+    onImportDictionary: () -> Unit,
+    dictionaryImportStatus: String?,
+    dictionaryImportBusy: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val activeStep = remember(dictionaryImportStatus) {
+        Regex("^Importing (\\d+) of (\\d+)$").find(dictionaryImportStatus.orEmpty())
+    }
+    val importStepNumber = activeStep?.groupValues?.getOrNull(1)?.toIntOrNull()
+    val importStepCount = activeStep?.groupValues?.getOrNull(2)?.toIntOrNull()
+
+    Button(
+        enabled = !dictionaryImportBusy,
+        onClick = onImportDictionary,
+        modifier = modifier,
+        colors = ButtonDefaults.buttonColors(
+            disabledContainerColor = MaterialTheme.colorScheme.primary,
+            disabledContentColor = MaterialTheme.colorScheme.onPrimary,
+        ),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth().height(36.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.ImportExport, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (dictionaryImportBusy && importStepNumber != null && importStepCount != null) {
+                        "Importing $importStepNumber of $importStepCount"
+                    } else if (dictionaryImportBusy) {
+                        "Importing…"
+                    } else {
+                        "Import dictionaries"
+                    },
+                    maxLines = 1,
+                )
+            }
+            if (dictionaryImportBusy) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().height(3.dp).align(Alignment.BottomCenter),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    trackColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.24f),
+                )
             }
         }
     }

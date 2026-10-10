@@ -40,6 +40,9 @@ class AppDatabase(context: Context) : Closeable {
         .apply { timeZone = TimeZone.getTimeZone("UTC") }
         .format(Date())
 
+    @android.annotation.SuppressLint("DirectDateInstantiation")
+    private fun nowEpochMs(): Long = Date().time
+
     private fun ensureSchema() {
         sql.transaction {
             sql.execSQL(
@@ -273,6 +276,73 @@ class AppDatabase(context: Context) : Closeable {
         writeSetting(SOURCE_LIBRARY_KEY, JSONArray().apply { entries.forEach { put(it.toJson()) } })
     }
 
+    @Synchronized
+    fun sourceEpisodeProgress(identity: SourceProgressIdentity): SourceEpisodeProgress? =
+        readSourceEpisodeProgress().firstOrNull { it.identity.key == identity.key }
+
+    @Synchronized
+    fun latestUnfinishedSourceProgress(sourceId: Long, seriesAnimeUrl: String): SourceEpisodeProgress? =
+        readSourceEpisodeProgress()
+            .asSequence()
+            .filter { it.identity.sourceId == sourceId && it.identity.seriesAnimeUrl == seriesAnimeUrl }
+            .filter {
+                it.positionMs > 0L &&
+                    (it.durationMs <= 0L || it.positionMs < it.durationMs - SOURCE_COMPLETION_TOLERANCE_MS)
+            }
+            .maxByOrNull { it.updatedAtMs }
+
+    @Synchronized
+    fun saveSourceEpisodeProgress(
+        identity: SourceProgressIdentity,
+        mediaUri: String,
+        positionMs: Long,
+        durationMs: Long,
+    ) {
+        val current = readSourceEpisodeProgress()
+        val existing = current.firstOrNull { it.identity.key == identity.key }
+        val progress = SourceEpisodeProgress(
+            identity = identity,
+            mediaUri = mediaUri,
+            positionMs = positionMs.coerceAtLeast(0L),
+            durationMs = if (durationMs > 0L) durationMs else existing?.durationMs ?: 0L,
+            updatedAtMs = nowEpochMs(),
+        )
+        val updated = (listOf(progress) + current.filterNot { it.identity.key == identity.key })
+            .take(SOURCE_PROGRESS_LIMIT)
+        writeSetting(SOURCE_PROGRESS_KEY, JSONArray().apply { updated.forEach { put(it.toJson()) } })
+    }
+
+    private fun readSourceEpisodeProgress(): List<SourceEpisodeProgress> {
+        val stored = readSetting(SOURCE_PROGRESS_KEY) as? JSONArray ?: return emptyList()
+        return buildList(stored.length()) {
+            for (index in 0 until stored.length()) {
+                val item = stored.optJSONObject(index) ?: continue
+                val sourceId = item.optLong("sourceId", -1L)
+                val seriesAnimeUrl = item.optString("seriesAnimeUrl").trim()
+                val detailAnimeUrl = item.optString("detailAnimeUrl").trim()
+                val episodeUrl = item.optString("episodeUrl").trim()
+                if (sourceId <= 0L || seriesAnimeUrl.isEmpty() || detailAnimeUrl.isEmpty() || episodeUrl.isEmpty()) continue
+                val episodeNumber = if (item.isNull("episodeNumber")) null else item.optInt("episodeNumber")
+                add(
+                    SourceEpisodeProgress(
+                        identity = SourceProgressIdentity(
+                            sourceId = sourceId,
+                            seriesAnimeUrl = seriesAnimeUrl,
+                            detailAnimeUrl = detailAnimeUrl,
+                            episodeUrl = episodeUrl,
+                            episodeName = item.optString("episodeName").ifBlank { "Episode" },
+                            episodeNumber = episodeNumber,
+                        ),
+                        mediaUri = item.optString("mediaUri"),
+                        positionMs = item.optLong("positionMs", 0L).coerceAtLeast(0L),
+                        durationMs = item.optLong("durationMs", 0L).coerceAtLeast(0L),
+                        updatedAtMs = item.optLong("updatedAtMs", 0L).coerceAtLeast(0L),
+                    ),
+                )
+            }
+        }
+    }
+
     fun listRecent(): List<RecentMedia> {
         val stored = readSetting(RECENT_KEY) as? JSONArray ?: return emptyList()
         return buildList(minOf(stored.length(), RECENT_LIMIT)) {
@@ -361,6 +431,39 @@ class AppDatabase(context: Context) : Closeable {
         }
     }
 
+    data class SourceProgressIdentity(
+        val sourceId: Long,
+        val seriesAnimeUrl: String,
+        val detailAnimeUrl: String,
+        val episodeUrl: String,
+        val episodeName: String,
+        val episodeNumber: Int?,
+    ) {
+        val key: String
+            get() = listOf(sourceId, seriesAnimeUrl, detailAnimeUrl, episodeUrl).joinToString("\u0000")
+    }
+
+    data class SourceEpisodeProgress(
+        val identity: SourceProgressIdentity,
+        val mediaUri: String,
+        val positionMs: Long,
+        val durationMs: Long,
+        val updatedAtMs: Long,
+    ) {
+        fun toJson() = JSONObject().apply {
+            put("sourceId", identity.sourceId)
+            put("seriesAnimeUrl", identity.seriesAnimeUrl)
+            put("detailAnimeUrl", identity.detailAnimeUrl)
+            put("episodeUrl", identity.episodeUrl)
+            put("episodeName", identity.episodeName)
+            put("episodeNumber", identity.episodeNumber ?: JSONObject.NULL)
+            put("mediaUri", mediaUri)
+            put("positionMs", positionMs)
+            put("durationMs", durationMs)
+            put("updatedAtMs", updatedAtMs)
+        }
+    }
+
     data class RecentMedia(
         val uri: String,
         val displayName: String,
@@ -382,6 +485,9 @@ class AppDatabase(context: Context) : Closeable {
         const val SCHEMA_VERSION = 5
         const val RECENT_KEY = "recent_media"
         const val SOURCE_LIBRARY_KEY = "library.videoSourceEntries"
+        const val SOURCE_PROGRESS_KEY = "playback.sourceEpisodes"
+        const val SOURCE_PROGRESS_LIMIT = 500
+        const val SOURCE_COMPLETION_TOLERANCE_MS = 10_000L
         const val RECENT_LIMIT = 20
     }
 }

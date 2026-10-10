@@ -80,6 +80,7 @@ data class VideoTarget(
     val requestHeaders: Map<String, String> = emptyMap(),
     val subtitleEpisodeName: String? = null,
     val subtitleEpisodeNumber: Int? = null,
+    val sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
 )
 
 @Composable
@@ -184,6 +185,7 @@ fun NekoApp(
         requestHeaders: Map<String, String> = emptyMap(),
         subtitleEpisodeName: String? = null,
         subtitleEpisodeNumber: Int? = null,
+        sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
     ) {
         val uri = if (sourceUri.scheme.isNullOrBlank()) Uri.fromFile(File(sourceUri.toString())) else sourceUri
         if (uri.scheme == "file") {
@@ -198,6 +200,7 @@ fun NekoApp(
                         requestHeaders,
                         subtitleEpisodeName,
                         subtitleEpisodeNumber,
+                        sourceProgressIdentity,
                     )
                 }
                 videoPermissionLauncher.launch(permission)
@@ -211,6 +214,7 @@ fun NekoApp(
             requestHeaders,
             subtitleEpisodeName,
             subtitleEpisodeNumber,
+            sourceProgressIdentity,
         )
     }
 
@@ -303,29 +307,7 @@ fun NekoApp(
       ProvideNekoLanguage(language) {
         val current = activeVideo
         SideEffect { activity.setSystemBarDarkIcons(enabled = !darkMode && current == null) }
-        if (current != null) {
-            NekoPlayerTheme(darkMode, palette, accent) {
-                PlayerScreen(
-                    activity = activity,
-                    database = database,
-                    dictionaries = dictionaryRepository,
-                    anki = anki,
-                    uri = current.uri,
-                    displayName = current.displayName,
-                    seriesTitle = current.seriesTitle,
-                    requestHeaders = current.requestHeaders,
-                    subtitleEpisodeName = current.subtitleEpisodeName,
-                    subtitleEpisodeNumber = current.subtitleEpisodeNumber,
-                    onClose = { activeVideo = null },
-                    onPickSubtitle = { callback ->
-                        subtitlePickerCallback = callback
-                        subtitlePicker.launch(arrayOf("*/*"))
-                    },
-                    onNotify = { message -> Toast.makeText(activity, localizeUiText(message, language), Toast.LENGTH_SHORT).show() },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        } else {
+        Box(Modifier.fillMaxSize()) {
             val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
             val safeSides = if (detailScreen) {
                 WindowInsetsSides.Top + WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
@@ -387,8 +369,8 @@ fun NekoApp(
                                     pendingSourceEntry = null
                                     detailScreen = false
                                 },
-                                onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber ->
-                                    openVideo(uri, name, title, headers, episodeName, episodeNumber)
+                                onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity ->
+                                    openVideo(uri, name, title, headers, episodeName, episodeNumber, progressIdentity)
                                 },
                                 onDetailScreenChanged = { detailScreen = it },
                                 modifier = Modifier.fillMaxSize(),
@@ -461,6 +443,34 @@ fun NekoApp(
                         }
                     }
                 }
+            }
+            if (current != null) {
+                NekoPlayerTheme(darkMode, palette, accent) {
+                    PlayerScreen(
+                        activity = activity,
+                        database = database,
+                        dictionaries = dictionaryRepository,
+                        anki = anki,
+                        uri = current.uri,
+                        displayName = current.displayName,
+                        seriesTitle = current.seriesTitle,
+                        requestHeaders = current.requestHeaders,
+                        subtitleEpisodeName = current.subtitleEpisodeName,
+                        subtitleEpisodeNumber = current.subtitleEpisodeNumber,
+                        sourceProgressIdentity = current.sourceProgressIdentity,
+                        onClose = { activeVideo = null },
+                        onPickSubtitle = { callback ->
+                            subtitlePickerCallback = callback
+                            subtitlePicker.launch(arrayOf("*/*"))
+                        },
+                        onNotify = { message -> Toast.makeText(activity, localizeUiText(message, language), Toast.LENGTH_SHORT).show() },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+            // Register after the underlying screens so Back closes the player first.
+            BackHandler(enabled = current != null) {
+                activeVideo = null
             }
         }
       }

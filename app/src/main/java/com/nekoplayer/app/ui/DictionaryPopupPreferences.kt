@@ -38,3 +38,13 @@ internal data class DictionaryPopupExpansion(
         }
     }
 }
+
+internal object DictionaryPopupSize {
+    const val SETTING = "dictionary.popup.sizeScale"
+    const val DEFAULT = 0.70f
+    const val MIN = 0.45f
+    const val MAX = 1f
+
+    fun load(database: AppDatabase): Float =
+        database.readNumber(SETTING, DEFAULT.toDouble()).toFloat().coerceIn(MIN, MAX)
+}

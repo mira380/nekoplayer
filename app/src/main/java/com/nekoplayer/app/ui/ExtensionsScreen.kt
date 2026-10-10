@@ -91,7 +91,15 @@ fun ExtensionsScreen(
     sourceEntryToOpen: AppDatabase.SourceLibraryEntry?,
     onSourceEntryOpened: () -> Unit,
     onReturnToLibrary: () -> Unit,
-    onPlayVideo: (android.net.Uri, String, String?, Map<String, String>, String?, Int?) -> Unit,
+    onPlayVideo: (
+        android.net.Uri,
+        String,
+        String?,
+        Map<String, String>,
+        String?,
+        Int?,
+        AppDatabase.SourceProgressIdentity?,
+    ) -> Unit,
     onDetailScreenChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
