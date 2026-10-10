@@ -87,7 +87,6 @@ private val japaneseLabels = mapOf(
     "Remove dictionary?" to "辞書を削除しますか？",
     "Remove" to "削除",
     "Cancel" to "キャンセル",
-    "Find a show" to "作品を検索",
     "Continue watching" to "続きを再生",
     "Artwork URL" to "アートワークURL",
     "HTTPS image URL" to "HTTPS画像URL",
