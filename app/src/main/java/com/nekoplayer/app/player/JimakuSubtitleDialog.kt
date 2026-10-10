@@ -62,6 +62,9 @@ import java.io.File
 
 private enum class SubtitleDialogPage { Sources, Working, AnimeChoices, Collections, SubtitleFiles }
 
+private const val MANUAL_ANI_LIST_MINIMUM_MATCH_SCORE = 0.22
+private const val AUTOMATIC_ANI_LIST_MINIMUM_MATCH_SCORE = 0.42
+
 @Composable
 fun JimakuSubtitleDialog(
     showName: String,
@@ -179,6 +182,11 @@ fun JimakuSubtitleDialog(
                 aniListClient.searchAnimeCandidates(
                     title,
                     if (automatic && episodeFileName.isNotBlank()) listOf(episodeFileName) else emptyList(),
+                    minimumMatchScore = if (automatic) {
+                        AUTOMATIC_ANI_LIST_MINIMUM_MATCH_SCORE
+                    } else {
+                        MANUAL_ANI_LIST_MINIMUM_MATCH_SCORE
+                    },
                 )
             }
             if (found.isEmpty()) {

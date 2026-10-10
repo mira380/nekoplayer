@@ -354,11 +354,7 @@ class DictionaryRepository(
         reader.use {
             it.beginArray()
             while (it.hasNext()) {
-                val value = readValue(it) as? List<*> ?: continue
-                if (value.size != 3) continue
-                val expression = value[0] as? String ?: continue
-                val mode = value[1] as? String ?: continue
-                val meta = normalizeMeta(expression, mode, value[2]) ?: continue
+                val meta = readMetaRow(it) ?: continue
                 pending += meta; count++; batch++
                 if (batch >= BATCH_SIZE) { flush(); batch = 0 }
             }
@@ -366,6 +362,121 @@ class DictionaryRepository(
         }
         flush(); statement.close()
         return count
+    }
+
+    private fun readMetaRow(reader: JsonReader): MetaRow? {
+        if (reader.peek() != JsonToken.BEGIN_ARRAY) {
+            reader.skipValue()
+            return null
+        }
+
+        reader.beginArray()
+        var fieldCount = 0
+        val expression = if (reader.hasNext()) readMetaString(reader).also { fieldCount++ } else null
+        val mode = if (reader.hasNext()) readMetaString(reader).also { fieldCount++ } else null
+        val normalizedMode = mode?.trim()?.lowercase(Locale.ROOT)
+        val data = if (reader.hasNext()) {
+            fieldCount++
+            if (normalizedMode in META_MODES) readMetaData(reader, normalizedMode.orEmpty())
+            else {
+                reader.skipValue()
+                null
+            }
+        } else {
+            null
+        }
+        val hasExactlyThreeFields = fieldCount == 3 && !reader.hasNext()
+        while (reader.hasNext()) reader.skipValue()
+        reader.endArray()
+
+        if (!hasExactlyThreeFields || expression == null || mode == null) return null
+        return normalizeMeta(expression, mode, data)
+    }
+
+    private fun readMetaString(reader: JsonReader): String? {
+        if (reader.peek() == JsonToken.STRING) return reader.nextString()
+        reader.skipValue()
+        return null
+    }
+
+    private fun readMetaData(reader: JsonReader, mode: String): Any? = when (reader.peek()) {
+        JsonToken.BEGIN_OBJECT -> readMetaObject(reader, mode)
+        JsonToken.BEGIN_ARRAY -> if (mode == "freq") {
+            reader.skipValue()
+            null
+        } else {
+            readValue(reader)
+        }
+        JsonToken.STRING, JsonToken.NUMBER, JsonToken.BOOLEAN, JsonToken.NULL -> readMetaScalar(reader)
+        else -> {
+            reader.skipValue()
+            null
+        }
+    }
+
+    private fun readMetaObject(reader: JsonReader, mode: String): Map<String, Any?> {
+        val values = linkedMapOf<String, Any?>()
+        val detailField = when (mode) {
+            "pitch" -> "pitches"
+            "ipa" -> "transcriptions"
+            else -> null
+        }
+
+        reader.beginObject()
+        while (reader.hasNext()) {
+            val name = reader.nextName()
+            when {
+                name == "reading" -> values[name] = readMetaScalarOrSkip(reader)
+                mode == "freq" && name == "frequency" -> values[name] = readMetaFrequency(reader)
+                mode == "freq" && (name == "value" || name == "displayValue") ->
+                    values[name] = readMetaScalarOrSkip(reader)
+                name == detailField -> {
+                    values[name] = if (reader.peek() == JsonToken.BEGIN_ARRAY) readValue(reader) else {
+                        reader.skipValue()
+                        null
+                    }
+                }
+                else -> reader.skipValue()
+            }
+        }
+        reader.endObject()
+        return values
+    }
+
+    private fun readMetaFrequency(reader: JsonReader): Any? {
+        if (reader.peek() != JsonToken.BEGIN_OBJECT) return readMetaScalarOrSkip(reader)
+
+        val values = linkedMapOf<String, Any?>()
+        reader.beginObject()
+        while (reader.hasNext()) {
+            val name = reader.nextName()
+            if (name == "value" || name == "displayValue") {
+                values[name] = readMetaScalarOrSkip(reader)
+            } else {
+                reader.skipValue()
+            }
+        }
+        reader.endObject()
+        return values
+    }
+
+    private fun readMetaScalarOrSkip(reader: JsonReader): Any? = when (reader.peek()) {
+        JsonToken.STRING, JsonToken.NUMBER, JsonToken.BOOLEAN, JsonToken.NULL -> readMetaScalar(reader)
+        else -> {
+            reader.skipValue()
+            null
+        }
+    }
+
+    private fun readMetaScalar(reader: JsonReader): Any? = when (reader.peek()) {
+        JsonToken.STRING -> reader.nextString()
+        JsonToken.NUMBER -> reader.nextString().let { it.toLongOrNull() ?: it.toDoubleOrNull() ?: 0 }
+        JsonToken.BOOLEAN -> reader.nextBoolean()
+        JsonToken.NULL -> { reader.nextNull(); null }
+        else -> {
+            reader.skipValue()
+            null
+        }
     }
 
     private fun normalizeMeta(expression: String, mode: String, data: Any?): MetaRow? {

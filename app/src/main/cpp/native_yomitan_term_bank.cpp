@@ -323,8 +323,8 @@ class TermBankParser {
     if (append_failed) return false;
     if (scalar != nullptr) {
       scalar->type = Scalar::Type::kNumber;
-      scalar->number_value = number;
-      return Append(output, number);
+      scalar->number_value = std::move(number);
+      return Append(output, scalar->number_value);
     }
     return true;
   }
@@ -506,8 +506,6 @@ class TermBankParser {
     if (expressions == nullptr || readings == nullptr || raw_rows == nullptr || scores == nullptr) {
       return false;
     }
-    std::vector<jint> score_values;
-    score_values.reserve(batch_.size());
     for (jsize i = 0; i < count; ++i) {
       const TermRow& row = batch_[static_cast<size_t>(i)];
       jstring expression = NewJavaString(row.expression);
@@ -532,9 +530,9 @@ class TermBankParser {
       env_->DeleteLocalRef(reading);
       env_->DeleteLocalRef(raw);
       if (env_->ExceptionCheck()) return false;
-      score_values.push_back(row.score);
+      score_values_[static_cast<size_t>(i)] = row.score;
     }
-    env_->SetIntArrayRegion(scores, 0, count, score_values.data());
+    env_->SetIntArrayRegion(scores, 0, count, score_values_.data());
     if (!env_->ExceptionCheck()) {
       env_->CallVoidMethod(consumer_, on_batch_, expressions, readings, scores, raw_rows);
     }
@@ -556,6 +554,7 @@ class TermBankParser {
   jclass string_class_ = nullptr;
   StreamReader* input_ = nullptr;
   std::vector<TermRow> batch_;
+  std::array<jint, kMaxBatchRows> score_values_{};
   size_t batch_bytes_ = 0;
   jint imported_count_ = 0;
   std::string error_;

@@ -166,6 +166,7 @@ class AniListClient(context: Context) {
     fun searchAnimeCandidates(
         showName: String,
         episodeFileNames: Iterable<String> = emptyList(),
+        minimumMatchScore: Double = MINIMUM_MATCH_SCORE,
     ): List<AniListCandidate> {
         val queries = searchQueries(showName, episodeFileNames)
         if (queries.isEmpty()) return emptyList()
@@ -180,8 +181,8 @@ class AniListClient(context: Context) {
                     .map { titles.optString(it) }
                     .filter { it.isNotBlank() }
                 if (id <= 0 || names.isEmpty()) continue
-                val score = names.maxOf { titleMatchScore(query, it) }
-                if (score < MINIMUM_MATCH_SCORE) continue
+                val score = names.maxOf { aniListSearchTitleScore(query, it) }
+                if (score < minimumMatchScore.coerceIn(0.0, 1.0)) continue
                 val current = candidates[id]
                 if (current == null || score > current.score) {
                     candidates[id] = AniListCandidate(id, names.first(), score)
@@ -330,6 +331,15 @@ class AniListClient(context: Context) {
         .replace(Regex("\\b(?:webrip|web-dl|bluray|bdrip|h264|h265|x264|x265)\\b", RegexOption.IGNORE_CASE), " ")
         .replace(Regex("\\s+"), " ").trim()
 
+    private fun aniListSearchTitleScore(search: String, candidate: String): Double {
+        val query = normalize(search)
+        val result = normalize(candidate)
+        val baseScore = titleMatchScore(search, candidate)
+        if (query.isNotEmpty() && result.startsWith("$query ")) return maxOf(baseScore, PREFIX_TITLE_SCORE)
+        if (result.isNotEmpty() && query.startsWith("$result ")) return maxOf(baseScore, PREFIX_TITLE_SCORE)
+        return baseScore
+    }
+
     private fun titleMatchScore(search: String, candidate: String): Double {
         val a = normalize(search)
         val b = normalize(candidate)
@@ -362,6 +372,7 @@ class AniListClient(context: Context) {
         private const val MAX_SEARCH_QUERIES = 4
         private const val MAX_CANDIDATES = 10
         private const val MINIMUM_MATCH_SCORE = 0.42
+        private const val PREFIX_TITLE_SCORE = 0.75
         private const val STRONG_MATCH_SCORE = 0.88
         private const val MAX_RESPONSE_BYTES = 12 * 1024 * 1024
         private const val IMAGE_LIFETIME_MS = 30L * 24 * 60 * 60 * 1000

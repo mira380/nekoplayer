@@ -1,5 +1,6 @@
 package com.nekoplayer.app.ui
 
+import android.content.Context
 import android.media.MediaPlayer
 import android.net.Uri
 import androidx.core.net.toUri
@@ -145,7 +146,9 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.hypot
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
@@ -229,7 +232,7 @@ fun PlayerScreen(
         mutableFloatStateOf(DictionaryPopupSize.load(database))
     }
     var pronunciationPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    var pronunciationFile by remember { mutableStateOf<java.io.File?>(null) }
+    var pronunciationFile by remember { mutableStateOf<File?>(null) }
     val pronunciationClient = remember(database) { PronunciationAudioClient(database, context.cacheDir) }
     val aniListClient = remember(context) { AniListClient(context) }
     val jimakuClient = remember(context) { JimakuSubtitleClient(context.cacheDir) }
@@ -568,14 +571,41 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(uri, displayName, seriesTitle, subtitleEpisodeName, subtitleEpisodeNumber, jimakuApiKey, autoFetchJimaku, userSelectedSubtitle) {
-        if (!autoFetchJimaku || jimakuApiKey.isBlank() || userSelectedSubtitle || latestExternalSubtitle.value != null) return@LaunchedEffect
+    LaunchedEffect(uri, displayName, seriesTitle, subtitleEpisodeName, subtitleEpisodeNumber, sourceProgressIdentity, jimakuApiKey, autoFetchJimaku, userSelectedSubtitle) {
+        if (!autoFetchJimaku || userSelectedSubtitle || latestExternalSubtitle.value != null) return@LaunchedEffect
         val requestedMediaUri = uri.toString()
+        val episodeName = subtitleEpisodeName?.takeIf(String::isNotBlank) ?: displayName
+        val subtitleStorageKey = sourceProgressIdentity?.key ?: if (!seriesTitle.isNullOrBlank()) {
+            listOf(seriesTitle.trim(), episodeName, subtitleEpisodeNumber?.toString().orEmpty()).joinToString("\\u0000")
+        } else {
+            requestedMediaUri
+        }
+
+        val savedFile = withContext(Dispatchers.IO) {
+            findPersistedAutoJimakuSubtitle(context, subtitleStorageKey)
+        }
+        if (savedFile != null) {
+            val savedTrack = try {
+                parseExternalSubtitle(Uri.fromFile(savedFile), savedFile.name, SubtitleTrackSource.JIMAKU)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                withContext(Dispatchers.IO) { savedFile.delete() }
+                null
+            }
+            if (savedTrack != null) {
+                if (requestedMediaUri != latestMediaUri.value || userSelectedSubtitle || latestExternalSubtitle.value != null) return@LaunchedEffect
+                applyExternalSubtitle(savedTrack, manualChoice = false)
+                return@LaunchedEffect
+            }
+        }
+
+        if (jimakuApiKey.isBlank()) return@LaunchedEffect
         val showName = seriesTitle?.takeIf(String::isNotBlank) ?: displayName
         val file = try {
             findAutomaticJimakuSubtitle(
                 showName = showName,
-                episodeFileName = subtitleEpisodeName?.takeIf(String::isNotBlank) ?: displayName,
+                episodeFileName = episodeName,
                 apiKey = jimakuApiKey,
                 aniListClient = aniListClient,
                 jimakuClient = jimakuClient,
@@ -593,6 +623,10 @@ fun PlayerScreen(
             throw cancelled
         } catch (_: Exception) {
             return@LaunchedEffect
+        }
+        if (requestedMediaUri != latestMediaUri.value || userSelectedSubtitle || latestExternalSubtitle.value != null) return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            persistAutoJimakuSubtitle(context, subtitleStorageKey, file)
         }
         if (requestedMediaUri != latestMediaUri.value || userSelectedSubtitle || latestExternalSubtitle.value != null) return@LaunchedEffect
         applyExternalSubtitle(track, manualChoice = false)
@@ -1420,6 +1454,63 @@ private fun AnchoredYomitanPopup(
         }
     }
 }
+
+private fun autoJimakuSubtitleDirectory(context: Context, identity: String): File {
+    val folderName = UUID.nameUUIDFromBytes(identity.toByteArray(Charsets.UTF_8)).toString()
+    return File(File(context.filesDir, "auto-jimaku-subtitles"), folderName)
+}
+
+private fun findPersistedAutoJimakuSubtitle(context: Context, identity: String): File? =
+    autoJimakuSubtitleDirectory(context, identity)
+        .listFiles()
+        ?.filter { file ->
+            file.isFile &&
+                file.length() in 1L..SubtitleParser.MAX_FILE_BYTES.toLong() &&
+                file.extension.lowercase(Locale.ROOT) in SubtitleParser.SUPPORTED_EXTENSIONS
+        }
+        ?.maxByOrNull { it.lastModified() }
+
+private fun persistAutoJimakuSubtitle(context: Context, identity: String, source: File): File? {
+    val root = File(context.filesDir, "auto-jimaku-subtitles")
+    val directory = autoJimakuSubtitleDirectory(context, identity)
+    return try {
+        if (!directory.exists() && !directory.mkdirs()) return null
+        val destination = File(directory, source.name)
+        source.copyTo(destination, overwrite = true)
+        directory.listFiles()
+            ?.filter { it.isFile && it != destination }
+            ?.forEach { it.delete() }
+        trimAutoJimakuSubtitleStorage(root, directory)
+        destination
+    } catch (_: Exception) {
+        File(directory, source.name).delete()
+        null
+    }
+}
+
+private fun trimAutoJimakuSubtitleStorage(root: File, newestDirectory: File) {
+    val olderDirectories = root.listFiles()
+        ?.filter { it.isDirectory && it != newestDirectory }
+        ?.sortedByDescending { it.lastModified() }
+        .orEmpty()
+    val directories = listOf(newestDirectory) + olderDirectories
+    var keptEpisodes = 0
+    var keptBytes = 0L
+    for (directory in directories) {
+        val bytes = directory.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+        val keep = directory == newestDirectory ||
+            (keptEpisodes < MAX_SAVED_JIMAKU_EPISODES && keptBytes + bytes <= MAX_SAVED_JIMAKU_BYTES)
+        if (keep) {
+            keptEpisodes++
+            keptBytes += bytes
+        } else {
+            directory.deleteRecursively()
+        }
+    }
+}
+
+private const val MAX_SAVED_JIMAKU_EPISODES = 200
+private const val MAX_SAVED_JIMAKU_BYTES = 128L * 1024L * 1024L
 
 private fun formatTime(timeMs: Long): String {
     val totalSeconds = (timeMs.coerceAtLeast(0L) / 1000L)
