@@ -506,6 +506,16 @@ private fun rememberYomitanWebView(
                         latestLookupWord.value(line, offset)
                     }
                 }
+
+                @JavascriptInterface
+                @Suppress("unused")
+                fun mine(index: Int) {
+                    Handler(Looper.getMainLooper()).post {
+                        val entry = latestEntries.value.getOrNull(index) ?: return@post
+                        val lookupResult = latestLookupResult.value ?: return@post
+                        latestMine.value(entry, lookupResult, latestMetadata.value)
+                    }
+                }
             }, "NekoLookup")
             webViewClient = object : WebViewClient() {
                 private fun handleLookupLink(rawUrl: String?) {

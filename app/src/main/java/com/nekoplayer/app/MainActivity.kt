@@ -12,11 +12,16 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.mining.AnkiDroidClient
 import com.nekoplayer.app.mining.AnkiDroidPermissionRequester
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 class MainActivity : ComponentActivity(), AnkiDroidPermissionRequester {
     private lateinit var database: AppDatabase
     private var pendingPermissionCallback: ((Boolean) -> Unit)? = null
     private var playerImmersive = false
+    val miningScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -98,6 +103,7 @@ class MainActivity : ComponentActivity(), AnkiDroidPermissionRequester {
     override fun onDestroy() {
         pendingPermissionCallback?.invoke(false)
         pendingPermissionCallback = null
+        miningScope.cancel()
         if (isFinishing) database.close()
         super.onDestroy()
     }

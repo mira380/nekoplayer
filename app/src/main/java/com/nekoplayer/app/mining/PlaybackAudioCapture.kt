@@ -16,8 +16,8 @@ import kotlin.math.roundToLong
 
 class PlaybackAudioCapture {
     private class Chunk(
-        val startMs: Long,
-        val endMs: Long,
+        val startUs: Long,
+        val endUs: Long,
         val sampleRate: Int,
         val bytes: ByteArray,
     )
@@ -25,6 +25,7 @@ class PlaybackAudioCapture {
     private val chunks = ArrayDeque<Chunk>()
     private var sampleRate = 0
     private var channelCount = 0
+    private var durationRemainder = 0L
 
     @Synchronized
     internal fun append(
@@ -52,43 +53,56 @@ class PlaybackAudioCapture {
             chunks.clear()
             sampleRate = inputSampleRate
             channelCount = inputChannelCount
+            durationRemainder = 0L
         }
 
         val alignedBytes = if (byteCount == bytes.size) bytes else bytes.copyOf(byteCount)
         val previous = chunks.lastOrNull()
-        if (previous != null && abs(nextPositionMs - previous.endMs) > SEEK_RESET_THRESHOLD_MS) {
+        val playbackPositionUs = nextPositionMs.coerceAtLeast(0L) * MICROS_PER_MS
+        if (
+            previous != null &&
+            abs(playbackPositionUs - previous.endUs) > SEEK_RESET_THRESHOLD_US
+        ) {
             chunks.clear()
+            durationRemainder = 0L
         }
-        val startMs = chunks.lastOrNull()?.endMs ?: nextPositionMs.coerceAtLeast(0L)
+        val startUs = chunks.lastOrNull()?.endUs ?: playbackPositionUs
         val frames = byteCount / frameBytes
-        val durationMs = (frames * 1_000.0 / inputSampleRate).roundToLong().coerceAtLeast(1L)
+        val durationNumerator = frames.toLong() * MICROS_PER_SECOND + durationRemainder
+        val durationUs = (durationNumerator / inputSampleRate).coerceAtLeast(1L)
+        durationRemainder = durationNumerator % inputSampleRate
         chunks.addLast(
             Chunk(
-                startMs = startMs,
-                endMs = startMs + durationMs,
+                startUs = startUs,
+                endUs = startUs + durationUs,
                 sampleRate = inputSampleRate,
                 bytes = alignedBytes,
             ),
         )
-        val oldestAllowedMs = chunks.last().endMs - HISTORY_MS
-        while (chunks.firstOrNull()?.endMs?.let { it < oldestAllowedMs } == true) {
+        val oldestAllowedUs = chunks.last().endUs - HISTORY_US
+        while (chunks.firstOrNull()?.endUs?.let { it < oldestAllowedUs } == true) {
             chunks.removeFirst()
         }
     }
 
     @Synchronized
     fun hasSamplesThrough(endMs: Long): Boolean =
-        chunks.lastOrNull()?.endMs?.let { it >= endMs } == true
+        chunks.lastOrNull()?.endUs?.let { it >= endMs * MICROS_PER_MS } == true
 
     @Synchronized
     fun hasSamplesFrom(startMs: Long): Boolean =
-        chunks.firstOrNull()?.startMs?.let { it <= startMs } == true
+        chunks.firstOrNull()?.startUs?.let { it <= startMs * MICROS_PER_MS } == true
 
     @Synchronized
     fun hasSamplesCovering(startMs: Long, endMs: Long): Boolean =
         hasSamplesFrom(startMs) && hasSamplesThrough(endMs)
 
-    fun writeClip(cueStartMs: Long, cueEndMs: Long, settings: CaptureSettings, output: File): Boolean {
+    fun writeClip(
+        cueStartMs: Long,
+        cueEndMs: Long,
+        settings: CaptureSettings,
+        output: File,
+    ): Boolean {
         if (cueEndMs < cueStartMs) return false
         val snapshot: List<Chunk>
         val formatRate: Int
@@ -104,24 +118,30 @@ class PlaybackAudioCapture {
             cueEndMs + settings.postPaddingMs,
             settings.mediaDurationMs?.takeIf { it > 0L } ?: Long.MAX_VALUE,
         ).coerceAtLeast(requestedStartMs + 1L)
-        if (
-            snapshot.first().startMs > requestedStartMs ||
-            snapshot.last().endMs < requestedEndMs
-        ) return false
-        val startMs = requestedStartMs
-        val endMs = requestedEndMs
-        if (endMs <= startMs) return false
+        val startUs = requestedStartMs * MICROS_PER_MS
+        val endUs = requestedEndMs * MICROS_PER_MS
+        if (snapshot.first().startUs > startUs || snapshot.last().endUs < endUs) return false
 
         val bytesPerFrame = formatChannels * BYTES_PER_SAMPLE
         val parts = snapshot.mapNotNull { chunk ->
-            if (chunk.endMs <= startMs || chunk.startMs >= endMs) return@mapNotNull null
+            if (chunk.endUs <= startUs || chunk.startUs >= endUs) return@mapNotNull null
             val frameCount = chunk.bytes.size / bytesPerFrame
-            val firstFrame = floor(
-                (maxOf(startMs, chunk.startMs) - chunk.startMs) * chunk.sampleRate / 1_000.0,
-            ).toInt().coerceIn(0, frameCount)
-            val lastFrame = ceil(
-                (minOf(endMs, chunk.endMs) - chunk.startMs) * chunk.sampleRate / 1_000.0,
-            ).toInt().coerceIn(firstFrame, frameCount)
+            val clippedStartUs = maxOf(startUs, chunk.startUs)
+            val clippedEndUs = minOf(endUs, chunk.endUs)
+            val firstFrame = if (clippedStartUs <= chunk.startUs) {
+                0
+            } else {
+                floor(
+                    (clippedStartUs - chunk.startUs) * chunk.sampleRate / MICROS_PER_SECOND.toDouble(),
+                ).toInt().coerceIn(0, frameCount)
+            }
+            val lastFrame = if (clippedEndUs >= chunk.endUs) {
+                frameCount
+            } else {
+                ceil(
+                    (clippedEndUs - chunk.startUs) * chunk.sampleRate / MICROS_PER_SECOND.toDouble(),
+                ).toInt().coerceIn(firstFrame, frameCount)
+            }
             if (lastFrame <= firstFrame) return@mapNotNull null
             val offset = firstFrame * bytesPerFrame
             val length = (lastFrame - firstFrame) * bytesPerFrame
@@ -217,8 +237,10 @@ class PlaybackAudioCapture {
 
     private companion object {
         const val BYTES_PER_SAMPLE = 2
-        const val HISTORY_MS = 30_000L
-        const val SEEK_RESET_THRESHOLD_MS = 2_000L
+        const val MICROS_PER_MS = 1_000L
+        const val MICROS_PER_SECOND = 1_000_000L
+        const val HISTORY_US = 30_000_000L
+        const val SEEK_RESET_THRESHOLD_US = 2_000_000L
         const val MAX_WAVE_DATA_BYTES = 128 * 1024 * 1024
     }
 }
