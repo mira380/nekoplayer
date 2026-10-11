@@ -173,6 +173,7 @@ private val japaneseLabels = mapOf(
     "Pick the matching anime title." to "該当するアニメ作品を選択してください。",
     "Pick a subtitle file." to "字幕ファイルを選択してください。",
     "Back" to "戻る",
+    "Open full screen" to "全画面で開く",
     "Close" to "閉じる",
     "Language" to "言語",
     "Theme" to "テーマ",

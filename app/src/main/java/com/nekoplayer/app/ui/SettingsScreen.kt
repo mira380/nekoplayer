@@ -639,6 +639,7 @@ fun SettingsScreen(
                     value = jimakuKey,
                     onValueChange = { jimakuKey = it },
                     modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
                     label = { Text("Jimaku API key") },
                     singleLine = true,
                 )
@@ -934,6 +935,7 @@ fun SettingsScreen(
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp),
                                 label = { Text("URL template") },
                                 placeholder = { Text("https://…?term={term}&reading={reading}") },
                                 supportingText = { Text("Tokens: {term}, {reading}, {language}.") },

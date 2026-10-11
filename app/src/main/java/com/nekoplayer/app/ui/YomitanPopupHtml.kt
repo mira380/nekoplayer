@@ -18,7 +18,7 @@ internal data class YomitanPopupColors(
     val isDark: Boolean,
 )
 
-// Builds a script-free page with escaped text and a small set of safe dictionary tags and links.
+// Builds a local page with escaped text, constrained content, and safe dictionary tags and links.
 internal object YomitanPopupHtml {
     private const val MAX_ENTRIES = 36
     private const val MAX_GLOSSES = 16
@@ -26,6 +26,35 @@ internal object YomitanPopupHtml {
     private const val MAX_NODE_DEPTH = 24
     private const val MAX_TEXT_LENGTH = 2_000
     private const val MAX_RENDERED_TEXT = 500_000
+    private val LOOKUP_SCRIPT = """
+        (function() {
+          function rangeAtPoint(x, y) {
+            if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);
+            if (document.caretPositionFromPoint) {
+              var position = document.caretPositionFromPoint(x, y);
+              if (!position) return null;
+              var range = document.createRange();
+              range.setStart(position.offsetNode, position.offset);
+              range.collapse(true);
+              return range;
+            }
+            return null;
+          }
+          document.addEventListener('click', function(event) {
+            var gloss = event.target.closest && event.target.closest('.glosses li, .subtitle, .entry-term, .word');
+            if (!gloss || !window.NekoLookup) return;
+            var caret = rangeAtPoint(event.clientX, event.clientY);
+            if (!caret || !gloss.contains(caret.startContainer)) return;
+            var prefix = document.createRange();
+            prefix.selectNodeContents(gloss);
+            try { prefix.setEnd(caret.startContainer, caret.startOffset); }
+            catch (_) { return; }
+            var text = gloss.textContent || '';
+            var offset = prefix.toString().length;
+            if (text.length > 0 && text.length <= 8000 && offset < text.length) window.NekoLookup.lookupWord(text, offset);
+          }, true);
+        })();
+    """.trimIndent()
 
     private class RenderBudget(var remaining: Int = MAX_RENDERED_TEXT)
 
@@ -37,6 +66,8 @@ internal object YomitanPopupHtml {
         language: String = "English",
         alreadyMined: Boolean = false,
         expansion: DictionaryPopupExpansion = DictionaryPopupExpansion(),
+        showExpandAction: Boolean = true,
+        showBackAction: Boolean = false,
     ): String {
         val entries = (result.entries + result.relatedEntries).take(MAX_ENTRIES)
         val primary = result.entries.firstOrNull() ?: entries.firstOrNull()
@@ -48,6 +79,7 @@ internal object YomitanPopupHtml {
         return buildString {
             append("<!doctype html><html><head><meta charset=\"utf-8\">")
             append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+            append("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';\">")
             append("<style>")
             append(styles(colors))
             append("</style></head><body><main>")
@@ -59,7 +91,18 @@ internal object YomitanPopupHtml {
                 if (primary.expression != result.surfaceText && result.surfaceText.isNotBlank()) {
                     append("<div class=\"matched\">").append(localizeUiText("Matched:", language)).append(" ").append(escape(result.surfaceText)).append("</div>")
                 }
-                append("</div><div class=\"popup-actions\"><a class=\"mine\" href=\"nekoplayer://mine/0\" aria-label=\"")
+                append("</div><div class=\"popup-actions\">")
+                if (showBackAction) {
+                    append("<a class=\"back\" href=\"nekoplayer://back\" aria-label=\"")
+                        .append(localizeUiText("Back", language)).append("\">")
+                        .append(backIcon(colors.foreground)).append("</a>")
+                }
+                if (showExpandAction) {
+                    append("<a class=\"expand\" href=\"nekoplayer://expand\" aria-label=\"")
+                        .append(localizeUiText("Open full screen", language)).append("\">")
+                        .append(expandIcon(colors.foreground)).append("</a>")
+                }
+                append("<a class=\"mine\" href=\"nekoplayer://mine/0\" aria-label=\"")
                     .append(localizeUiText(if (alreadyMined) "Already in Anki" else "Add to Anki", language)).append("\">")
                 append(if (alreadyMined) checkIcon(colors.foreground, colors.background) else addIcon(colors.foreground, colors.background))
                 append("</a><a class=\"pronounce\" href=\"nekoplayer://audio/0\" aria-label=\"").append(localizeUiText("Play pronunciation", language)).append("\">")
@@ -90,7 +133,7 @@ internal object YomitanPopupHtml {
                 append("</div></details>")
             }
             if (entries.isEmpty()) append("<div class=\"empty\">").append(localizeUiText("No dictionary entries found.", language)).append("</div>")
-            append("</main></body></html>")
+            append("</main><script>").append(LOOKUP_SCRIPT).append("</script></body></html>")
         }
     }
 
@@ -352,9 +395,9 @@ internal object YomitanPopupHtml {
         .word-heading { min-width: 0; }
         .word { font-size: 40px; line-height: 1.2; font-weight: 700; }
         .popup-actions { display: flex; align-items: center; gap: 14px; flex: none; }
-        .mine, .pronounce { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; color: ${css(colors.foreground)}; }
+        .mine, .pronounce, .expand, .back { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; color: ${css(colors.foreground)}; }
         .mine svg { width: 26px; height: 26px; }
-        .pronounce svg { width: 28px; height: 28px; }
+        .pronounce svg, .expand svg, .back svg { width: 28px; height: 28px; }
         ruby { ruby-position: over; }
         rt { color: ${css(colors.secondary)}; font-size: 12px; font-weight: 500; }
         .matched, .form-line { color: ${css(colors.secondary)}; font-size: 13px; margin-top: 3px; }
@@ -424,6 +467,18 @@ internal object YomitanPopupHtml {
     """.trimIndent() + "\n" + PitchAccentGraph.styles(colors)
 
     private fun css(argb: Int): String = String.format(Locale.ROOT, "#%06X", argb and 0xFFFFFF)
+
+    private fun backIcon(color: Int): String = """
+        <svg viewBox="0 0 24 24" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+          <path d="M19 12H5m7 7-7-7 7-7" fill="none" stroke="${css(color)}" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+        </svg>
+    """.trimIndent()
+
+    private fun expandIcon(color: Int): String = """
+        <svg viewBox="0 0 24 24" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 9V4h5M4 4l6 6m10-1V4h-5m5 0-6 6M4 15v5h5m-5 0 6-6m10 1v5h-5m5 0-6-6" fill="none" stroke="${css(color)}" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+        </svg>
+    """.trimIndent()
 
     private fun addIcon(color: Int, contrast: Int): String = """
         <svg viewBox="0 0 24 24" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
