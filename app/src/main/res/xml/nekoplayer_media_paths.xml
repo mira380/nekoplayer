@@ -1,3 +1,4 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="mining_media" path="mining/" />
+    <files-path name="app_updates" path="updates/" />
 </paths>

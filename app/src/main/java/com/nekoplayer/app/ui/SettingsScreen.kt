@@ -1,6 +1,8 @@
 package com.nekoplayer.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -15,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -87,16 +91,16 @@ import com.nekoplayer.app.mining.AnkiDroidDeck
 import com.nekoplayer.app.mining.AnkiDroidNoteType
 import com.nekoplayer.app.mining.AnkiNoteFieldTemplates
 import com.nekoplayer.app.mining.PronunciationAudioPresets
+import com.nekoplayer.app.update.AppUpdateClient
+import com.nekoplayer.app.update.AppUpdateException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import android.content.Intent
 import androidx.core.net.toUri
+import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.math.roundToInt
 import java.util.UUID
 
@@ -165,12 +169,29 @@ fun SettingsScreen(
     var confirmCacheClear by remember { mutableStateOf(false) }
     var cacheError by remember { mutableStateOf<String?>(null) }
     var checkingRelease by remember { mutableStateOf(false) }
+    var downloadingUpdate by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableFloatStateOf(0f) }
     var latestRelease by remember { mutableStateOf<String?>(null) }
-    var latestReleaseUrl by remember { mutableStateOf<String?>(null) }
+    var latestReleaseNotes by remember { mutableStateOf<String?>(null) }
+    var showReleaseNotes by remember { mutableStateOf(false) }
+    var latestReleaseApkUrl by remember { mutableStateOf<String?>(null) }
+    var downloadedUpdateApk by remember { mutableStateOf<File?>(null) }
     var releaseError by remember { mutableStateOf<String?>(null) }
+    val appUpdateClient = remember(context) { AppUpdateClient(context) }
     val appVersion = remember(context) {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
             .getOrNull() ?: "Unknown"
+    }
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val apk = downloadedUpdateApk
+        if (apk != null && appUpdateClient.canInstallUnknownApps()) {
+            runCatching { appUpdateClient.install(apk) }
+                .onFailure { releaseError = (it as? AppUpdateException)?.message ?: "Couldn’t start the installer. Try again." }
+        } else if (apk != null) {
+            releaseError = "Allow NekoPlayer to install updates to continue."
+        }
     }
     val settingsListState = rememberLazyListState()
     val detailListState = rememberLazyListState()
@@ -215,32 +236,64 @@ fun SettingsScreen(
         }
     }
 
+    fun launchUpdateInstaller(apk: File) {
+        if (!appUpdateClient.canInstallUnknownApps()) {
+            runCatching {
+                installPermissionLauncher.launch(appUpdateClient.installPermissionIntent())
+            }.onFailure {
+                releaseError = "Couldn’t start the installer. Try again."
+            }
+            return
+        }
+        runCatching { appUpdateClient.install(apk) }
+            .onFailure { releaseError = (it as? AppUpdateException)?.message ?: "Couldn’t start the installer. Try again." }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val downloadUrl = latestReleaseApkUrl ?: return
+        if (downloadingUpdate || checkingRelease) return
+        scope.launch {
+            downloadingUpdate = true
+            downloadProgress = 0f
+            releaseError = null
+            try {
+                val apk = appUpdateClient.downloadApk(downloadUrl) { progress ->
+                    downloadProgress = progress
+                }
+                downloadedUpdateApk = apk
+                launchUpdateInstaller(apk)
+            } catch (error: AppUpdateException) {
+                releaseError = error.message ?: "Couldn’t download the update. Check your connection and try again."
+            } catch (_: Exception) {
+                releaseError = "Couldn’t download the update. Check your connection and try again."
+            } finally {
+                downloadingUpdate = false
+            }
+        }
+    }
+
     fun checkForUpdates() {
-        if (checkingRelease) return
+        if (checkingRelease || downloadingUpdate) return
         scope.launch {
             checkingRelease = true
             releaseError = null
             latestRelease = null
-            latestReleaseUrl = null
+            latestReleaseNotes = null
+            latestReleaseApkUrl = null
+            downloadedUpdateApk = null
             try {
-                val release = withContext(Dispatchers.IO) {
-                    val connection = (URL("https://api.github.com/repos/mira380/nekoplayer/releases/latest")
-                        .openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 8000
-                        readTimeout = 10000
-                        setRequestProperty("Accept", "application/vnd.github+json")
-                        setRequestProperty("User-Agent", "nekoplayer-android")
-                    }
-                    try {
-                        if (connection.responseCode !in 200..299) error("Release check failed")
-                        JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-                    } finally {
-                        connection.disconnect()
-                    }
+                val release = appUpdateClient.latestRelease()
+                latestRelease = release.versionTag
+                latestReleaseNotes = release.releaseNotes
+                latestReleaseApkUrl = release.apkUrl
+                if (
+                    AppUpdateClient.isNewerVersion(release.versionTag, appVersion) &&
+                    release.apkUrl == null
+                ) {
+                    releaseError = "No APK is attached to the latest release."
                 }
-                latestRelease = release.optString("tag_name").takeIf(String::isNotBlank)
-                latestReleaseUrl = release.optString("html_url").takeIf(String::isNotBlank)
-                if (latestRelease == null) releaseError = "Couldn’t read the latest release information."
+            } catch (error: AppUpdateException) {
+                releaseError = error.message ?: "Couldn’t check for updates. Check your connection and try again."
             } catch (_: Exception) {
                 releaseError = "Couldn’t check for updates. Check your connection and try again."
             } finally {
@@ -943,27 +996,65 @@ fun SettingsScreen(
             }
             item {
                 SettingSection("Updates") {
+                    val versionIsNewer = latestRelease?.let {
+                        AppUpdateClient.isNewerVersion(it, appVersion)
+                    } == true
+                    val cachedApk = downloadedUpdateApk?.takeIf { it.isFile }
+
                     latestRelease?.let { version ->
                         val isCurrent = version.removePrefix("v").equals(appVersion.removePrefix("v"), ignoreCase = true)
                         Text(
-                            if (isCurrent) "Installed version $appVersion is current."
-                            else "Latest release: $version · Installed: $appVersion",
+                            when {
+                                isCurrent -> "Installed version $appVersion is current."
+                                versionIsNewer -> "Update available: $version · Installed: $appVersion"
+                                else -> "Latest release: $version · Installed: $appVersion"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
                     releaseError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     Button(
-                        onClick = ::checkForUpdates,
-                        enabled = !checkingRelease,
+                        onClick = {
+                            when {
+                                cachedApk != null -> launchUpdateInstaller(cachedApk)
+                                versionIsNewer && latestReleaseApkUrl != null -> downloadAndInstallUpdate()
+                                else -> checkForUpdates()
+                            }
+                        },
+                        enabled = !checkingRelease && !downloadingUpdate,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                     ) {
-                        Text(if (checkingRelease) "Checking…" else "Check for updates")
+                        if (downloadingUpdate) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text("Downloading update…")
+                                LinearProgressIndicator(
+                                    progress = { downloadProgress },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(3.dp)
+                                        .clip(CircleShape),
+                                )
+                            }
+                        } else {
+                            Text(
+                                when {
+                                    checkingRelease -> "Checking…"
+                                    cachedApk != null -> "Install update"
+                                    versionIsNewer && latestReleaseApkUrl != null -> "Download and install"
+                                    else -> "Check for updates"
+                                },
+                            )
+                        }
                     }
-                    latestReleaseUrl?.let { url ->
+                    if (latestRelease != null) {
                         TextButton(
-                            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) },
+                            onClick = { showReleaseNotes = true },
                             modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Open release notes") }
+                        ) { Text(localizeUiText("Release notes")) }
                     }
                 }
             }
@@ -977,6 +1068,52 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    if (showReleaseNotes) {
+        val formattedNotes = latestReleaseNotes.orEmpty()
+            .lines()
+            .joinToString("\n") { rawLine ->
+                val line = rawLine.trim()
+                when {
+                    line.startsWith("#") -> line.dropWhile { it == '#' }.trim()
+                    line.startsWith("- ") || line.startsWith("* ") || line.startsWith("+ ") ->
+                        "• " + line.drop(2)
+                    else -> line
+                }
+            }
+            .trim()
+
+        AlertDialog(
+            onDismissRequest = { showReleaseNotes = false },
+            title = {
+                Text(
+                    buildString {
+                        append(localizeUiText("Release notes"))
+                        latestRelease?.let { append(" · $it") }
+                    },
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        formattedNotes.ifBlank {
+                            localizeUiText("No release notes are available.")
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showReleaseNotes = false }) {
+                    Text(localizeUiText("Close"))
+                }
+            },
+        )
     }
 
     if (confirmCacheClear) {
