@@ -12,8 +12,8 @@ android {
         applicationId = "com.nekoplayer.app"
         minSdk = 23
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.2.2"
+        versionCode = 7
+        versionName = "0.3.1"
 
         externalNativeBuild {
             cmake {

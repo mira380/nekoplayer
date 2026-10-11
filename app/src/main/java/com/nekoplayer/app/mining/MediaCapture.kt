@@ -28,6 +28,7 @@ data class CaptureSettings(
     val maxWidth: Int = 0,
     val maxHeight: Int = 0,
     val trimBlackBars: Boolean = false,
+    val mediaDurationMs: Long? = null,
 )
 
 data class CapturedMedia(
@@ -35,7 +36,7 @@ data class CapturedMedia(
     val screenshotFile: File,
 )
 
-// Copies audio samples without decoding, so memory use doesn't grow with clip length.
+// Copies audio samples without decoding so memory use doesn't grow with clip length.
 // The selected audio codec must be supported by Android's MP4 muxer; AAC is common.
 class MediaCapture(private val context: Context) {
     // Audio spans the cue plus padding; capture the frame at cue start + screenshotDelayMs.

@@ -120,11 +120,14 @@ import com.nekoplayer.app.mining.PronunciationAudioClient
 import com.nekoplayer.app.player.JimakuSubtitleDialog
 import com.nekoplayer.app.player.AutomaticJimakuSubtitleStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.hypot
@@ -160,6 +163,12 @@ fun PlayerScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val miningScope = remember(uri, requestHeaders) {
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    }
+    DisposableEffect(miningScope) {
+        onDispose { miningScope.cancel() }
+    }
     val player = remember(uri, requestHeaders) {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setDefaultRequestProperties(requestHeaders)
@@ -1038,13 +1047,17 @@ fun PlayerScreen(
             },
             onPlayAudio = ::playPronunciation,
             onMine = { entry, lookupResult, pageMetadata ->
-                scope.launch {
+                miningScope.launch {
                     val sentence = activeCue?.plainText ?: embeddedSubtitle
                     if (sentence.isBlank()) {
                         onNotify("Select a subtitle cue before mining a card.")
                         return@launch
                     }
-                    val permission = try { awaitAnkiWritePermission(anki) } catch (_: Exception) {
+                    val permission = try {
+                        awaitAnkiWritePermission(anki)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
                         onNotify("AnkiDroid access could not be requested.")
                         return@launch
                     }
@@ -1080,6 +1093,8 @@ fun PlayerScreen(
                         )
                         lookup = null
                         lookupMessage = null
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
                     } catch (_: Exception) {
                         onNotify("Card could not be added to AnkiDroid.")
                     } finally {
