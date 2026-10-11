@@ -63,6 +63,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
@@ -653,48 +654,62 @@ private fun AvailableExtensionCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SourceIcon(
-                    iconUrl = extension.iconUrl,
-                    cacheKey = "available:" + extension.pkgName + ":" + extension.versionCode,
-                )
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Material3Text(extension.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        "${if (extension.lang.isBlank()) "Video" else extensionLanguageLabel(extension.lang)} · API ${extension.libVersion.toInt()} · ${extension.versionName}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                val label = when {
-                    !extension.isSupported -> "Unsupported"
-                    installed?.hasUpdate == true -> "Update"
-                    installed != null -> "Installed"
-                    busy -> "Installing…"
-                    else -> "Install"
+            val label = when {
+                !extension.isSupported -> "Unsupported"
+                installed?.hasUpdate == true -> "Update"
+                installed != null -> "Installed"
+                busy -> "Installing…"
+                else -> "Install"
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SourceIcon(
+                            iconUrl = extension.iconUrl,
+                            cacheKey = "available:" + extension.pkgName + ":" + extension.versionCode,
+                        )
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Material3Text(extension.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "${if (extension.lang.isBlank()) "Video" else extensionLanguageLabel(extension.lang)} · API ${extension.libVersion.toInt()} · ${extension.versionName}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (!extension.isSupported) {
+                        Text(
+                            "Extension API ${extension.libVersion.toInt()} is unsupported. This runtime supports APIs ${ExtensionApiVersion.MIN_SUPPORTED.toInt()}–${ExtensionApiVersion.MAX_SUPPORTED.toInt()}.",
+                            modifier = Modifier.padding(start = 52.dp, top = 8.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (extension.sources.isNotEmpty()) {
+                        Material3Text(
+                            extension.sources.take(3).joinToString(" · ") { it.name },
+                            modifier = Modifier.padding(start = 52.dp, top = 8.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
                 TextButton(
+                    modifier = Modifier.width(124.dp),
                     enabled = extension.isSupported && installed?.hasUpdate != false && !busy,
                     onClick = onInstall,
-                ) { Text(label) }
-            }
-            if (!extension.isSupported) {
-                Text(
-                    "Extension API ${extension.libVersion.toInt()} is unsupported. This runtime supports APIs ${ExtensionApiVersion.MIN_SUPPORTED.toInt()}–${ExtensionApiVersion.MAX_SUPPORTED.toInt()}.",
-                    modifier = Modifier.padding(start = 52.dp, top = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else if (extension.sources.isNotEmpty()) {
-                Material3Text(
-                    extension.sources.take(3).joinToString(" · ") { it.name },
-                    modifier = Modifier.padding(start = 52.dp, top = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                ) {
+                    Text(
+                        label,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         }
     }

@@ -855,7 +855,7 @@ fun PlayerScreen(
                                     Icon(Icons.Default.Replay10, contentDescription = localizeUiText("Back 10 seconds"), tint = PlayerOverlayText)
                                 }
                                 IconButton(onClick = { if (player.isPlaying) player.pause() else player.play() }) {
-                                    Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = localizeUiText(if (playing) "Pause" else "Play"), tint = PlayerOverlayAccent, modifier = Modifier.size(28.dp))
+                                    Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = localizeUiText(if (playing) "Pause" else "Play"), tint = PlayerOverlayText, modifier = Modifier.size(28.dp))
                                 }
                                 IconButton(onClick = { player.seekTo((player.currentPosition + 10_000L).coerceAtMost(durationMs)) }) {
                                     Icon(Icons.Default.Forward10, contentDescription = localizeUiText("Forward 10 seconds"), tint = PlayerOverlayText)
@@ -869,7 +869,7 @@ fun PlayerScreen(
                                     modifier = Modifier.width(58.dp).heightIn(min = 48.dp),
                                     contentPadding = PaddingValues(horizontal = 2.dp),
                                 ) {
-                                    Text("${selectedSpeed}×", color = PlayerOverlayAccent, style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false)
+                                    Text("${selectedSpeed}×", color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false)
                                 }
                                 TextButton(
                                     onClick = {
