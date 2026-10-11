@@ -58,7 +58,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
@@ -74,7 +73,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -82,7 +80,6 @@ import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.extensions.ExtensionManager
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
-import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.FetchType
 import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SAnime
@@ -101,7 +98,7 @@ private val episodeLabelNumber = Regex("""(?i)\b(?:episode|ep\.?)\s*#?\s*(\d+(?:
 private val leadingEpisodeNumber = Regex("""^\s*(\d+(?:\.\d+)?)\b""")
 
 private fun SEpisode.sortingNumber(): Float? {
-    if (episode_number.isFinite() && episode_number >= 0f) return episode_number
+    if (episode_number.isFinite() && (episode_number >= 0f)) return episode_number
     val labelMatch = episodeLabelNumber.find(name) ?: leadingEpisodeNumber.find(name)
     return labelMatch?.groupValues?.getOrNull(1)?.toFloatOrNull()
         ?.takeIf { it.isFinite() && it >= 0f }
@@ -134,6 +131,7 @@ internal fun VideoSourceBrowser(
         String?,
         Int?,
         AppDatabase.SourceProgressIdentity?,
+        String?,
     ) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -141,7 +139,7 @@ internal fun VideoSourceBrowser(
     val scope = rememberCoroutineScope()
     var query by remember(source.id) { mutableStateOf("") }
     var filterList by remember(source.id) { mutableStateOf(source.getFilterList()) }
-    var showFilters by remember { mutableStateOf(false) }
+    var showFilters by remember { mutableStateOf(value = false) }
     var mode by remember(source.id) { mutableIntStateOf(0) }
     var results by remember(source.id) { mutableStateOf<List<SAnime>>(emptyList()) }
     var page by remember(source.id) { mutableIntStateOf(0) }
@@ -151,6 +149,9 @@ internal fun VideoSourceBrowser(
     var selectedAnimeUrl by remember(source.id) { mutableStateOf<String?>(null) }
     var sourceProgressAnimeUrl by remember(source.id, initialAnime?.url) {
         mutableStateOf(initialAnime?.url)
+    }
+    var sourceProgressAnimeTitle by remember(source.id, initialAnime?.url) {
+        mutableStateOf(initialAnime?.title)
     }
     var savedSourceProgress by remember(source.id, initialAnime?.url) {
         mutableStateOf<AppDatabase.SourceEpisodeProgress?>(null)
@@ -196,16 +197,16 @@ internal fun VideoSourceBrowser(
             error = null
             try {
                 val next = if (reset) 1 else page + 1
-                val response = withContext(Dispatchers.IO) {
+                val (animes, hasMore) = withContext(Dispatchers.IO) {
                     when {
                         query.isNotBlank() -> source.getSearchAnime(next, query, filterList)
                         mode == 1 && source.supportsLatest -> source.getLatestUpdates(next)
                         else -> source.getPopularAnime(next)
                     }
                 }
-                results = if (reset) response.animes else results + response.animes
+                results = if (reset) animes else results + animes
                 page = next
-                hasNextPage = response.hasNextPage
+                hasNextPage = hasMore
             } catch (linkage: LinkageError) {
                 error = linkage.toExtensionRuntimeMessage(item.extension.libVersion)
             } catch (_: Exception) {
@@ -217,7 +218,10 @@ internal fun VideoSourceBrowser(
     }
 
     fun openAnime(anime: SAnime, loadCatalogueAfter: Boolean = false) {
-        if (selectedAnime == null) sourceProgressAnimeUrl = anime.url
+        if (selectedAnime == null) {
+            sourceProgressAnimeUrl = anime.url
+            sourceProgressAnimeTitle = anime.title
+        }
         selectedAnime = anime
         selectedAnimeArtworkUrl = anime.thumbnail_url
             ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
@@ -272,13 +276,13 @@ internal fun VideoSourceBrowser(
 
     fun playVideoChoice(choice: StreamChoice, episode: SEpisode) {
         val url = choice.video.videoUrl
-        if (url.isNullOrBlank()) {
+        if (url.isBlank()) {
             error = "This source did not resolve a direct video stream."
             return
         }
         val sourceHeaders = choice.video.headers
         val headers = buildMap {
-            if (sourceHeaders != null) {
+            sourceHeaders?.let { sourceHeaders ->
                 for (headerIndex in 0 until sourceHeaders.size) {
                     put(sourceHeaders.name(headerIndex), sourceHeaders.value(headerIndex))
                 }
@@ -303,11 +307,12 @@ internal fun VideoSourceBrowser(
         onPlayVideo(
             url.toUri(),
             choice.label.ifBlank { episode.name },
-            selectedAnime?.title,
+            selectedAnime?.title ?: sourceProgressAnimeTitle,
             headers,
             episode.name,
             episodeNumber,
             progressIdentity,
+            sourceProgressAnimeTitle,
         )
     }
 
@@ -360,7 +365,7 @@ internal fun VideoSourceBrowser(
                             }
                             val hosterLabel = hoster.hosterName.takeUnless { it == Hoster.NO_HOSTER_LIST }.orEmpty()
                             StreamChoice(
-                                label = listOf(hosterLabel, resolved.videoTitle).filter(String::isNotBlank).joinToString(" · "),
+                                label = listOf(hosterLabel, resolved.videoTitle).asSequence().filter(String::isNotBlank).joinToString(" · "),
                                 video = resolved,
                             )
                         }
@@ -395,6 +400,7 @@ internal fun VideoSourceBrowser(
                 selectedAnimeArtworkUrl = null
                 selectedAnimeUrl = null
                 sourceProgressAnimeUrl = null
+                sourceProgressAnimeTitle = null
                 savedSourceProgress = null
                 pendingContinueProgress = null
                 details = null
@@ -479,6 +485,7 @@ internal fun VideoSourceBrowser(
                             selectedAnimeArtworkUrl = null
                             selectedAnimeUrl = null
                             sourceProgressAnimeUrl = null
+                            sourceProgressAnimeTitle = null
                             savedSourceProgress = null
                             pendingContinueProgress = null
                             details = null
@@ -655,11 +662,10 @@ internal fun VideoSourceBrowser(
                                 }
                                 FilledTonalButton(
                                     onClick = {
-                                        val currentAnime = anime
-                                        if (currentAnime != null && !libraryActionBusy) {
-                                            val currentAnimeUrl = libraryAnimeUrl ?: currentAnime.url
+                                        if (anime != null && !libraryActionBusy) {
+                                            val currentAnimeUrl = libraryAnimeUrl ?: anime.url
                                             val currentAnimeThumbnailUrl = selectedAnimeArtworkUrl
-                                                ?: currentAnime.thumbnail_url?.takeIf {
+                                                ?: anime.thumbnail_url?.takeIf {
                                                     it.isNotBlank() && !it.equals("null", ignoreCase = true)
                                                 }
                                             libraryActionBusy = true
@@ -675,12 +681,12 @@ internal fun VideoSourceBrowser(
                                                                     sourceName = source.name,
                                                                     extensionName = item.extension.name,
                                                                     animeUrl = currentAnimeUrl,
-                                                                    title = currentAnime.title,
+                                                                    title = anime.title,
                                                                     thumbnailUrl = resolveArtworkUrl(
                                                                         currentAnimeThumbnailUrl,
                                                                         (source as? AnimeHttpSource)?.baseUrl,
                                                                     ) ?: currentAnimeThumbnailUrl,
-                                                                    description = currentAnime.description,
+                                                                    description = anime.description,
                                                                     episodeCount = episodes.size.takeIf { it > 0 },
                                                                 ),
                                                             )
@@ -695,7 +701,7 @@ internal fun VideoSourceBrowser(
                                             }
                                         }
                                     },
-                                    enabled = anime != null && !libraryActionBusy,
+                                    enabled = !libraryActionBusy,
                                     modifier = Modifier.fillMaxWidth(),
                                 ) {
                                     Icon(
@@ -884,7 +890,7 @@ internal fun VideoSourceBrowser(
                 } else {
                     item { Text("Available streams", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
                     if (streamChoices.isEmpty() && busy) item { LoadingCard("Finding video streams…") }
-                    items(streamChoices, key = { "${it.label}:${it.video.videoUrl.orEmpty()}" }) { choice ->
+                    items(streamChoices, key = { "${it.label}:${it.video.videoUrl}" }) { choice ->
                         Card(
                             onClick = {
                                 selectedEpisode?.let { playVideoChoice(choice, it) }
@@ -981,7 +987,7 @@ private fun SourceArtwork(
             bitmap = null
         } else if (bitmap == null) {
             bitmap = withContext(Dispatchers.IO) {
-                sourceArtworkCache.get(resolvedUrl)
+                sourceArtworkCache[resolvedUrl]
                     ?: loadSourceArtwork(resolvedUrl, source)?.also {
                         sourceArtworkCache.put(resolvedUrl, it)
                     }
@@ -1199,7 +1205,7 @@ private fun FilterControl(filter: AnimeFilter<*>, changed: () -> Unit) {
         }
         is AnimeFilter.Group<*> -> {
             Material3Text(filter.name, style = MaterialTheme.typography.titleSmall)
-            (filter.state as? List<*>)?.filterIsInstance<AnimeFilter<*>>()?.forEach { nested ->
+            filter.state.filterIsInstance<AnimeFilter<*>>().forEach { nested ->
                 FilterControl(nested, changed)
             }
         }

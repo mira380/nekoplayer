@@ -1,7 +1,5 @@
 package com.nekoplayer.app.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,6 +52,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun DictionaryScreen(
@@ -69,8 +68,8 @@ fun DictionaryScreen(
     var metadata by remember { mutableStateOf(emptyList<DictionaryTermMeta>()) }
     var dictionaries by remember { mutableStateOf(emptyList<String>()) }
     var selectedDictionary by remember { mutableStateOf<String?>(null) }
-    var dictionaryMenuExpanded by remember { mutableStateOf(false) }
-    var searching by remember { mutableStateOf(false) }
+    var dictionaryMenuExpanded by remember { mutableStateOf(value = false) }
+    var searching by remember { mutableStateOf(value = false) }
     var message by remember { mutableStateOf<String?>(null) }
     var dictionaryListLoading by remember { mutableStateOf(true) }
 
@@ -78,7 +77,7 @@ fun DictionaryScreen(
         dictionaryListLoading = true
         try {
             val loadedDictionaries = withContext(Dispatchers.IO) {
-                repository.listDictionaries().filter { it.kind == "term" }.map { it.name }
+                repository.listDictionaries().asSequence().filter { it.kind == "term" }.map { it.name }.toList()
             }
             dictionaries = loadedDictionaries
             if (selectedDictionary?.let { it !in loadedDictionaries } == true) selectedDictionary = null
@@ -106,15 +105,15 @@ fun DictionaryScreen(
             searching = false
             return@LaunchedEffect
         }
-        delay(220)
+        delay(220.milliseconds)
         searching = true
         try {
             val pair = withContext(Dispatchers.IO) {
                 val hits = repository.search(term, 100)
-                val meta = repository.termMeta(hits.flatMap { listOf(it.expression, it.reading) }.toSet())
+                val meta = repository.termMeta(hits.asSequence().flatMap { sequenceOf(it.expression, it.reading) }.toSet())
                 hits to meta
             }
-            results = pair.first.filter { selectedDictionary == null || it.dictionaryName == selectedDictionary }
+            results = pair.first.filter { (selectedDictionary == null) || (it.dictionaryName == selectedDictionary) }
             metadata = pair.second
             message = null
         } catch (cancelled: CancellationException) {
@@ -175,7 +174,7 @@ fun DictionaryScreen(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 singleLine = true,
-                leadingIcon = { androidx.compose.material3.Icon(Icons.Default.Search, contentDescription = null) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 placeholder = { Text("Search dictionaries") },
             )
             if (dictionaries.isNotEmpty()) {
@@ -231,7 +230,7 @@ fun DictionaryScreen(
             }
 
             val groups = results.groupBy { it.expression to it.reading }.toList()
-            if (query.isNotBlank() && !searching && results.isEmpty() && message == null) {
+            if (query.isNotBlank() && (!searching) && results.isEmpty() && (message == null)) {
                 Text(
                     "No matching entries. Try another word or check the selected dictionary.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -420,5 +419,5 @@ private fun dictionaryMetaLabel(meta: DictionaryTermMeta): String {
         "ipa" -> "IPA"
         else -> meta.mode.replaceFirstChar { it.uppercase() }
     }
-    return label + " " + value
+    return "$label $value"
 }

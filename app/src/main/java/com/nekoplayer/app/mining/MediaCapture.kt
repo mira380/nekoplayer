@@ -199,13 +199,12 @@ class MediaCapture(private val context: Context) {
         var cropped: Bitmap? = null
         var scaled: Bitmap? = null
         var fallbackUsed = false
-        var sourceSize: Pair<Int, Int>? = null
         var expectedSize: Pair<Int, Int>? = null
         var primarySize: Pair<Int, Int>? = null
         var decodedSize: Pair<Int, Int>? = null
         try {
             retriever.setDataSource(context, uri)
-            sourceSize = sourceDimensions(retriever)
+            val sourceSize = sourceDimensions(retriever)
             expectedSize = sourceSize?.let { (width, height) ->
                 dimensions(width, height, settings.maxWidth, settings.maxHeight)
             }

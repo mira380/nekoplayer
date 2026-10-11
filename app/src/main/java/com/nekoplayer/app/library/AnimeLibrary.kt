@@ -48,7 +48,7 @@ data class JimakuFile(val name: String, val url: String, val size: Long?)
 
 class LibraryNetworkException(
     message: String,
-    val retryable: Boolean = false,
+    @Suppress("unused") val retryable: Boolean = false,
     cause: Throwable? = null,
 ) : IOException(message, cause)
 
@@ -158,6 +158,7 @@ class AniListClient(context: Context) {
         return imageFile
     }
 
+    @Suppress("unused")
     fun findAnimeId(showName: String, episodeFileNames: Iterable<String> = emptyList()): AniListMatch? {
         val best = searchAnimeCandidates(showName, episodeFileNames).firstOrNull() ?: return null
         return AniListMatch(best.id, best.title)
@@ -197,9 +198,9 @@ class AniListClient(context: Context) {
     private data class CoverLookup(val succeeded: Boolean, val score: Double, val url: String?)
 
     private fun lookupCover(search: String): CoverLookup = apiRequest {
-        val query = "query LibraryShowCover(${'$'}search: String!) { Page(page: 1, perPage: 25) { media(search: ${'$'}search, type: ANIME, isAdult: false, sort: SEARCH_MATCH) { title { romaji english native } coverImage { extraLarge large medium } } } }"
+        val query = "query LibraryShowCover(\$search: String!) { Page(page: 1, perPage: 25) { media(search: \$search, type: ANIME, isAdult: false, sort: SEARCH_MATCH) { title { romaji english native } coverImage { extraLarge large medium } } } }"
         val response = postGraphQl(query, search)
-        if (response == null) return@apiRequest CoverLookup(false, 0.0, null)
+            ?: return@apiRequest CoverLookup(false, 0.0, null)
         val media = response.optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media")
             ?: return@apiRequest CoverLookup(false, 0.0, null)
         var bestScore = 0.0
@@ -243,7 +244,7 @@ class AniListClient(context: Context) {
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             if (stream == null) return null
-            val bytes = stream.use { readBounded(it, MAX_RESPONSE_BYTES) }
+            val bytes = stream.use { readBounded(it) }
             if (status != HttpURLConnection.HTTP_OK) return null
             return JSONObject(bytes.toString(Charsets.UTF_8))
         } finally {
@@ -260,7 +261,7 @@ class AniListClient(context: Context) {
             connection.readTimeout = 20_000
             connection.setRequestProperty("Accept", "image/*")
             if (connection.responseCode != HttpURLConnection.HTTP_OK || !connection.contentType.orEmpty().substringBefore(';').startsWith("image/")) return null
-            return connection.inputStream.use { readBounded(it, MAX_RESPONSE_BYTES) }
+            return connection.inputStream.use { readBounded(it) }
         } finally {
             connection.disconnect()
         }
@@ -274,7 +275,8 @@ class AniListClient(context: Context) {
         block()
     }
 
-    private fun readBounded(input: java.io.InputStream, maxBytes: Int): ByteArray {
+    private fun readBounded(input: java.io.InputStream): ByteArray {
+        val maxBytes = MAX_RESPONSE_BYTES
         val output = ByteArrayOutputStream(minOf(maxBytes, 32 * 1024))
         BufferedInputStream(input).use { stream ->
             val buffer = ByteArray(8192)
@@ -311,7 +313,7 @@ class AniListClient(context: Context) {
         val cleaned = cleanSearchTitle(withoutGroup)
         val patterns = listOf(
             Regex("\\s+S\\d{1,2}E\\d{1,3}\\b.*$", RegexOption.IGNORE_CASE),
-            Regex("\\s+(?:-|–|—|_)\\s*(?:S\\d{1,2}\\s*E\\d{1,3}|\\d{1,3}(?:v\\d+)?)(?:\\s*(?:-|–|—|_).*)?$", RegexOption.IGNORE_CASE),
+            Regex("\\s+[-–—_]\\s*(?:S\\d{1,2}\\s*E\\d{1,3}|\\d{1,3}(?:v\\d+)?)(?:\\s*[-–—_].*)?$", RegexOption.IGNORE_CASE),
             Regex("\\s+(?:episode|ep)\\s*\\d{1,3}\\b.*$", RegexOption.IGNORE_CASE),
             Regex("\\s+\\d{1,3}(?:v\\d+)?$"),
         )
@@ -319,7 +321,7 @@ class AniListClient(context: Context) {
             val match = pattern.find(cleaned)
             if (match != null && match.range.first >= 3) return cleaned.substring(0, match.range.first)
         }
-        val parts = cleaned.split(Regex("\\s+(?:-|–|—)\\s+"))
+        val parts = cleaned.split(Regex("\\s+[-–—]\\s+"))
         return parts.firstOrNull()?.takeIf { parts.size > 1 && it.length >= 3 }
     }
 
@@ -417,17 +419,31 @@ class JimakuSubtitleClient(
 
     // Reuse cached downloads for both automatic lookup and the manual picker.
     @Throws(LibraryNetworkException::class)
+    @Synchronized
     fun downloadToCache(file: JimakuFile, entryId: Int): File {
         val safeName = file.name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifEmpty { "subtitle.srt" }
-        val destination = File(File(cacheDirectory, "jimaku"), "${entryId}_$safeName")
-        if (destination.isFile && destination.length() > 0L) return destination
+        val directory = File(cacheDirectory, "jimaku-v2")
+        val destination = File(directory, "${entryId}_$safeName")
+        if (
+            destination.isFile &&
+            destination.length() in 1L..MAX_DOWNLOAD_BYTES
+        ) {
+            return destination
+        }
+        destination.delete()
+
         val uri = try { file.url.toUri() } catch (error: Exception) {
             throw LibraryNetworkException("Jimaku returned an unusable download link.", cause = error)
         }
         if (uri.scheme !in setOf("https", "http") || uri.host.isNullOrBlank()) {
             throw LibraryNetworkException("Jimaku returned an unusable download link.")
         }
-        destination.parentFile?.mkdirs()
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw LibraryNetworkException("The subtitle could not be saved to the cache.")
+        }
+
+        val temporary = File(directory, ".${entryId}_$safeName.part")
+        temporary.delete()
         val connection = URL(file.url).openConnection() as HttpURLConnection
         try {
             connection.connectTimeout = TIMEOUT_MS
@@ -436,39 +452,41 @@ class JimakuSubtitleClient(
                 throw LibraryNetworkException("Jimaku refused the download (HTTP ${connection.responseCode}).", retryable = true)
             }
             val contentLength = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
-            if (contentLength > MAX_DOWNLOAD_BYTES) throw LibraryNetworkException("Jimaku returned a suspiciously large response.")
-            var total = 0L
-            try {
-                BufferedInputStream(connection.inputStream).use { input ->
-                    FileOutputStream(destination).use { output ->
-                        val buffer = ByteArray(16 * 1024)
-                        while (true) {
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            total += count
-                            if (total > MAX_DOWNLOAD_BYTES) throw LibraryNetworkException("Jimaku returned a suspiciously large response.")
-                            output.write(buffer, 0, count)
-                        }
-                        output.fd.sync()
-                    }
-                }
-            } catch (error: Exception) {
-                destination.delete()
-                if (error is LibraryNetworkException) throw error
-                throw LibraryNetworkException("The subtitle could not be downloaded. Check the connection and try again.", retryable = true, cause = error)
+            if (contentLength > MAX_DOWNLOAD_BYTES) {
+                throw LibraryNetworkException("Jimaku returned a suspiciously large response.")
             }
-            if (total == 0L) {
-                destination.delete()
-                throw LibraryNetworkException("Jimaku returned an empty subtitle file.")
+
+            var total = 0L
+            BufferedInputStream(connection.inputStream).use { input ->
+                FileOutputStream(temporary).use { output ->
+                    val buffer = ByteArray(16 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > MAX_DOWNLOAD_BYTES) {
+                            throw LibraryNetworkException("Jimaku returned a suspiciously large response.")
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                    output.fd.sync()
+                }
+            }
+            if (total == 0L) throw LibraryNetworkException("Jimaku returned an empty subtitle file.")
+            if (!temporary.renameTo(destination)) {
+                throw LibraryNetworkException("The downloaded subtitle could not be saved.")
             }
             return destination
         } catch (error: LibraryNetworkException) {
-            if (destination.exists() && destination.length() == 0L) destination.delete()
             throw error
         } catch (error: Exception) {
-            destination.delete()
-            throw LibraryNetworkException("The subtitle could not be downloaded. Check the connection and try again.", retryable = true, cause = error)
+            throw LibraryNetworkException(
+                "The subtitle could not be downloaded. Check the connection and try again.",
+                retryable = true,
+                cause = error,
+            )
         } finally {
+            temporary.delete()
             connection.disconnect()
         }
     }
@@ -489,7 +507,7 @@ class JimakuSubtitleClient(
             }
             val length = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
             if (length > MAX_JSON_BYTES) throw LibraryNetworkException("Jimaku answered with a suspiciously large response.")
-            val bytes = connection.inputStream.use { readBounded(it, MAX_JSON_BYTES) }
+            val bytes = connection.inputStream.use { readBounded(it) }
             return org.json.JSONTokener(bytes.toString(Charsets.UTF_8)).nextValue()
         } catch (error: LibraryNetworkException) {
             throw error
@@ -504,7 +522,8 @@ class JimakuSubtitleClient(
         if (apiKey.isBlank()) throw LibraryNetworkException("Add your Jimaku API key in Settings → Subtitles first.")
     }
 
-    private fun readBounded(input: java.io.InputStream, maxBytes: Int): ByteArray {
+    private fun readBounded(input: java.io.InputStream): ByteArray {
+        val maxBytes = MAX_JSON_BYTES
         val output = ByteArrayOutputStream(minOf(maxBytes, 32 * 1024))
         val buffer = ByteArray(8192)
         var total = 0
@@ -521,37 +540,50 @@ class JimakuSubtitleClient(
     companion object {
         private const val TIMEOUT_MS = 15_000
         private const val MAX_JSON_BYTES = 8 * 1024 * 1024
-        private const val MAX_DOWNLOAD_BYTES = 64L * 1024 * 1024
+        private const val MAX_DOWNLOAD_BYTES = 20L * 1024 * 1024
     }
 }
 
 fun parseJimakuEpisodeNumber(fileName: String): Int? {
     val base = fileName.substringAfterLast('/').substringAfterLast('\\')
-    val patterns = listOf(
-        Regex("[Ss]\\d{1,2}[Ee](\\d{1,3})\\b"),
-        Regex("\\b[Ee](\\d{1,3})\\b"),
-        Regex("[\\s_\\-\\[]([0-9]{1,3})[vV]\\d+\\b"),
-        Regex("\\b[Ee]p(?:isode)?\\s*(\\d{1,3})\\b", RegexOption.IGNORE_CASE),
-        Regex("第(\\d{1,3})話"),
-        Regex("[\\s_\\-\\[]([0-9]{1,3})\\s*(?:[\\s_\\-\\].]|${'$'})"),
+    val explicitPatterns = listOf(
+        Regex("""(?i)\bS\d{1,2}\s*[-._ ]?\s*EP?[\s._-]*(\d{1,3})\b"""),
+        Regex("""(?i)\b(?:episode|ep)[\s._-]*(\d{1,3})\b"""),
+        Regex("""(?i)\b\d{1,2}\s*[xX]\s*(\d{1,3})\b"""),
+        Regex("""第\s*(\d{1,3})\s*[話回]"""),
+        Regex("""(?i)(?<![\p{L}\p{N}])#\s*(\d{1,3})(?!\d)"""),
+        Regex("""(?i)(?<![\p{L}\p{N}])E\s*(\d{1,3})(?!\d)"""),
     )
-    for (pattern in patterns) {
-        val match = pattern.find(base) ?: continue
-        val episode = match.groupValues[1].toIntOrNull() ?: continue
-        if (episode !in 1..300 || isYearOrResolution(base, match, match.groupValues[1])) continue
-        return episode
+    val genericPatterns = listOf(
+        // Prefer separated episode numbers so numeric words in a title are not mistaken for episodes.
+        Regex("""(?<=[\s_\-\[])(\d{1,3})(?:v\d+)?(?=$|[\s._\-)\]])"""),
+        // Some releases are named only by their number, such as 01.ass.
+        Regex("""^\s*(\d{1,3})(?:v\d+)?(?=$|[._\-\s])"""),
+    )
+
+    for (pattern in explicitPatterns + genericPatterns) {
+        for (match in pattern.findAll(base)) {
+            val number = match.groupValues[1]
+            val episode = number.toIntOrNull() ?: continue
+            val numberStart = match.groups[1]?.range?.first ?: match.range.first
+            if (episode !in 1..300 || isYearOrResolution(base, numberStart, number)) continue
+            return episode
+        }
     }
     return null
 }
 
 fun filterJimakuFilesByEpisode(files: List<JimakuFile>, episode: Int): List<JimakuFile> {
-    val exactPattern = Regex("(?:^|[^0-9])(?:E$episode\\b|EP?${episode.toString().padStart(2, '0')}\\b|${episode.toString().padStart(2, '0')}(?![0-9])|${episode.toString().padStart(3, '0')}(?![0-9])|第${episode}話|#${episode}\\b)", RegexOption.IGNORE_CASE)
+    val twoDigitEpisode = episode.toString().padStart(2, '0')
+    val paddedEpisodePattern = if (episode < 100) "0?$twoDigitEpisode" else twoDigitEpisode
+    val exactPattern = Regex("(?:^|[^0-9])(?:E$episode\\b|EP?$twoDigitEpisode\\b|$paddedEpisodePattern(?![0-9])|第${episode}話|#${episode}\\b)", RegexOption.IGNORE_CASE)
     val exact = files.filter { exactPattern.containsMatchIn(it.name) }
     if (exact.isNotEmpty()) return exact
     val loose = files.filter { it.name.contains(episode.toString()) }
     return loose.ifEmpty { files }
 }
 
+@Suppress("unused")
 fun jimakuShowTitleFromUriSegments(segments: List<String>, fallback: String): String {
     if (segments.size < 2) return fallback
     var folder = segments[segments.lastIndex - 1].trim()
@@ -562,12 +594,11 @@ fun jimakuShowTitleFromUriSegments(segments: List<String>, fallback: String): St
     return folder
 }
 
-private fun isYearOrResolution(base: String, match: MatchResult, number: String): Boolean {
-    if (number.length == 4) return true
-    val before = base.getOrNull(match.range.first - 1)?.toString().orEmpty()
-    val after = base.getOrNull(match.range.last + 1)?.toString().orEmpty()
+private fun isYearOrResolution(base: String, numberStart: Int, number: String): Boolean {
+    if (number.length == 4 || number in setOf("1080", "720", "480")) return true
+    val before = base.getOrNull(numberStart - 1)?.toString().orEmpty()
+    val after = base.getOrNull(numberStart + number.length)?.toString().orEmpty()
     if (before == "(" && after == ")") return true
     if (before.any(Char::isDigit) || after.any(Char::isDigit)) return true
-    if ((before.equals("p", true)) && (after.isEmpty() || after == ".")) return true
-    return number in setOf("1080", "720", "480")
+    return after.equals("p", ignoreCase = true)
 }

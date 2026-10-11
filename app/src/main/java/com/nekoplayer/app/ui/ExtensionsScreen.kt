@@ -85,6 +85,7 @@ private val extensionIconCache = object : LruCache<String, Bitmap>(4 * 1024 * 10
     override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
 }
 
+@Suppress("DEPRECATION")
 @Composable
 fun ExtensionsScreen(
     manager: ExtensionManager,
@@ -100,6 +101,7 @@ fun ExtensionsScreen(
         String?,
         Int?,
         AppDatabase.SourceProgressIdentity?,
+        String?,
     ) -> Unit,
     onDetailScreenChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,

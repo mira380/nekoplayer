@@ -71,8 +71,10 @@ internal object YomitanPopupHtml {
     ): String {
         val entries = (result.entries + result.relatedEntries).take(MAX_ENTRIES)
         val primary = result.entries.firstOrNull() ?: entries.firstOrNull()
-        val matchingExpressions = entries.flatMap { listOf(it.expression, it.reading) }
-            .filter(String::isNotBlank).toSet() + result.surfaceText
+        val matchingExpressions = entries.asSequence()
+            .flatMap { sequenceOf(it.expression, it.reading) }
+            .filter(String::isNotBlank)
+            .toSet() + result.surfaceText
         val matchingMetadata = matchingMetadata(metadata, matchingExpressions, primary)
         val budget = RenderBudget()
 
@@ -88,7 +90,7 @@ internal object YomitanPopupHtml {
                 append("<header class=\"word-header\"><div class=\"word-heading\"><div class=\"word\">")
                 append(ruby(primary.expression.ifBlank { result.surfaceText }, primary.reading))
                 append("</div>")
-                if (primary.expression != result.surfaceText && result.surfaceText.isNotBlank()) {
+                if ((primary.expression != result.surfaceText) && result.surfaceText.isNotBlank()) {
                     append("<div class=\"matched\">").append(localizeUiText("Matched:", language)).append(" ").append(escape(result.surfaceText)).append("</div>")
                 }
                 append("</div><div class=\"popup-actions\">")
@@ -115,12 +117,12 @@ internal object YomitanPopupHtml {
             appendMetadata(this, matchingMetadata, colors, language)
             if (result.deinflectionReasons.isNotEmpty()) {
                 append("<div class=\"form-line\">").append(localizeUiText("Form:", language)).append(" ")
-                append(escape(result.deinflectionReasons.distinct().joinToString(" · ")))
+                append(escape(result.deinflectionReasons.asSequence().distinct().joinToString(" · ")))
                 append("</div>")
             }
             appendSubtitle(this, subtitleContext, result.surfaceText)
 
-            val groups = entries.withIndex().groupBy { it.value.dictionaryName }
+            val groups = entries.asSequence().withIndex().groupBy { it.value.dictionaryName }
             groups.entries.forEachIndexed { groupIndex, (dictionaryName, groupedEntries) ->
                 append("<details class=\"dictionary-group\"")
                 if (expansion.isExpanded(dictionaryName, groupIndex)) append(" open")
@@ -174,7 +176,7 @@ internal object YomitanPopupHtml {
         primary: DictionaryEntry?,
     ): List<MetadataBadge> {
         val matching = metadata.filter {
-            it.expression in matchingExpressions || it.reading in matchingExpressions
+            (it.expression in matchingExpressions) || (it.reading in matchingExpressions)
         }
         return matching.groupBy { it.dictionaryName.trim().lowercase(Locale.ROOT) to it.mode.trim().lowercase(Locale.ROOT) }
             .values.mapNotNull { rows ->
@@ -196,7 +198,7 @@ internal object YomitanPopupHtml {
                     else -> emptyList()
                 }
                 when {
-                    mode == "pitch" && pitchAccents.isNotEmpty() ->
+                    mode == "pitch" && (pitchAccents.isNotEmpty()) ->
                         MetadataBadge(first.dictionaryName, mode, values, pitchAccents)
                     mode != "pitch" && values.isNotEmpty() -> MetadataBadge(first.dictionaryName, mode, values)
                     else -> null
@@ -301,7 +303,7 @@ internal object YomitanPopupHtml {
             is Map<*, *> -> {
                 val node = JSONObject()
                 value.forEach { (key, item) ->
-                    if (key is String) node.put(key, item ?: JSONObject.NULL)
+                    (key as? String)?.let { node.put(it, item ?: JSONObject.NULL) }
                 }
                 renderObject(node, budget, depth)
             }
@@ -503,14 +505,16 @@ internal object YomitanPopupHtml {
 
     private fun escape(value: String): String = buildString(value.length) {
         value.forEach { char ->
-            append(when (char) {
-                '&' -> "&amp;"
-                '<' -> "&lt;"
-                '>' -> "&gt;"
-                '"' -> "&quot;"
-                '\'' -> "&#39;"
-                else -> char.toString()
-            })
+            append(
+                when (char) {
+                    '&' -> "&amp;"
+                    '<' -> "&lt;"
+                    '>' -> "&gt;"
+                    '"' -> "&quot;"
+                    '\'' -> "&#39;"
+                    else -> char.toString()
+                },
+            )
         }
     }
 }

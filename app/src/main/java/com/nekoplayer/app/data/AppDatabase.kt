@@ -62,11 +62,11 @@ class AppDatabase(context: Context) : Closeable {
                     "is_ready INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0, " +
                     "kind TEXT NOT NULL DEFAULT 'term')",
             )
-            ensureColumn("dictionary_catalog", "entry_count", "INTEGER NOT NULL DEFAULT 0")
-            ensureColumn("dictionary_catalog", "is_ready", "INTEGER NOT NULL DEFAULT 1")
+            ensureColumn("entry_count", "INTEGER NOT NULL DEFAULT 0")
+            ensureColumn("is_ready", "INTEGER NOT NULL DEFAULT 1")
             val hadPriority = hasColumn("dictionary_catalog", "sort_order")
-            ensureColumn("dictionary_catalog", "sort_order", "INTEGER NOT NULL DEFAULT 0")
-            ensureColumn("dictionary_catalog", "kind", "TEXT NOT NULL DEFAULT 'term'")
+            ensureColumn("sort_order", "INTEGER NOT NULL DEFAULT 0")
+            ensureColumn("kind", "TEXT NOT NULL DEFAULT 'term'")
             if (!hadPriority) {
                 sql.execSQL(
                     "UPDATE dictionary_catalog AS c SET sort_order = " +
@@ -165,9 +165,9 @@ class AppDatabase(context: Context) : Closeable {
         return false
     }
 
-    private fun ensureColumn(table: String, column: String, declaration: String) {
-        if (!hasColumn(table, column)) {
-            sql.execSQL("ALTER TABLE $table ADD COLUMN $column $declaration")
+    private fun ensureColumn(column: String, declaration: String) {
+        if (!hasColumn("dictionary_catalog", column)) {
+            sql.execSQL("ALTER TABLE dictionary_catalog ADD COLUMN $column $declaration")
         }
     }
 

@@ -81,6 +81,7 @@ data class VideoTarget(
     val subtitleEpisodeName: String? = null,
     val subtitleEpisodeNumber: Int? = null,
     val sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
+    val alternateSeriesTitle: String? = null,
 )
 
 @Composable
@@ -186,6 +187,7 @@ fun NekoApp(
         subtitleEpisodeName: String? = null,
         subtitleEpisodeNumber: Int? = null,
         sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
+        alternateSeriesTitle: String? = null,
     ) {
         val uri = if (sourceUri.scheme.isNullOrBlank()) Uri.fromFile(File(sourceUri.toString())) else sourceUri
         if (uri.scheme == "file") {
@@ -201,6 +203,7 @@ fun NekoApp(
                         subtitleEpisodeName,
                         subtitleEpisodeNumber,
                         sourceProgressIdentity,
+                        alternateSeriesTitle,
                     )
                 }
                 videoPermissionLauncher.launch(permission)
@@ -215,6 +218,7 @@ fun NekoApp(
             subtitleEpisodeName,
             subtitleEpisodeNumber,
             sourceProgressIdentity,
+            alternateSeriesTitle,
         )
     }
 
@@ -369,8 +373,8 @@ fun NekoApp(
                                     pendingSourceEntry = null
                                     detailScreen = false
                                 },
-                                onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity ->
-                                    openVideo(uri, name, title, headers, episodeName, episodeNumber, progressIdentity)
+                                onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle ->
+                                    openVideo(uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle)
                                 },
                                 onDetailScreenChanged = { detailScreen = it },
                                 modifier = Modifier.fillMaxSize(),
@@ -458,6 +462,7 @@ fun NekoApp(
                         subtitleEpisodeName = current.subtitleEpisodeName,
                         subtitleEpisodeNumber = current.subtitleEpisodeNumber,
                         sourceProgressIdentity = current.sourceProgressIdentity,
+                        alternateSeriesTitle = current.alternateSeriesTitle,
                         onClose = { activeVideo = null },
                         onPickSubtitle = { callback ->
                             subtitlePickerCallback = callback

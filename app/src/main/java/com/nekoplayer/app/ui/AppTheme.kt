@@ -27,8 +27,8 @@ private val AccentOptions = mapOf(
 )
 
 private fun appColorScheme(dark: Boolean, palette: String, accent: String) = run {
-    val accentColor = AccentOptions[accent] ?: AccentOptions.getValue("cyan")
-    val primary = if (dark) accentColor.dark else accentColor.light
+    val (lightAccent, darkAccent) = AccentOptions[accent] ?: AccentOptions.getValue("cyan")
+    val primary = if (dark) darkAccent else lightAccent
     val onPrimary = if (primary.luminance() > 0.55f) Color(0xFF172126) else Color.White
     val background: Color
     val surface: Color
@@ -38,7 +38,7 @@ private fun appColorScheme(dark: Boolean, palette: String, accent: String) = run
     val outlineVariant: Color
 
     when {
-        dark && palette == "sepia" -> {
+        dark && (palette == "sepia") -> {
             background = Color(0xFF13100E)
             surface = Color(0xFF191512)
             surfaceVariant = Color(0xFF241E19)
@@ -46,7 +46,7 @@ private fun appColorScheme(dark: Boolean, palette: String, accent: String) = run
             onSurfaceVariant = Color(0xFFB6AAA0)
             outlineVariant = Color(0xFF342C25)
         }
-        dark && palette == "ink" -> {
+        dark && (palette == "ink") -> {
             background = Color(0xFF050607)
             surface = Color(0xFF0C0E10)
             surfaceVariant = Color(0xFF15191B)

@@ -12,7 +12,7 @@ class ExtensionInstaller(
     private val context: Context,
     private val client: OkHttpClient,
 ) {
-    suspend fun install(extension: Extension.Available): Result<Unit> =
+    fun install(extension: Extension.Available): Result<Unit> =
         runCatching {
             require(extension.isSupported) { "This extension uses an unsupported API version." }
             val staging = File(context.cacheDir, "extension-${extension.pkgName}.apk")
@@ -24,7 +24,7 @@ class ExtensionInstaller(
                     .build()
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) error("Download returned HTTP ${response.code}")
-                    val body = response.body ?: error("The extension download was empty.")
+                    val body = response.body
                     staging.outputStream().use { output -> body.byteStream().use { it.copyTo(output) } }
                 }
                 verify(staging, extension.pkgName)

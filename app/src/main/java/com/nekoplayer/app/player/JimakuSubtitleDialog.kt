@@ -69,6 +69,8 @@ private const val AUTOMATIC_ANI_LIST_MINIMUM_MATCH_SCORE = 0.42
 fun JimakuSubtitleDialog(
     showName: String,
     episodeFileName: String,
+    episodeNumber: Int? = null,
+    alternateShowName: String? = null,
     apiKey: String,
     aniListClient: AniListClient,
     jimakuSubtitleClient: JimakuSubtitleClient,
@@ -76,8 +78,9 @@ fun JimakuSubtitleDialog(
     onDismiss: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val episode = remember(episodeFileName) {
-        episodeFileName.takeIf(String::isNotBlank)?.let(::parseJimakuEpisodeNumber)
+    val episode = remember(episodeFileName, episodeNumber) {
+        episodeNumber?.takeIf { it in (1..300) }
+            ?: episodeFileName.takeIf(String::isNotBlank)?.let(::parseJimakuEpisodeNumber)
     }
     var page by remember { mutableStateOf(SubtitleDialogPage.Sources) }
     var searchText by remember(showName) { mutableStateOf("") }
@@ -87,7 +90,7 @@ fun JimakuSubtitleDialog(
     var entries by remember { mutableStateOf(emptyList<JimakuEntry>()) }
     var files by remember { mutableStateOf(emptyList<JimakuFile>()) }
     var selectedEntryId by remember { mutableStateOf<Int?>(null) }
-    var automaticFetch by remember { mutableStateOf(false) }
+    var automaticFetch by remember { mutableStateOf(value = false) }
 
     fun showFailure(message: String) {
         page = SubtitleDialogPage.Sources
@@ -179,15 +182,35 @@ fun JimakuSubtitleDialog(
             onError = { showFailure(it.message ?: "AniList search failed. Check the connection and try again.") },
         ) {
             val found = withContext(Dispatchers.IO) {
-                aniListClient.searchAnimeCandidates(
+                val episodeNames = if (automatic && episodeFileName.isNotBlank()) {
+                    listOf(episodeFileName)
+                } else {
+                    emptyList()
+                }
+                val minimumScore = if (automatic) {
+                    AUTOMATIC_ANI_LIST_MINIMUM_MATCH_SCORE
+                } else {
+                    MANUAL_ANI_LIST_MINIMUM_MATCH_SCORE
+                }
+                val primary = aniListClient.searchAnimeCandidates(
                     title,
-                    if (automatic && episodeFileName.isNotBlank()) listOf(episodeFileName) else emptyList(),
-                    minimumMatchScore = if (automatic) {
-                        AUTOMATIC_ANI_LIST_MINIMUM_MATCH_SCORE
-                    } else {
-                        MANUAL_ANI_LIST_MINIMUM_MATCH_SCORE
-                    },
+                    episodeNames,
+                    minimumMatchScore = minimumScore,
                 )
+                if (
+                    primary.isNotEmpty() ||
+                    !automatic ||
+                    alternateShowName.isNullOrBlank() ||
+                    alternateShowName.equals(title, ignoreCase = true)
+                ) {
+                    primary
+                } else {
+                    aniListClient.searchAnimeCandidates(
+                        alternateShowName,
+                        episodeNames,
+                        minimumMatchScore = minimumScore,
+                    )
+                }
             }
             if (found.isEmpty()) {
                 showFailure(if (automatic) "No AniList match for “$title”. Search below instead." else "No AniList match for “$title”. Try another title.")
@@ -303,7 +326,7 @@ fun JimakuSubtitleDialog(
                         Text(status.orEmpty(), style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(8.dp))
                         LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 390.dp)) {
-                            items(files, key = { "${selectedEntryId}:${it.name}" }) { file ->
+                            items(files, key = { "$selectedEntryId:${it.name}" }) { file ->
                                 ChoiceRow(
                                     title = file.name,
                                     subtitle = file.size?.let { "${(it + 1023) / 1024} KB" },
@@ -335,7 +358,7 @@ private fun ChoiceRow(
         if (leading != null) { leading(); Spacer(Modifier.width(12.dp)) }
         Column(Modifier.weight(1f)) {
             Material3Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-            if (subtitle != null) Material3Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            subtitle?.let { Material3Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
         trailing?.let { Text(it, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }

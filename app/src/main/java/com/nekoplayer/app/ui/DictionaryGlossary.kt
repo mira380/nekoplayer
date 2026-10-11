@@ -144,7 +144,7 @@ private fun GlossaryNode(
                         textAlign = TextAlign.End,
                     )
                 }
-            } else if (role == "example-sentence" || dataClass == "extra-box") {
+            } else if ((role == "example-sentence") || (dataClass == "extra-box")) {
                 Surface(
                     modifier = modifier.fillMaxWidth(),
                     color = MaterialTheme.colorScheme.surface,
@@ -158,7 +158,7 @@ private fun GlossaryNode(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 7.dp, vertical = 5.dp),
                     )
                 }
-            } else if (role == "example-sentence-a" || role == "example-sentence-b") {
+            } else if ((role == "example-sentence-a") || (role == "example-sentence-b")) {
                 if (isInlineGlossary(content)) {
                     Text(
                         glossaryInlineText(content),
@@ -172,7 +172,7 @@ private fun GlossaryNode(
                     GlossaryNode(content, compact, depth, modifier = modifier)
                 }
             } else if (tag in setOf("div", "p", "section", "article", "blockquote")) {
-                val indent = if (role == "extra-info" || dataClass == "extra-content") 8.dp else 0.dp
+                val indent = if ((role == "extra-info") || (dataClass == "extra-content")) 8.dp else 0.dp
                 val spacing = if (role == "sense-group") 5.dp else 2.dp
                 Column(
                     modifier = modifier.fillMaxWidth().padding(start = indent),
@@ -180,7 +180,7 @@ private fun GlossaryNode(
                 ) {
                     GlossaryNode(content, compact, depth)
                 }
-            } else if (type in setOf("image", "image-block") || tag == "img") {
+            } else if ((type in setOf("image", "image-block")) || (tag == "img")) {
                 val alt = value.optString("alt").ifBlank { value.optString("title") }
                 if (alt.isNotBlank()) {
                     Text(
@@ -201,14 +201,14 @@ private fun GlossaryNode(
                         } else {
                             MaterialTheme.typography.bodySmall
                         },
-                        color = if (role == "example-sentence-b" || role == "extra-label") {
+                        color = if (role == "extra-label") {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         } else {
                             MaterialTheme.colorScheme.onSurface
                         },
                     )
-                } else if (content != null) {
-                    GlossaryNode(content, compact, depth, modifier = modifier)
+                } else {
+                    content?.let { GlossaryNode(it, compact, depth, modifier = modifier) }
                 }
             }
         }
@@ -379,7 +379,7 @@ private fun appendGlossaryInline(
                 tag in setOf("i", "em") -> SpanStyle(fontStyle = FontStyle.Italic)
                 else -> null
             }
-            if (style != null) builder.pushStyle(style)
+            style?.let(builder::pushStyle)
             val child = when {
                 value.has("content") -> value.opt("content")
                 value.has("children") -> value.opt("children")

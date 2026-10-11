@@ -44,7 +44,6 @@ import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -81,6 +80,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.time.Duration.Companion.milliseconds
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
 import com.nekoplayer.app.data.AppDatabase
@@ -97,8 +97,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import android.content.Intent
-import androidx.core.net.toUri
 import org.json.JSONObject
 import java.io.File
 import kotlin.math.roundToInt
@@ -154,7 +152,7 @@ fun SettingsScreen(
     }
     var removeTarget by remember { mutableStateOf<ImportedDictionary?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
-    var accessBusy by remember { mutableStateOf(false) }
+    var accessBusy by remember { mutableStateOf(value = false) }
     var noteTypes by remember { mutableStateOf(emptyList<AnkiDroidNoteType>()) }
     var decks by remember { mutableStateOf(emptyList<AnkiDroidDeck>()) }
     var noteFields by remember { mutableStateOf(emptyList<String>()) }
@@ -186,7 +184,7 @@ fun SettingsScreen(
         contract = ActivityResultContracts.StartActivityForResult(),
     ) {
         val apk = downloadedUpdateApk
-        if (apk != null && appUpdateClient.canInstallUnknownApps()) {
+        if ((apk != null) && appUpdateClient.canInstallUnknownApps()) {
             runCatching { appUpdateClient.install(apk) }
                 .onFailure { releaseError = (it as? AppUpdateException)?.message ?: "Couldn’t start the installer. Try again." }
         } else if (apk != null) {
@@ -362,7 +360,7 @@ fun SettingsScreen(
             mappings = noteTypeFieldTemplates,
             legacyFieldMap = legacyFieldMap,
         )
-        noteTypeFieldTemplates = noteTypeFieldTemplates + (name to seeded)
+        noteTypeFieldTemplates += name to seeded
     }
 
     fun updateSourceFieldDestination(sourceToken: String, destinationField: String) {
@@ -387,7 +385,7 @@ fun SettingsScreen(
         noteFieldsLoading = false
         anki.requestWritePermission { permissionResult ->
             scope.launch {
-                val allowed = permissionResult.getOrElse { error ->
+                val allowed = permissionResult.getOrElse { _ ->
                     message = "Couldn’t request AnkiDroid access. Try again."
                     false
                 }
@@ -439,14 +437,14 @@ fun SettingsScreen(
         if (selectedSection != null) detailListState.scrollToItem(0)
         if (selectedSection == "Anki" && noteTypes.isEmpty()) loadAnkiOptions()
     }
-    LaunchedEffect(jimakuKey) { delay(450); save("jimaku.apiKey", jimakuKey) }
-    LaunchedEffect(deck) { delay(450); save("anki.deck", deck) }
-    LaunchedEffect(noteType) { delay(450); save("anki.noteType", noteType) }
+    LaunchedEffect(jimakuKey) { delay(450.milliseconds); save("jimaku.apiKey", jimakuKey) }
+    LaunchedEffect(deck) { delay(450.milliseconds); save("anki.deck", deck) }
+    LaunchedEffect(noteType) { delay(450.milliseconds); save("anki.noteType", noteType) }
     LaunchedEffect(noteTypeFieldTemplates) {
         save(AnkiNoteFieldTemplates.SETTING_KEY, AnkiNoteFieldTemplates.encode(noteTypeFieldTemplates))
     }
     LaunchedEffect(audioSources) {
-        delay(400L)
+        delay(400.milliseconds)
         save("audio.pronunciationSources", audioSources.map { it.toJson() })
     }
 
@@ -616,9 +614,9 @@ fun SettingsScreen(
                         "日本語字幕のプレビュー",
                         modifier = Modifier.fillMaxWidth()
                             .padding(bottom = (bottomInset / 4f).dp.coerceIn(8.dp, 40.dp))
-                            .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = backgroundOpacity))
+                            .background(Color.Black.copy(alpha = backgroundOpacity))
                             .padding(horizontal = 12.dp, vertical = 8.dp),
-                        color = androidx.compose.ui.graphics.Color.White,
+                        color = Color.White,
                         fontSize = fontSize.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
@@ -1158,13 +1156,13 @@ private data class AudioSourceSetting(val name: String, val kind: String, val en
         put("id", name)
         put("kind", kind)
         put("enabled", enabled)
-        if (urlTemplate != null) put("urlTemplate", urlTemplate)
+        urlTemplate?.let { put("urlTemplate", it) }
     }
 }
 
 private fun loadAudioSources(database: AppDatabase): List<AudioSourceSetting> {
     val saved = database.readSetting("audio.pronunciationSources") as? org.json.JSONArray
-    if (saved == null) return defaultAudioSources()
+    saved ?: return defaultAudioSources()
     val sources = (0 until saved.length()).mapNotNull { index ->
         val item = saved.optJSONObject(index) ?: return@mapNotNull null
         val id = item.optString("id")
@@ -1182,7 +1180,7 @@ private fun loadAudioSources(database: AppDatabase): List<AudioSourceSetting> {
 }
 
 private fun formatBytes(bytes: Long): String = when {
-    bytes < 1024L -> "${bytes} B"
+    bytes < 1024L -> "$bytes B"
     bytes < 1024L * 1024L -> "${(bytes / 1024.0).roundToInt()} KB"
     else -> "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB"
 }

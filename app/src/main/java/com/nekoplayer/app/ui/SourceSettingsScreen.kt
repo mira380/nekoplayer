@@ -80,8 +80,8 @@ internal fun SourceSettingsScreen(
     val content = remember(context, item.source) {
         try {
             val preferenceManager = PreferenceManager(context).apply {
-                setSharedPreferencesName(item.source.preferenceKey())
-                setSharedPreferencesMode(Context.MODE_PRIVATE)
+                sharedPreferencesName = item.source.preferenceKey()
+                sharedPreferencesMode = Context.MODE_PRIVATE
             }
             val screen = preferenceManager.createPreferenceScreen(context)
             (item.source as? ConfigurableAnimeSource)?.setupPreferenceScreen(screen)
@@ -168,18 +168,18 @@ internal fun SourceSettingsScreen(
                         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        sections.forEachIndexed { sectionIndex, section ->
-                            if (!section.title.isNullOrBlank()) {
+                        sections.forEachIndexed { sectionIndex, (title, preferences) ->
+                            if (!title.isNullOrBlank()) {
                                 item(key = "section:$sectionIndex") {
                                     Text(
-                                        section.title,
+                                        title,
                                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
                                         style = MaterialTheme.typography.titleSmall,
                                     )
                                 }
                             }
                             itemsIndexed(
-                                items = section.preferences,
+                                items = preferences,
                                 key = { index, preference ->
                                     "source-pref:$sectionIndex:$index:${preference.key.orEmpty()}"
                                 },
@@ -241,7 +241,7 @@ private fun ListPreferenceControl(preference: ListPreference) {
     val entries = preference.entries.orEmpty()
     val values = preference.entryValues.orEmpty()
     var selectedValue by remember(preference) { mutableStateOf(preference.value.orEmpty()) }
-    var showOptions by remember(preference) { mutableStateOf(false) }
+    var showOptions by remember(preference) { mutableStateOf(value = false)}
     val selectedIndex = values.indexOfFirst { it.toString() == selectedValue }
     val selectedLabel = entries.getOrNull(selectedIndex)?.toString()
         ?: selectedValue.takeIf(String::isNotBlank)
@@ -337,7 +337,7 @@ private fun TwoStatePreferenceControl(preference: TwoStatePreference) {
 private fun EditTextPreferenceControl(preference: EditTextPreference) {
     var text by remember(preference) { mutableStateOf(preference.text.orEmpty()) }
     var draft by remember(preference) { mutableStateOf(text) }
-    var showEditor by remember(preference) { mutableStateOf(false) }
+    var showEditor by remember(preference) { mutableStateOf(value = false) }
     PreferenceCard(
         title = preference.title?.toString() ?: preference.key.orEmpty(),
         detail = text.takeIf(String::isNotBlank) ?: preference.summary?.toString(),
@@ -391,8 +391,8 @@ private fun MultiSelectPreferenceControl(preference: MultiSelectListPreference) 
     val values = preference.entryValues.orEmpty()
     var selectedValues by remember(preference) { mutableStateOf(preference.values.toSet()) }
     var draft by remember(preference) { mutableStateOf(selectedValues) }
-    var showOptions by remember(preference) { mutableStateOf(false) }
-    val selectedLabels = entries.indices.mapNotNull { index ->
+    var showOptions by remember(preference) { mutableStateOf(value = false)}
+    val selectedLabels = entries.indices.asSequence().mapNotNull { index ->
         val value = values.getOrNull(index)?.toString() ?: return@mapNotNull null
         entries[index].toString().takeIf { value in selectedValues }
     }.joinToString()
@@ -515,7 +515,7 @@ private fun PreferenceCard(
 ) {
     Card(
         onClick = onClick ?: {},
-        enabled = enabled && onClick != null,
+        enabled = enabled && (onClick != null),
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),

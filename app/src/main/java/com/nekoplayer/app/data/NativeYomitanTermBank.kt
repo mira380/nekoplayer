@@ -3,6 +3,7 @@ package com.nekoplayer.app.data
 import java.io.InputStream
 
 internal fun interface NativeTermBankBatchConsumer {
+    @Suppress("unused")
     fun onBatch(
         expressions: Array<String>,
         readings: Array<String>,
