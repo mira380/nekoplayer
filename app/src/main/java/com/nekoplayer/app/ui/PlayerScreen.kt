@@ -1,7 +1,9 @@
 package com.nekoplayer.app.ui
 
+import android.content.Context
 import android.media.MediaPlayer
 import android.net.Uri
+import android.view.TextureView
 import android.view.View
 import android.view.LayoutInflater
 import android.widget.FrameLayout
@@ -97,7 +99,10 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -116,6 +121,7 @@ import com.nekoplayer.app.media.SubtitleTrack
 import com.nekoplayer.app.media.SubtitleTrackSource
 import com.nekoplayer.app.mining.AnkiDroidClient
 import com.nekoplayer.app.mining.AnkiDroidMiningWorkflow
+import com.nekoplayer.app.mining.PlaybackAudioCapture
 import com.nekoplayer.app.mining.PronunciationAudioClient
 import com.nekoplayer.app.player.JimakuSubtitleDialog
 import com.nekoplayer.app.player.AutomaticJimakuSubtitleStore
@@ -123,8 +129,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.hypot
@@ -160,11 +169,27 @@ fun PlayerScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val player = remember(uri, requestHeaders) {
+    val playbackAudioCapture = remember(uri, requestHeaders) { PlaybackAudioCapture() }
+    val playbackClockMs = remember(uri, requestHeaders) { AtomicLong(0L) }
+    val player = remember(uri, requestHeaders, playbackAudioCapture, playbackClockMs) {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setDefaultRequestProperties(requestHeaders)
         val dataSourceFactory = DefaultDataSource.Factory(activity, httpDataSourceFactory)
-        ExoPlayer.Builder(activity)
+        val audioProcessor = PlaybackAudioCapture.Processor(playbackAudioCapture) {
+            playbackClockMs.get()
+        }
+        val renderersFactory = object : DefaultRenderersFactory(activity) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioOutputPlaybackParams: Boolean,
+            ): AudioSink = DefaultAudioSink.Builder(context)
+                .setAudioProcessors(arrayOf(audioProcessor))
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+                .build()
+        }
+        ExoPlayer.Builder(activity, renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .build()
             .apply {
@@ -172,6 +197,7 @@ fun PlayerScreen(
                 prepare()
             }
     }
+    val playerScreenActive = remember(player) { AtomicBoolean(true) }
     val playerView = remember(player) { mutableStateOf<PlayerView?>(null) }
     var positionMs by remember(uri) { mutableLongStateOf(0L) }
     var durationMs by remember(uri) { mutableLongStateOf(0L) }
@@ -206,6 +232,9 @@ fun PlayerScreen(
     var lookupWordAlreadyMined by remember { mutableStateOf(false) }
     var lookupMessage by remember { mutableStateOf<String?>(null) }
     var lookupMetadata by remember { mutableStateOf(emptyList<com.nekoplayer.app.data.DictionaryTermMeta>()) }
+    var miningInProgress by remember(player) { mutableStateOf(false) }
+    var lookupKeptOpenAfterMining by remember(player) { mutableStateOf(false) }
+    var resumePlaybackAfterLookupDismiss by remember(player) { mutableStateOf(false) }
     var lastSavedAt by remember(uri) { mutableLongStateOf(0L) }
     var errorMessage by remember(uri) { mutableStateOf<String?>(null) }
     var showJimakuDialog by remember(uri) { mutableStateOf(false) }
@@ -261,9 +290,15 @@ fun PlayerScreen(
     val subtitleVignette = remember(database) { database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f) }
     val subtitleBottom = remember(database) { database.readNumber("subtitles.bottomInsetPx", 112.0).toFloat().coerceIn(0f, 240f) }
     val pauseOnDictionaryLookup = remember(database) { database.readBoolean("playback.autoPause", false) }
+    val keepLookupOpenAfterMining = remember(database) {
+        database.readBoolean("playback.keepLookupOpenAfterMining", true)
+    }
     val autoFetchJimaku = remember(database) { database.readBoolean("jimaku.autoFetch", true) }
 
     LaunchedEffect(subtitleText, activeCue?.id) {
+        if (lookupKeptOpenAfterMining || (miningInProgress && keepLookupOpenAfterMining)) {
+            return@LaunchedEffect
+        }
         lookupRequestId++
         lookup = null
         lookupSourceText = null
@@ -295,6 +330,7 @@ fun PlayerScreen(
         player.addListener(listener)
         player.volume = volume
         onDispose {
+            playerScreenActive.set(false)
             player.removeListener(listener)
             playerView.value?.player = null
             val currentPosition = player.currentPosition.coerceAtLeast(0L)
@@ -363,6 +399,7 @@ fun PlayerScreen(
     LaunchedEffect(player) {
         while (true) {
             positionMs = player.currentPosition.coerceAtLeast(0L)
+            playbackClockMs.set(positionMs)
             durationMs = player.duration.takeIf { it > 0L } ?: durationMs
             if (positionMs - lastSavedAt >= 5_000L) {
                 lastSavedAt = positionMs
@@ -467,6 +504,18 @@ fun PlayerScreen(
         }
     }
 
+    fun dismissLookup() {
+        lookupRequestId++
+        lookup = null
+        lookupSourceText = null
+        lookupMessage = null
+        lookupMetadata = emptyList()
+        lookupKeptOpenAfterMining = false
+        val shouldResume = resumePlaybackAfterLookupDismiss
+        resumePlaybackAfterLookupDismiss = false
+        if (shouldResume && playerScreenActive.get()) player.play()
+    }
+
     fun tapSubtitle(position: Offset) {
         val layout = subtitleLayout ?: return
         val text = subtitleText
@@ -475,11 +524,15 @@ fun PlayerScreen(
         lookupAnchor = subtitleCoordinates?.localToRoot(position) ?: Offset.Zero
         val requestId = lookupRequestId + 1
         lookupRequestId = requestId
+        lookupKeptOpenAfterMining = false
         lookupSourceText = text
         lookup = null
         lookupMessage = null
         lookupMetadata = emptyList()
-        if (pauseOnDictionaryLookup) player.pause()
+        if (pauseOnDictionaryLookup && player.playWhenReady) {
+            resumePlaybackAfterLookupDismiss = true
+            player.pause()
+        }
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 scanYomitanSubtitle(text, offset, dictionaries)
@@ -828,7 +881,10 @@ fun PlayerScreen(
                                 IconButton(onClick = { player.seekTo((player.currentPosition - 10_000L).coerceAtLeast(0L)) }) {
                                     Icon(Icons.Default.Replay10, contentDescription = localizeUiText("Back 10 seconds"), tint = PlayerOverlayText)
                                 }
-                                IconButton(onClick = { if (player.isPlaying) player.pause() else player.play() }) {
+                                IconButton(onClick = {
+                                    resumePlaybackAfterLookupDismiss = false
+                                    if (player.isPlaying) player.pause() else player.play()
+                                }) {
                                     Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = localizeUiText(if (playing) "Pause" else "Play"), tint = PlayerOverlayText, modifier = Modifier.size(28.dp))
                                 }
                                 IconButton(onClick = { player.seekTo((player.currentPosition + 10_000L).coerceAtMost(durationMs)) }) {
@@ -1029,29 +1085,13 @@ fun PlayerScreen(
             anchorInPlayer = lookupAnchor,
             subtitleContext = activeCue?.plainText ?: embeddedSubtitle,
             dictionaries = dictionaries,
-            onDismiss = {
-                lookupRequestId++
-                lookup = null
-                lookupSourceText = null
-                lookupMessage = null
-                lookupMetadata = emptyList()
-            },
+            onDismiss = ::dismissLookup,
             onPlayAudio = ::playPronunciation,
             onMine = { entry, lookupResult, pageMetadata ->
-                scope.launch {
+                if (!miningInProgress) {
+                    miningInProgress = true
+                    val mineRequestId = lookupRequestId
                     val sentence = activeCue?.plainText ?: embeddedSubtitle
-                    if (sentence.isBlank()) {
-                        onNotify("Select a subtitle cue before mining a card.")
-                        return@launch
-                    }
-                    val permission = try { awaitAnkiWritePermission(anki) } catch (_: Exception) {
-                        onNotify("AnkiDroid access could not be requested.")
-                        return@launch
-                    }
-                    if (!permission) {
-                        onNotify("AnkiDroid access was denied.")
-                        return@launch
-                    }
                     val cueStart = activeCue?.let {
                         (it.startMs + externalSubtitle.offsetMs + subtitleOffsetMs).coerceAtLeast(0L)
                     } ?: positionMs
@@ -1060,30 +1100,86 @@ fun PlayerScreen(
                     } ?: (cueStart + 1_500L)
                     val related = lookupResult.entries + lookupResult.relatedEntries
                     val allEntries = (listOf(entry) + related).distinctBy { it.dictionaryId to it.id }
-                    val originalVolume = player.volume
-                    val playAudio = withContext(Dispatchers.IO) {
-                        database.readBoolean("capture.playAudioWhileCapture", false)
-                    }
-                    try {
-                        if (!playAudio) player.volume = 0f
-                        val pronunciation = pronunciationClient.resolve(entry, destinationField = "Pronunciation Audio")
-                        AnkiDroidMiningWorkflow(context, database, anki).mine(
-                            uri = uri,
-                            sentence = sentence,
-                            cueStartMs = cueStart,
-                            cueEndMs = cueEnd,
-                            mainEntry = entry,
-                            allEntries = allEntries,
-                            metadata = pageMetadata,
-                            surfaceText = lookupResult.surfaceText,
-                            pronunciationAttachment = pronunciation?.attachment,
-                        )
-                        lookup = null
-                        lookupMessage = null
-                    } catch (_: Exception) {
-                        onNotify("Card could not be added to AnkiDroid.")
-                    } finally {
-                        player.volume = originalVolume
+                    val sourceCapture = sourceProgressIdentity != null ||
+                        uri.scheme.equals("http", ignoreCase = true) ||
+                        uri.scheme.equals("https", ignoreCase = true) ||
+                        requestHeaders.isNotEmpty()
+                    val captureDurationMs = durationMs.takeIf { it > 0L }
+
+                    activity.miningScope.launch {
+                        try {
+                            if (sentence.isBlank()) {
+                                onNotify("Select a subtitle cue before mining a card.")
+                                return@launch
+                            }
+                            val permission = try {
+                                awaitAnkiWritePermission(anki)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                onNotify(
+                                    error.message?.takeIf(String::isNotBlank)
+                                        ?: "AnkiDroid access could not be requested.",
+                                )
+                                return@launch
+                            }
+                            if (!permission) {
+                                onNotify("AnkiDroid access was denied.")
+                                return@launch
+                            }
+
+                            val pronunciation = pronunciationClient.resolve(
+                                entry,
+                                destinationField = "Pronunciation Audio",
+                            )
+                            AnkiDroidMiningWorkflow(context, database, anki).mine(
+                                uri = uri,
+                                sentence = sentence,
+                                cueStartMs = cueStart,
+                                cueEndMs = cueEnd,
+                                mainEntry = entry,
+                                allEntries = allEntries,
+                                metadata = pageMetadata,
+                                surfaceText = lookupResult.surfaceText,
+                                pronunciationAttachment = pronunciation?.attachment,
+                                mediaDurationMs = captureDurationMs,
+                                requestHeaders = requestHeaders,
+                                playbackAudioCapture = playbackAudioCapture,
+                                renderedFrameProvider = if (sourceCapture) {
+                                    {
+                                        withContext(Dispatchers.Main.immediate) {
+                                            if (playerScreenActive.get()) {
+                                                (playerView.value?.videoSurfaceView as? TextureView)?.bitmap
+                                            } else {
+                                                null
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
+                                preferPlaybackCapture = sourceCapture,
+                            )
+
+                            if (mineRequestId == lookupRequestId) {
+                                lookupMessage = null
+                                if (keepLookupOpenAfterMining) {
+                                    lookupWordAlreadyMined = true
+                                    lookupKeptOpenAfterMining = true
+                                } else {
+                                    dismissLookup()
+                                }
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            onNotify(
+                                error.message?.takeIf(String::isNotBlank)
+                                    ?: "Card could not be added to AnkiDroid.",
+                            )
+                        } finally {
+                            miningInProgress = false
+                        }
                     }
                 }
             }

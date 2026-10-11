@@ -2,7 +2,6 @@ package com.nekoplayer.app.mining
 
 import android.content.Context
 import android.graphics.Bitmap
-import androidx.core.graphics.scale
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -11,23 +10,45 @@ import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import androidx.core.graphics.scale
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.UUID
 import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
+import kotlin.time.Duration.Companion.milliseconds
 
 data class CaptureSettings(
     val prePaddingMs: Long = 900L,
-    val postPaddingMs: Long = 900L,
+    val postPaddingMs: Long = 5_000L,
     val screenshotDelayMs: Long = 0L,
     val screenshotFormat: String = "webp",
     val maxWidth: Int = 0,
     val maxHeight: Int = 0,
     val trimBlackBars: Boolean = false,
+    val mediaDurationMs: Long? = null,
 )
 
 data class CapturedMedia(
@@ -35,7 +56,7 @@ data class CapturedMedia(
     val screenshotFile: File,
 )
 
-// Copies audio samples without decoding, so memory use doesn't grow with clip length.
+// Copies audio samples without decoding so memory use doesn't grow with clip length.
 // The selected audio codec must be supported by Android's MP4 muxer; AAC is common.
 class MediaCapture(private val context: Context) {
     // Audio spans the cue plus padding; capture the frame at cue start + screenshotDelayMs.
@@ -46,6 +67,10 @@ class MediaCapture(private val context: Context) {
         settings: CaptureSettings,
         cueEndMs: Long = positionMs,
         audioTrackIndex: Int? = null,
+        requestHeaders: Map<String, String> = emptyMap(),
+        playbackAudioCapture: PlaybackAudioCapture? = null,
+        renderedFrameProvider: (suspend () -> Bitmap?)? = null,
+        preferPlaybackCapture: Boolean = false,
     ): CapturedMedia = withContext(Dispatchers.IO) {
         require(positionMs >= 0L) { "Capture position cannot be negative." }
         require(cueEndMs >= positionMs) { "Cue end cannot precede its start." }
@@ -60,16 +85,141 @@ class MediaCapture(private val context: Context) {
             throw IOException("Could not create the temporary media directory.")
         }
         val id = "mine-${UUID.randomUUID()}"
-        val audioFile = File(outputDirectory, "$id-sentence-audio.m4a")
+        val extractedAudioFile = File(outputDirectory, "$id-sentence-audio.m4a")
+        val playbackAudioFile = File(outputDirectory, "$id-sentence-audio.wav")
         val imageFile = File(outputDirectory, "$id-screenshot.${settings.screenshotFormat.lowercase()}")
+        var audioFile: File? = null
         try {
-            extractAudio(uri, positionMs, cueEndMs, settings, audioTrackIndex, audioFile)
-            captureScreenshot(uri, positionMs, settings, imageFile)
+            val playbackCapture = playbackAudioCapture
+            val captureStartMs = (positionMs - settings.prePaddingMs).coerceAtLeast(0L)
+            val captureEndMs = minOf(
+                cueEndMs + settings.postPaddingMs,
+                settings.mediaDurationMs?.takeIf { it > 0L } ?: Long.MAX_VALUE,
+            ).coerceAtLeast(captureStartMs + 1L)
+            val existingAudioWritten = playbackCapture?.let { capture ->
+                capture.hasSamplesCovering(captureStartMs, captureEndMs) &&
+                    capture.writeClip(positionMs, cueEndMs, settings, playbackAudioFile)
+            } == true
+            if (existingAudioWritten) {
+                audioFile = playbackAudioFile
+            } else if (
+                preferPlaybackCapture &&
+                capturePlaybackAudio(
+                    uri = uri,
+                    cueStartMs = positionMs,
+                    cueEndMs = cueEndMs,
+                    settings = settings,
+                    requestHeaders = requestHeaders,
+                    output = playbackAudioFile,
+                )
+            ) {
+                audioFile = playbackAudioFile
+            }
+
+            captureScreenshot(
+                uri = uri,
+                positionMs = positionMs,
+                settings = settings,
+                output = imageFile,
+                requestHeaders = requestHeaders,
+                renderedFrameProvider = renderedFrameProvider,
+                preferPlaybackFrame = preferPlaybackCapture,
+            )
+
+            if (audioFile == null) {
+                if (preferPlaybackCapture) {
+                    throw IOException("Could not capture the complete audio clip from this source.")
+                }
+                extractAudio(uri, positionMs, cueEndMs, settings, audioTrackIndex, requestHeaders, extractedAudioFile)
+                audioFile = extractedAudioFile
+            }
             CapturedMedia(audioFile, imageFile)
         } catch (error: Throwable) {
-            audioFile.delete()
+            extractedAudioFile.delete()
+            playbackAudioFile.delete()
             imageFile.delete()
             throw error
+        }
+    }
+
+    @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
+    private suspend fun capturePlaybackAudio(
+        uri: Uri,
+        cueStartMs: Long,
+        cueEndMs: Long,
+        settings: CaptureSettings,
+        requestHeaders: Map<String, String>,
+        output: File,
+    ): Boolean {
+        val startMs = (cueStartMs - settings.prePaddingMs).coerceAtLeast(0L)
+        val endMs = minOf(
+            cueEndMs + settings.postPaddingMs,
+            settings.mediaDurationMs?.takeIf { it > 0L } ?: Long.MAX_VALUE,
+        ).coerceAtLeast(startMs + 1L)
+        val capture = PlaybackAudioCapture()
+        val playbackPositionMs = AtomicLong(startMs)
+        val audioProcessor = PlaybackAudioCapture.Processor(capture) { playbackPositionMs.get() }
+        val renderersFactory = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioOutputPlaybackParams: Boolean,
+            ): AudioSink = DefaultAudioSink.Builder(context)
+                .setAudioProcessors(arrayOf(audioProcessor))
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+                .build()
+        }
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(requestHeaders)
+        val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        val player = withContext(Dispatchers.Main.immediate) {
+            ExoPlayer.Builder(context, renderersFactory)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+                .build()
+                .apply {
+                    volume = 0f
+                    setMediaItem(MediaItem.fromUri(uri))
+                    trackSelectionParameters = trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                        .build()
+                    prepare()
+                    seekTo(startMs)
+                    playWhenReady = true
+                }
+        }
+        val captureFailed = AtomicBoolean(false)
+        val positionMonitor = CoroutineScope(
+            currentCoroutineContext() + Dispatchers.Main.immediate,
+        ).launch {
+            player.addListener(object : Player.Listener {
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    captureFailed.set(true)
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_ENDED) captureFailed.set(true)
+                }
+            })
+            while (isActive) {
+                playbackPositionMs.set(player.currentPosition.coerceAtLeast(0L))
+                delay(25.milliseconds)
+            }
+        }
+        try {
+            val timeoutMs = ((endMs - startMs).coerceAtLeast(1L) * 3L + 15_000L)
+                .coerceAtMost(MAX_BACKGROUND_CAPTURE_MS)
+            val captured = withTimeoutOrNull(timeoutMs) {
+                while (!capture.hasSamplesCovering(startMs, endMs)) {
+                    if (captureFailed.get()) return@withTimeoutOrNull false
+                    delay(50.milliseconds)
+                }
+                true
+            } == true
+            return captured && capture.writeClip(cueStartMs, cueEndMs, settings, output)
+        } finally {
+            positionMonitor.cancel()
+            withContext(Dispatchers.Main.immediate) { player.release() }
         }
     }
 
@@ -79,13 +229,14 @@ class MediaCapture(private val context: Context) {
         cueEndMs: Long,
         settings: CaptureSettings,
         audioTrackOrdinal: Int?,
+        requestHeaders: Map<String, String>,
         output: File,
     ) {
         val extractor = MediaExtractor()
         var muxer: MediaMuxer? = null
         var muxerStarted = false
         try {
-            extractor.setDataSource(context, uri, null)
+            extractor.setDataSource(context, uri, requestHeaders)
             val audioTracks = (0 until extractor.trackCount).filter { index ->
                 extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
                     ?.startsWith("audio/") == true
@@ -192,7 +343,21 @@ class MediaCapture(private val context: Context) {
         }
     }
 
-    private fun captureScreenshot(uri: Uri, positionMs: Long, settings: CaptureSettings, output: File) {
+    private suspend fun captureScreenshot(
+        uri: Uri,
+        positionMs: Long,
+        settings: CaptureSettings,
+        output: File,
+        requestHeaders: Map<String, String>,
+        renderedFrameProvider: (suspend () -> Bitmap?)?,
+        preferPlaybackFrame: Boolean,
+    ) {
+        if (preferPlaybackFrame) {
+            val frame = renderedFrameProvider?.invoke()
+                ?: throw IOException("A video frame could not be captured from playback.")
+            saveRenderedFrame(frame, settings, output)
+            return
+        }
         val targetMs = (positionMs + settings.screenshotDelayMs).coerceAtLeast(0L)
         val retriever = MediaMetadataRetriever()
         var bitmap: Bitmap? = null
@@ -203,7 +368,11 @@ class MediaCapture(private val context: Context) {
         var primarySize: Pair<Int, Int>? = null
         var decodedSize: Pair<Int, Int>? = null
         try {
-            retriever.setDataSource(context, uri)
+            if (requestHeaders.isEmpty()) {
+                retriever.setDataSource(context, uri)
+            } else {
+                retriever.setDataSource(uri.toString(), requestHeaders)
+            }
             val sourceSize = sourceDimensions(retriever)
             expectedSize = sourceSize?.let { (width, height) ->
                 dimensions(width, height, settings.maxWidth, settings.maxHeight)
@@ -273,6 +442,41 @@ class MediaCapture(private val context: Context) {
             if (cropped != null && cropped !== bitmap) cropped.recycle()
             bitmap?.recycle()
             retriever.release()
+        }
+    }
+
+    private fun saveRenderedFrame(frame: Bitmap, settings: CaptureSettings, output: File) {
+        var cropped: Bitmap? = null
+        var scaled: Bitmap? = null
+        try {
+            cropped = if (settings.trimBlackBars) cropDarkBars(frame) else frame
+            val outputBitmap = scaleToBounds(cropped, settings.maxWidth, settings.maxHeight)
+            scaled = outputBitmap
+            output.outputStream().use { stream ->
+                val format = if (settings.screenshotFormat.equals("png", ignoreCase = true)) {
+                    Bitmap.CompressFormat.PNG
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Bitmap.CompressFormat.WEBP_LOSSLESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    Bitmap.CompressFormat.WEBP
+                }
+                if (!outputBitmap.compress(format, 100, stream)) {
+                    throw IOException("The screenshot could not be encoded.")
+                }
+            }
+            Log.d(
+                TAG,
+                "Mining playback frame output=${outputBitmap.width}x${outputBitmap.height} " +
+                    "bytes=${output.length()} format=${settings.screenshotFormat}",
+            )
+        } catch (error: Exception) {
+            if (error is IOException) throw error
+            throw IOException("A screenshot could not be captured from playback.", error)
+        } finally {
+            if (scaled != null && scaled !== cropped && scaled !== frame) scaled.recycle()
+            if (cropped != null && cropped !== frame) cropped.recycle()
+            frame.recycle()
         }
     }
 
@@ -356,6 +560,7 @@ class MediaCapture(private val context: Context) {
         const val TAG = "MediaCapture"
         const val INITIAL_SAMPLE_BUFFER_BYTES = 256 * 1024
         const val MAX_SAMPLE_BYTES = 64L * 1024L * 1024L
+        const val MAX_BACKGROUND_CAPTURE_MS = 120_000L
         const val DARK_CHANNEL_THRESHOLD = 14
         const val DARK_EDGE_FRACTION = 0.98
     }

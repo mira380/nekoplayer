@@ -104,7 +104,7 @@ internal object YomitanPopupHtml {
                         .append(localizeUiText("Open full screen", language)).append("\">")
                         .append(expandIcon(colors.foreground)).append("</a>")
                 }
-                append("<a class=\"mine\" href=\"nekoplayer://mine/0\" aria-label=\"")
+                append("<a class=\"mine\" href=\"nekoplayer://mine/0\" onclick=\"NekoLookup.mine(0); return false;\" aria-label=\"")
                     .append(localizeUiText(if (alreadyMined) "Already in Anki" else "Add to Anki", language)).append("\">")
                 append(if (alreadyMined) checkIcon(colors.foreground, colors.background) else addIcon(colors.foreground, colors.background))
                 append("</a><a class=\"pronounce\" href=\"nekoplayer://audio/0\" aria-label=\"").append(localizeUiText("Play pronunciation", language)).append("\">")

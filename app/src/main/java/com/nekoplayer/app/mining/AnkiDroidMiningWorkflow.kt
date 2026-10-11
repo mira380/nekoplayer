@@ -25,6 +25,11 @@ class AnkiDroidMiningWorkflow(
         metadata: List<DictionaryTermMeta>,
         surfaceText: String = "",
         pronunciationAttachment: AnkiDroidAttachment? = null,
+        mediaDurationMs: Long? = null,
+        requestHeaders: Map<String, String> = emptyMap(),
+        playbackAudioCapture: PlaybackAudioCapture? = null,
+        renderedFrameProvider: (suspend () -> android.graphics.Bitmap?)? = null,
+        preferPlaybackCapture: Boolean = false,
     ): Long = withContext(Dispatchers.IO) {
         val cleanSentence = sentence.trim()
         val expression = mainEntry.expression.trim()
@@ -114,17 +119,27 @@ class AnkiDroidMiningWorkflow(
 
         val settings = CaptureSettings(
             prePaddingMs = database.readNumber("capture.audioPrePadding", 900.0).toLong().coerceIn(0L, 5_000L),
-            postPaddingMs = database.readNumber("capture.audioPostPadding", 1_000.0).toLong().coerceIn(0L, 5_000L),
+            postPaddingMs = database.readNumber("capture.audioPostPadding", 5_000.0).toLong().coerceIn(0L, 5_000L),
             screenshotDelayMs = database.readNumber("capture.screenshotDelayMs", 1_000.0).toLong().coerceIn(0L, 30_000L),
             screenshotFormat = database.readString("capture.screenshotFormat", "PNG").lowercase(),
             maxWidth = database.readNumber("capture.maxWidth", 0.0).toInt().coerceIn(0, 16_384),
             maxHeight = database.readNumber("capture.maxHeight", 0.0).toInt().coerceIn(0, 16_384),
             trimBlackBars = database.readBoolean("capture.trimBlackBars", false),
+            mediaDurationMs = mediaDurationMs,
         )
         var captured: CapturedMedia? = null
         try {
             val media = if (sentenceAudioFields.isNotEmpty() || imageFields.isNotEmpty()) {
-                capture.capture(uri, cueStartMs, settings, cueEndMs = cueEndMs).also { captured = it }
+                capture.capture(
+                    uri = uri,
+                    positionMs = cueStartMs,
+                    settings = settings,
+                    cueEndMs = cueEndMs,
+                    requestHeaders = requestHeaders,
+                    playbackAudioCapture = playbackAudioCapture,
+                    renderedFrameProvider = renderedFrameProvider,
+                    preferPlaybackCapture = preferPlaybackCapture,
+                ).also { captured = it }
             } else null
             val safeName = expression.replace(Regex("[^\\p{L}\\p{N}_-]+"), "_").trim('_').take(48).ifBlank { "card" }
             client.createNote(
@@ -138,8 +153,12 @@ class AnkiDroidMiningWorkflow(
                             sentenceAudioFields.forEach { field ->
                                 add(AnkiDroidAttachment(
                                     file = media.audioFile,
-                                    preferredName = "sentence_$safeName.m4a",
-                                    mimeType = "audio/mp4",
+                                    preferredName = "sentence_$safeName.${media.audioFile.extension}",
+                                    mimeType = if (media.audioFile.extension.equals("wav", ignoreCase = true)) {
+                                        "audio/wav"
+                                    } else {
+                                        "audio/mp4"
+                                    },
                                     destinationField = field,
                                     isImage = false,
                                 ))

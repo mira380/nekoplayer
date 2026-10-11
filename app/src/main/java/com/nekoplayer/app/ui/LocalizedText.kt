@@ -27,6 +27,7 @@ private val japaneseLabels = mapOf(
     "Playback" to "再生",
     "Continue" to "続きから再生",
     "Pause video when opening dictionary lookup" to "辞書検索を開くときに動画を一時停止",
+    "Keep dictionary lookup open after mining" to "カード作成後も辞書検索を開いたままにする",
     "Subtitles" to "字幕",
     "Font size" to "文字サイズ",
     "Bottom inset" to "画面下端からの余白",

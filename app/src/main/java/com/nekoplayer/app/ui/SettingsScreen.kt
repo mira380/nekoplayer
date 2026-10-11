@@ -321,6 +321,9 @@ fun SettingsScreen(
     }
 
     var autoPause by remember { mutableStateOf(database.readBoolean("playback.autoPause", false)) }
+    var keepLookupOpenAfterMining by remember {
+        mutableStateOf(database.readBoolean("playback.keepLookupOpenAfterMining", true))
+    }
     var fontSize by remember { mutableFloatStateOf(database.readNumber("subtitles.fontSize", 32.0).toFloat().coerceIn(14f, 48f)) }
     var bottomInset by remember { mutableFloatStateOf(database.readNumber("subtitles.bottomInsetPx", 112.0).toFloat().coerceIn(0f, 240f)) }
     var backgroundOpacity by remember { mutableFloatStateOf(database.readNumber("subtitles.backgroundOpacity", 0.72).toFloat().coerceIn(0f, 1f)) }
@@ -333,7 +336,7 @@ fun SettingsScreen(
     }
     var vignetteIntensity by remember { mutableFloatStateOf(database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f)) }
     var prePadding by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.audioPrePadding", 900.0).toFloat(), 10f, 0f..5000f)) }
-    var postPadding by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.audioPostPadding", 1000.0).toFloat(), 10f, 0f..5000f)) }
+    var postPadding by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.audioPostPadding", 5000.0).toFloat(), 10f, 0f..5000f)) }
     var screenshotDelay by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.screenshotDelayMs", 1000.0).toFloat(), 10f, 0f..30000f)) }
     var maxWidth by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.maxWidth", 0.0).toFloat(), 10f, 0f..4096f)) }
     var maxHeight by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.maxHeight", 0.0).toFloat(), 10f, 0f..4096f)) }
@@ -558,6 +561,10 @@ fun SettingsScreen(
             SettingSection("Playback behavior") {
                 SettingSwitch("Pause video when opening dictionary lookup", autoPause) {
                     autoPause = it; save("playback.autoPause", it)
+                }
+                SettingSwitch("Keep dictionary lookup open after mining", keepLookupOpenAfterMining) {
+                    keepLookupOpenAfterMining = it
+                    save("playback.keepLookupOpenAfterMining", it)
                 }
             }
         }
@@ -1442,6 +1449,7 @@ private fun SettingSwitch(label: String, checked: Boolean, detail: String? = nul
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        Spacer(Modifier.width(12.dp))
         Switch(checked, onChange)
     }
 }

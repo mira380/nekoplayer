@@ -24,7 +24,7 @@ object AnkiNoteFieldTemplates {
         AnkiTemplateValue("sentenceAudio", "Sentence audio", listOf("sentenceaudio", "sentencesound", "audiosentence")),
         AnkiTemplateValue("audio", "Pronunciation audio", listOf("expressionaudio", "audio")),
         AnkiTemplateValue("pronunciationAudio", "Pronunciation audio (camelCase alias)", listOf("pronunciationaudio", "wordaudio", "vocabularyaudio", "sound")),
-        AnkiTemplateValue("screenshot", "Screenshot", listOf("definitionpicture", "screenshot", "image", "picture", "capture")),
+        AnkiTemplateValue("screenshot", "ScreensselectionText\", \"Selected subtitle text (camelCase alias)\", emptyList())hot", listOf("definitionpicture", "screenshot", "image", "picture", "capture")),
         AnkiTemplateValue("frequency", "Frequency", listOf("frequency", "freq", "rank", "wordfrequency")),
         AnkiTemplateValue("popup-selection-text", "Selected subtitle text", listOf("selectiontext", "selectedtext", "popupselectiontext")),
         AnkiTemplateValue("selectionText", "Selected subtitle text (camelCase alias)", emptyList()),
