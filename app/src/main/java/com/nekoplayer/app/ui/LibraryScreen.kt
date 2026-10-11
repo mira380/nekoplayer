@@ -681,10 +681,10 @@ private fun SourceLibraryCard(
         ) {
             Material3Text(
                 entry.sourceName,
-                Modifier.weight(1f),
+                Modifier.weight(1f).padding(start = 4.dp),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(

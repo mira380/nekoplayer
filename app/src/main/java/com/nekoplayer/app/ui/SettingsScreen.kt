@@ -1449,6 +1449,7 @@ private fun SettingSwitch(label: String, checked: Boolean, detail: String? = nul
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        Spacer(Modifier.width(12.dp))
         Switch(checked, onChange)
     }
 }
