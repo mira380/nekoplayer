@@ -43,10 +43,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
@@ -66,7 +68,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
@@ -108,6 +112,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.nekoplayer.app.MainActivity
 import com.nekoplayer.app.data.AppDatabase
+import eu.kanade.tachiyomi.animesource.model.ChapterType
+import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import com.nekoplayer.app.data.DictionaryEntry
 import com.nekoplayer.app.data.DictionaryRepository
 import com.nekoplayer.app.library.AniListClient
@@ -147,6 +153,26 @@ private val PlayerOverlaySurface = Color(0xE6111415)
 private val PlayerOverlayText = Color(0xFFDEE7EC)
 private val PlayerOverlayAccent = Color(0xFFA0CDE0)
 
+private data class PlaybackSkipPoint(
+    val type: ChapterType,
+    val startMs: Long,
+    val endMs: Long,
+)
+
+private fun Double.toPlaybackSkipTimeMsOrNull(): Long? {
+    if (!isFinite() || this < 0.0 || this > Long.MAX_VALUE.toDouble() / 1_000.0) return null
+    return (this * 1_000.0).roundToLong()
+}
+
+private fun TimeStamp.toPlaybackSkipPointOrNull(): PlaybackSkipPoint? {
+    if (type != ChapterType.Opening && type != ChapterType.Ending) return null
+    val startMs = start.toPlaybackSkipTimeMsOrNull() ?: return null
+    val endMs = end.toPlaybackSkipTimeMsOrNull() ?: return null
+    if (endMs <= startMs) return null
+    return PlaybackSkipPoint(type, startMs, endMs)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 fun PlayerScreen(
@@ -166,6 +192,8 @@ fun PlayerScreen(
     onClose: () -> Unit,
     onPickSubtitle: (((Uri, String) -> Unit) -> Unit),
     onNotify: (String) -> Unit,
+    onPlayNextEpisode: (() -> Unit)? = null,
+    sourceSkipTimestamps: List<TimeStamp> = emptyList(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -218,6 +246,32 @@ fun PlayerScreen(
     var showSubtitleMenu by remember(uri) { mutableStateOf(false) }
     var showSubtitleTimingDialog by remember(uri) { mutableStateOf(false) }
     var subtitleOffsetDraft by remember(uri) { mutableLongStateOf(0L) }
+    var automaticNextStarted by remember(uri) { mutableStateOf(false) }
+    val autoPlayNext = remember(database) { database.readBoolean("playback.autoPlayNext", false) }
+    val skipPointsEnabled = remember(database) { database.readBoolean("playback.skipPointsEnabled", true) }
+    val sourceSkipPoints = remember(sourceSkipTimestamps) {
+        sourceSkipTimestamps.mapNotNull { it.toPlaybackSkipPointOrNull() }.sortedBy { it.startMs }
+    }
+    val sourceSkipPointsForDuration = remember(sourceSkipPoints, durationMs) {
+        if (durationMs <= 0L) {
+            sourceSkipPoints
+        } else {
+            sourceSkipPoints.mapNotNull { point ->
+                if (point.startMs >= durationMs) {
+                    null
+                } else {
+                    point.copy(endMs = point.endMs.coerceAtMost(durationMs))
+                        .takeIf { it.endMs > it.startMs }
+                }
+            }
+        }
+    }
+    val timelineSkipPoints = remember(sourceSkipPointsForDuration) {
+        sourceSkipPointsForDuration.filter {
+            it.type == ChapterType.Opening || it.type == ChapterType.Ending
+        }
+    }
+    val latestOnPlayNextEpisode = rememberUpdatedState(onPlayNextEpisode)
     var subtitleOffsetInput by remember(uri) { mutableStateOf("0") }
     var selectedSpeed by remember(uri) { mutableFloatStateOf(1f) }
     var volume by remember(uri) { mutableFloatStateOf(database.readNumber("player.volume", 1.0).toFloat().coerceIn(0f, 1f)) }
@@ -281,6 +335,18 @@ fun PlayerScreen(
     val activeCue: SubtitleCue? = externalSubtitle?.takeIf { useExternalSubtitle }
         ?.let { track -> externalCueIndex?.let(track.cues::getOrNull) }
     val subtitleText = activeCue?.plainText ?: embeddedSubtitle
+    val activeSkipButton = if (skipPointsEnabled) {
+        sourceSkipPointsForDuration.firstOrNull { point ->
+            positionMs in point.startMs until point.endMs
+        }?.let { point ->
+            val label = if (point.type == ChapterType.Opening) "Skip opening" else "Skip ending"
+            label to point.endMs
+        }
+    } else {
+        null
+    }
+    val canSkipToNext = autoPlayNext && latestOnPlayNextEpisode.value != null && durationMs > 0L &&
+        positionMs < durationMs && durationMs - positionMs <= 30_000L
     val subtitleFont = remember(database) { database.readNumber("subtitles.fontSize", 32.0).toFloat().coerceIn(14f, 48f) }
     val subtitleAlpha = remember(database) { database.readNumber("subtitles.backgroundOpacity", 0.72).toFloat().coerceIn(0f, 1f) }
     val subtitleShadowStyle = remember(database) {
@@ -306,7 +372,7 @@ fun PlayerScreen(
         lookupMetadata = emptyList()
     }
 
-    DisposableEffect(player) {
+    DisposableEffect(player, autoPlayNext) {
         val listener = object : Player.Listener {
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 if (videoSize.width > 0 && videoSize.height > 0) {
@@ -317,6 +383,13 @@ fun PlayerScreen(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
                 if (playbackState == Player.STATE_READY) durationMs = player.duration.coerceAtLeast(0L)
+                if (playbackState == Player.STATE_ENDED && autoPlayNext && !automaticNextStarted) {
+                    val playNext = latestOnPlayNextEpisode.value
+                    if (playNext != null) {
+                        automaticNextStarted = true
+                        playNext()
+                    }
+                }
             }
             override fun onCues(cueGroup: CueGroup) {
                 val nextText = cueGroup.cues.mapNotNull { cue -> cue.text?.toString()?.takeIf(String::isNotBlank) }
@@ -795,6 +868,29 @@ fun PlayerScreen(
         if (isBuffering && errorMessage == null) {
             Text("Loading video…", Modifier.align(Alignment.Center), color = PlayerOverlayText.copy(alpha = 0.8f))
         }
+        if (activeSkipButton != null || canSkipToNext) {
+            Column(
+                Modifier.align(Alignment.CenterEnd).padding(end = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                activeSkipButton?.let { (label, targetMs) ->
+                    TextButton(
+                        onClick = {
+                            player.seekTo(targetMs)
+                            showControls = true
+                        },
+                        modifier = Modifier.background(PlayerOverlaySurface, RoundedCornerShape(14.dp)),
+                    ) { Text(label, color = PlayerOverlayText) }
+                }
+                if (canSkipToNext) {
+                    TextButton(
+                        onClick = { latestOnPlayNextEpisode.value?.invoke() },
+                        modifier = Modifier.background(PlayerOverlaySurface, RoundedCornerShape(14.dp)),
+                    ) { Text("Skip to next", color = PlayerOverlayText) }
+                }
+            }
+        }
         errorMessage?.let { message ->
             Surface(Modifier.align(Alignment.Center).padding(24.dp), color = Color(0xF2171A1B), shape = RoundedCornerShape(16.dp)) {
                 Text(message, Modifier.padding(18.dp), color = PlayerOverlayText)
@@ -842,16 +938,85 @@ fun PlayerScreen(
                 Column(Modifier.fillMaxWidth().background(PlayerOverlaySurface).padding(horizontal = 12.dp, vertical = 4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(formatTime(if (seekDrag >= 0f) seekDrag.roundToLong() else positionMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
-                        Slider(
-                            value = (if (seekDrag >= 0f) seekDrag else positionMs.toFloat()).coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
-                            onValueChange = { seekDrag = it },
-                            onValueChangeFinished = {
-                                if (seekDrag >= 0f) player.seekTo(seekDrag.roundToLong())
-                                seekDrag = -1f
-                            },
-                            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                            modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
-                        )
+                        Box(
+                            Modifier.weight(1f)
+                                .padding(horizontal = 10.dp)
+                                .height(48.dp),
+                        ) {
+                            Slider(
+                                value = (if (seekDrag >= 0f) seekDrag else positionMs.toFloat()).coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
+                                onValueChange = { seekDrag = it },
+                                onValueChangeFinished = {
+                                    if (seekDrag >= 0f) player.seekTo(seekDrag.roundToLong())
+                                    seekDrag = -1f
+                                },
+                                valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+                                modifier = Modifier.fillMaxSize(),
+                                track = { sliderState ->
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        SliderDefaults.Track(
+                                            sliderState = sliderState,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                        if (skipPointsEnabled && durationMs > 0L && timelineSkipPoints.isNotEmpty()) {
+                                            val openingColor = MaterialTheme.colorScheme.primary
+                                            val endingColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.62f)
+                                            val playbackFraction = sliderState.coercedValueAsFraction.coerceIn(0f, 1f)
+                                            Canvas(Modifier.fillMaxSize()) {
+                                                val markerHalfHeight = 8.dp.toPx().coerceAtMost(size.height / 2f)
+                                                val markerWidth = 2.dp.toPx()
+                                                val segmentHeight = 6.dp.toPx()
+                                                val centerY = size.height / 2f
+                                                timelineSkipPoints.forEach { point ->
+                                                    val startFraction =
+                                                        (point.startMs.toDouble() / durationMs.toDouble()).toFloat().coerceIn(0f, 1f)
+                                                    val endFraction =
+                                                        (point.endMs.toDouble() / durationMs.toDouble()).toFloat().coerceIn(0f, 1f)
+                                                    val isEnding = point.type == ChapterType.Ending
+                                                    val visibleStartFraction = maxOf(startFraction, playbackFraction)
+                                                    if (endFraction > visibleStartFraction) {
+                                                        val startX = size.width * visibleStartFraction
+                                                        val endX = size.width * endFraction
+                                                        val markerColor =
+                                                            if (isEnding) endingColor else openingColor
+                                                        drawRoundRect(
+                                                            color = markerColor.copy(alpha = 0.72f),
+                                                            topLeft = Offset(startX, centerY - segmentHeight / 2f),
+                                                            size = Size((endX - startX).coerceAtLeast(markerWidth), segmentHeight),
+                                                            cornerRadius = CornerRadius(segmentHeight / 2f, segmentHeight / 2f),
+                                                        )
+                                                        val tickTop = centerY - markerHalfHeight
+                                                        val tickHeight = markerHalfHeight * 2f
+                                                        val tickCorner = CornerRadius(markerWidth / 2f, markerWidth / 2f)
+                                                        if (playbackFraction <= startFraction) {
+                                                            val startTickLeft =
+                                                                (startX - markerWidth / 2f).coerceIn(0f, (size.width - markerWidth).coerceAtLeast(0f))
+                                                            drawRoundRect(
+                                                                color = markerColor,
+                                                                topLeft = Offset(startTickLeft, tickTop),
+                                                                size = Size(markerWidth, tickHeight),
+                                                                cornerRadius = tickCorner,
+                                                            )
+                                                        }
+                                                        val endTickLeft =
+                                                            (endX - markerWidth / 2f).coerceIn(0f, (size.width - markerWidth).coerceAtLeast(0f))
+                                                        drawRoundRect(
+                                                            color = markerColor,
+                                                            topLeft = Offset(endTickLeft, tickTop),
+                                                            size = Size(markerWidth, tickHeight),
+                                                            cornerRadius = tickCorner,
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            )
+                        }
                         Text(formatTime(durationMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
                     }
                     BoxWithConstraints(Modifier.fillMaxWidth()) {

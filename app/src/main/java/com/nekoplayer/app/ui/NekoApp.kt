@@ -60,6 +60,7 @@ import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.AnimeLibraryEpisode
 import com.nekoplayer.app.library.AnimeLibraryScanner
 import com.nekoplayer.app.mining.AnkiDroidClient
+import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -82,6 +83,8 @@ data class VideoTarget(
     val subtitleEpisodeNumber: Int? = null,
     val sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
     val alternateSeriesTitle: String? = null,
+    val onPlayNextEpisode: (() -> Unit)? = null,
+    val sourceSkipTimestamps: List<TimeStamp> = emptyList(),
 )
 
 @Composable
@@ -112,6 +115,8 @@ fun NekoApp(
     var libraryLoading by remember { mutableStateOf(false) }
     var libraryError by remember { mutableStateOf<String?>(null) }
     var libraryScanRequest by remember { mutableIntStateOf(0) }
+    var libraryProgressRefreshKey by remember { mutableIntStateOf(0) }
+    var hasPlayedVideo by remember { mutableStateOf(false) }
     var activeVideo by remember { mutableStateOf<VideoTarget?>(null) }
     var coverVersion by remember { mutableIntStateOf(0) }
     var dictionaryVersion by remember { mutableIntStateOf(0) }
@@ -188,6 +193,8 @@ fun NekoApp(
         subtitleEpisodeNumber: Int? = null,
         sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
         alternateSeriesTitle: String? = null,
+        onPlayNextEpisode: (() -> Unit)? = null,
+        sourceSkipTimestamps: List<TimeStamp> = emptyList(),
     ) {
         val uri = if (sourceUri.scheme.isNullOrBlank()) Uri.fromFile(File(sourceUri.toString())) else sourceUri
         if (uri.scheme == "file") {
@@ -204,6 +211,8 @@ fun NekoApp(
                         subtitleEpisodeNumber,
                         sourceProgressIdentity,
                         alternateSeriesTitle,
+                        onPlayNextEpisode,
+                        sourceSkipTimestamps,
                     )
                 }
                 videoPermissionLauncher.launch(permission)
@@ -219,6 +228,8 @@ fun NekoApp(
             subtitleEpisodeNumber,
             sourceProgressIdentity,
             alternateSeriesTitle,
+            onPlayNextEpisode,
+            sourceSkipTimestamps,
         )
     }
 
@@ -305,7 +316,16 @@ fun NekoApp(
             page = AppPage.Library
         }
     }
-    LaunchedEffect(activeVideo != null) { activity.setPlayerImmersive(activeVideo != null) }
+    LaunchedEffect(activeVideo != null) {
+        val playerOpen = activeVideo != null
+        activity.setPlayerImmersive(playerOpen)
+        if (playerOpen) {
+            hasPlayedVideo = true
+        } else if (hasPlayedVideo) {
+            libraryProgressRefreshKey++
+            hasPlayedVideo = false
+        }
+    }
 
     NekoTheme(darkMode, palette, accent) {
       ProvideNekoLanguage(language) {
@@ -340,9 +360,12 @@ fun NekoApp(
                             loading = !folderUriLoaded || libraryLoading,
                             error = libraryError,
                             coverVersion = coverVersion,
+                            progressRefreshKey = libraryProgressRefreshKey,
                             onPickFolder = { folderPicker.launch(null) },
                             onPickVideo = { videoPicker.launch(arrayOf("*/*")) },
-                            onOpenVideo = { uri, name, title -> openVideo(uri, name, title) },
+                            onOpenVideo = { uri, name, title, onNextEpisode ->
+                                openVideo(uri, name, title, onPlayNextEpisode = onNextEpisode)
+                            },
                             onOpenSourceEntry = { entry ->
                                 pendingSourceEntry = entry
                                 page = AppPage.Extensions
@@ -373,8 +396,19 @@ fun NekoApp(
                                     pendingSourceEntry = null
                                     detailScreen = false
                                 },
-                                onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle ->
-                                    openVideo(uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle)
+                                onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle, onNextEpisode, sourceSkipTimestamps ->
+                                    openVideo(
+                                        uri,
+                                        name,
+                                        title,
+                                        headers,
+                                        episodeName,
+                                        episodeNumber,
+                                        progressIdentity,
+                                        alternateTitle,
+                                        onNextEpisode,
+                                        sourceSkipTimestamps,
+                                    )
                                 },
                                 onDetailScreenChanged = { detailScreen = it },
                                 modifier = Modifier.fillMaxSize(),
@@ -463,12 +497,14 @@ fun NekoApp(
                         subtitleEpisodeNumber = current.subtitleEpisodeNumber,
                         sourceProgressIdentity = current.sourceProgressIdentity,
                         alternateSeriesTitle = current.alternateSeriesTitle,
+                        sourceSkipTimestamps = current.sourceSkipTimestamps,
                         onClose = { activeVideo = null },
                         onPickSubtitle = { callback ->
                             subtitlePickerCallback = callback
                             subtitlePicker.launch(arrayOf("*/*"))
                         },
                         onNotify = { message -> Toast.makeText(activity, localizeUiText(message, language), Toast.LENGTH_SHORT).show() },
+                        onPlayNextEpisode = current.onPlayNextEpisode,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }

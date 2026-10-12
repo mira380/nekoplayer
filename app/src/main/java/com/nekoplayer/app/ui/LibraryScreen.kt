@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -86,6 +87,16 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
+private enum class LibraryShowSort(val title: String) {
+    TITLE("Title A–Z"),
+    RECENT("Recently watched"),
+    EPISODES("Most episodes");
+
+    companion object {
+        fun fromStored(value: String): LibraryShowSort = entries.firstOrNull { it.name == value } ?: TITLE
+    }
+}
+
 @Composable
 fun LibraryScreen(
     database: AppDatabase,
@@ -95,9 +106,10 @@ fun LibraryScreen(
     loading: Boolean,
     error: String?,
     coverVersion: Int,
+    progressRefreshKey: Int,
     onPickFolder: () -> Unit,
     onPickVideo: () -> Unit,
-    onOpenVideo: (Uri, String, String?) -> Unit,
+    onOpenVideo: (Uri, String, String?, (() -> Unit)?) -> Unit,
     onOpenSourceEntry: (AppDatabase.SourceLibraryEntry) -> Unit,
     onPickCover: (String) -> Unit,
     onDetailScreenChanged: (Boolean) -> Unit,
@@ -107,8 +119,13 @@ fun LibraryScreen(
     val artworkCache = remember { createLibraryArtworkCache() }
     var recent by remember { mutableStateOf(emptyList<AppDatabase.RecentMedia>()) }
     var sourceEntries by remember(database) { mutableStateOf(database.listSourceLibraryEntries()) }
+    var sourceRecency by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     var covers by remember { mutableStateOf(database.readSetting("library.customCovers") as? org.json.JSONObject ?: org.json.JSONObject()) }
     var search by remember { mutableStateOf("") }
+    var sortMenuExpanded by remember { mutableStateOf(false) }
+    var librarySort by remember(database) {
+        mutableStateOf(LibraryShowSort.fromStored(database.readString("library.sortOrder", "TITLE")))
+    }
     var expandedShow by remember { mutableStateOf<String?>(null) }
     var coverUrlTarget by remember { mutableStateOf<String?>(null) }
     var coverUrl by remember { mutableStateOf("") }
@@ -121,9 +138,17 @@ fun LibraryScreen(
     val gridState = rememberLazyGridState()
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(database) {
-        recent = withContext(Dispatchers.IO) { database.listRecent() }
-        sourceEntries = withContext(Dispatchers.IO) { database.listSourceLibraryEntries() }
+    LaunchedEffect(database, progressRefreshKey) {
+        val libraryData = withContext(Dispatchers.IO) {
+            val entries = database.listSourceLibraryEntries()
+            val recency = entries.associate { entry ->
+                entry.key to (database.latestSourceProgress(entry.sourceId, entry.animeUrl)?.updatedAtMs ?: 0L)
+            }
+            Triple(database.listRecent(), entries, recency)
+        }
+        recent = libraryData.first
+        sourceEntries = libraryData.second
+        sourceRecency = libraryData.third
     }
     LaunchedEffect(coverVersion) {
         covers = withContext(Dispatchers.IO) {
@@ -134,17 +159,36 @@ fun LibraryScreen(
     val groups = remember(episodes) {
         episodes.groupBy { it.showName }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
     }
-    val visibleGroups = remember(groups, search) {
-        groups.filterKeys { search.isBlank() || it.contains(search, ignoreCase = true) }
+    val recentByUri = remember(recent) { recent.associateBy { it.uri } }
+    val visibleGroups = remember(groups, search, librarySort, recentByUri) {
+        val filtered = groups.filterKeys { search.isBlank() || it.contains(search, ignoreCase = true) }
+        fun latestWatch(episodesForShow: List<AnimeLibraryEpisode>): String =
+            episodesForShow.mapNotNull { recentByUri[it.uri.toString()]?.lastOpenedAt }.maxOrNull().orEmpty()
+        val comparator = when (librarySort) {
+            LibraryShowSort.TITLE -> compareBy<Map.Entry<String, List<AnimeLibraryEpisode>>> { it.key.lowercase() }
+            LibraryShowSort.RECENT -> compareByDescending<Map.Entry<String, List<AnimeLibraryEpisode>>> { latestWatch(it.value) }
+                .thenBy { it.key.lowercase() }
+            LibraryShowSort.EPISODES -> compareByDescending<Map.Entry<String, List<AnimeLibraryEpisode>>> { it.value.size }
+                .thenBy { it.key.lowercase() }
+        }
+        filtered.entries.sortedWith(comparator).associate { it.key to it.value }
     }
     val visibleGroupEntries = remember(visibleGroups) { visibleGroups.toList() }
-    val visibleSourceEntries = remember(sourceEntries, search) {
-        sourceEntries.filter {
+    val visibleSourceEntries = remember(sourceEntries, search, librarySort, sourceRecency) {
+        val filtered = sourceEntries.filter {
             search.isBlank() ||
                 it.title.contains(search, ignoreCase = true) ||
                 it.sourceName.contains(search, ignoreCase = true) ||
                 it.extensionName.contains(search, ignoreCase = true)
         }
+        val comparator = when (librarySort) {
+            LibraryShowSort.TITLE -> compareBy<AppDatabase.SourceLibraryEntry> { it.title.lowercase() }
+            LibraryShowSort.RECENT -> compareByDescending<AppDatabase.SourceLibraryEntry> { sourceRecency[it.key] ?: 0L }
+                .thenBy { it.title.lowercase() }
+            LibraryShowSort.EPISODES -> compareByDescending<AppDatabase.SourceLibraryEntry> { it.episodeCount ?: 0 }
+                .thenBy { it.title.lowercase() }
+        }
+        filtered.sortedWith(comparator)
     }
     val selectedEpisodes = remember(expandedShow, groups) {
         expandedShow?.let { name -> groups[name] }.orEmpty()
@@ -193,8 +237,8 @@ fun LibraryScreen(
             episodes = selectedEpisodes,
             recent = recent,
             onBack = { expandedShow = null },
-            onOpenVideo = { episode ->
-                onOpenVideo(episode.uri, episode.displayName, episode.showName)
+            onOpenVideo = { episode, onNextEpisode ->
+                onOpenVideo(episode.uri, episode.displayName, episode.showName, onNextEpisode)
                 expandedShow = null
             },
             modifier = modifier,
@@ -256,6 +300,35 @@ fun LibraryScreen(
                         Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("Open video", style = MaterialTheme.typography.labelLarge)
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { sortMenuExpanded = true },
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.FilterList,
+                                contentDescription = localizeUiText("Sort library: ${librarySort.title}"),
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = sortMenuExpanded,
+                            onDismissRequest = { sortMenuExpanded = false },
+                        ) {
+                            LibraryShowSort.entries.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.title) },
+                                    onClick = {
+                                        librarySort = option
+                                        sortMenuExpanded = false
+                                        scope.launch(Dispatchers.IO) {
+                                            database.writeSetting("library.sortOrder", option.name)
+                                        }
+                                    },
+                                )
+                            }
+                        }
                     }
                     Spacer(Modifier.weight(1f))
                     if (sourceEntries.isNotEmpty()) {
@@ -501,7 +574,7 @@ private fun ShowDetailScreen(
     episodes: List<AnimeLibraryEpisode>,
     recent: List<AppDatabase.RecentMedia>,
     onBack: () -> Unit,
-    onOpenVideo: (AnimeLibraryEpisode) -> Unit,
+    onOpenVideo: (AnimeLibraryEpisode, (() -> Unit)?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
@@ -525,13 +598,22 @@ private fun ShowDetailScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
         )
+        fun openEpisodeAt(index: Int) {
+            val episode = episodes.getOrNull(index) ?: return
+            val nextEpisode = if (index < episodes.lastIndex) {
+                { openEpisodeAt(index + 1) }
+            } else {
+                null
+            }
+            onOpenVideo(episode, nextEpisode)
+        }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
         ) {
             items(episodes, key = { it.uri.toString() }) { episode ->
                 val saved = recent.firstOrNull { it.uri == episode.uri.toString() }
-                EpisodeRow(episode, saved) { onOpenVideo(episode) }
+                EpisodeRow(episode, saved) { openEpisodeAt(episodes.indexOf(episode)) }
             }
         }
     }

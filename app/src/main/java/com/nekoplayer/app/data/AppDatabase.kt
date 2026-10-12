@@ -281,6 +281,13 @@ class AppDatabase(context: Context) : Closeable {
         readSourceEpisodeProgress().firstOrNull { it.identity.key == identity.key }
 
     @Synchronized
+    fun latestSourceProgress(sourceId: Long, seriesAnimeUrl: String): SourceEpisodeProgress? =
+        readSourceEpisodeProgress()
+            .asSequence()
+            .filter { it.identity.sourceId == sourceId && it.identity.seriesAnimeUrl == seriesAnimeUrl }
+            .maxByOrNull { it.updatedAtMs }
+
+    @Synchronized
     fun latestUnfinishedSourceProgress(sourceId: Long, seriesAnimeUrl: String): SourceEpisodeProgress? =
         readSourceEpisodeProgress()
             .asSequence()

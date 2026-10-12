@@ -321,6 +321,8 @@ fun SettingsScreen(
     }
 
     var autoPause by remember { mutableStateOf(database.readBoolean("playback.autoPause", false)) }
+    var autoPlayNext by remember { mutableStateOf(database.readBoolean("playback.autoPlayNext", false)) }
+    var skipPointsEnabled by remember { mutableStateOf(database.readBoolean("playback.skipPointsEnabled", true)) }
     var keepLookupOpenAfterMining by remember {
         mutableStateOf(database.readBoolean("playback.keepLookupOpenAfterMining", true))
     }
@@ -558,11 +560,20 @@ fun SettingsScreen(
 
         if (selectedSection == "Playback") {
         item {
-            SettingSection("Playback behavior") {
-                SettingSwitch("Pause video when opening dictionary lookup", autoPause) {
-                    autoPause = it; save("playback.autoPause", it)
+            SettingSection("Playback") {
+                SettingSwitch("Auto-play next", autoPlayNext) {
+                    autoPlayNext = it
+                    save("playback.autoPlayNext", it)
                 }
-                SettingSwitch("Keep dictionary lookup open after mining", keepLookupOpenAfterMining) {
+                SettingSwitch("Show intro/outro skip buttons", skipPointsEnabled) {
+                    skipPointsEnabled = it
+                    save("playback.skipPointsEnabled", it)
+                }
+                SettingSwitch("Pause video for dictionary lookup", autoPause) {
+                    autoPause = it
+                    save("playback.autoPause", it)
+                }
+                SettingSwitch("Keep dictionary open after mining", keepLookupOpenAfterMining) {
                     keepLookupOpenAfterMining = it
                     save("playback.keepLookupOpenAfterMining", it)
                 }
@@ -576,7 +587,7 @@ fun SettingsScreen(
                 SettingSlider("Font size", "${fontSize.roundToInt()} sp", fontSize, 14f..48f, { fontSize = it }) {
                     save("subtitles.fontSize", it.toDouble())
                 }
-                SettingSlider("Bottom inset", "${bottomInset.roundToInt()} px", bottomInset, 0f..240f, { bottomInset = it }) {
+                SettingSlider("Bottom spacing", "${bottomInset.roundToInt()} px", bottomInset, 0f..240f, { bottomInset = it }) {
                     save("subtitles.bottomInsetPx", it.toDouble())
                 }
                 SettingSlider("Background opacity", "${(backgroundOpacity * 100).roundToInt()}%", backgroundOpacity, 0f..1f, { backgroundOpacity = it }) {
@@ -633,9 +644,9 @@ fun SettingsScreen(
         item {
             SettingSection("Subtitle search") {
                 SettingSwitch(
-                    "Automatically fetch Jimaku subtitles",
+                    "Auto-fetch subtitles",
                     autoFetchJimaku,
-                    "Find and load a matching subtitle when playback starts.",
+                    "Find and load matching Jimaku subtitles when playback starts."
                 ) {
                     autoFetchJimaku = it
                     save("jimaku.autoFetch", it)
@@ -669,9 +680,9 @@ fun SettingsScreen(
             }
         }
         item {
-            SettingSection("Popup auto-expand") {
+            SettingSection("Auto-expand dictionaries") {
                 Text(
-                    "Choose which dictionary groups open automatically in subtitle lookups.",
+                    "Choose which dictionaries open automatically in subtitle lookups.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -689,13 +700,13 @@ fun SettingsScreen(
                             popupExpansionMode = DictionaryPopupExpansion.Mode.CUSTOM
                             save(DictionaryPopupExpansion.MODE_SETTING, DictionaryPopupExpansion.Mode.CUSTOM.storedValue)
                         },
-                        label = { Text("Custom selection") },
+                        label = { Text("Choose dictionaries") },
                     )
                 }
                 if (popupExpansionMode == DictionaryPopupExpansion.Mode.CUSTOM) {
                     val termDictionaries = imports.filter { it.kind != "meta" }
                     if (termDictionaries.isEmpty()) {
-                        Text("Import a term dictionary to choose groups.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Import a term dictionary to choose dictionaries.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         termDictionaries.forEach { dictionary ->
                             SettingSwitch(
@@ -716,7 +727,7 @@ fun SettingsScreen(
         item {
             SettingSection("Popup size") {
                 Text(
-                    "Controls popup width and height relative to available screen.",
+                    "Sets the lookup popup’s width and height on screen.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 SettingSlider(
@@ -731,7 +742,7 @@ fun SettingsScreen(
             }
         }
         item {
-            SettingSection("Installed dictionaries") {
+            SettingSection("Dictionaries") {
                 if (imports.isEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("Import some dictionaries", fontWeight = FontWeight.SemiBold)
@@ -875,21 +886,21 @@ fun SettingsScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 SettingSection("Audio capture") {
-                SettingSlider("Audio padding before subtitle", "${prePadding.roundToInt()} ms", prePadding, 0f..5000f, { prePadding = it }, snapStep = 10f) { save("capture.audioPrePadding", it.toDouble()) }
-                SettingSlider("Audio padding after subtitle", "${postPadding.roundToInt()} ms", postPadding, 0f..5000f, { postPadding = it }, snapStep = 10f) { save("capture.audioPostPadding", it.toDouble()) }
+                SettingSlider("Before subtitle", "${prePadding.roundToInt()} ms", prePadding, 0f..5000f, { prePadding = it }, snapStep = 10f) { save("capture.audioPrePadding", it.toDouble()) }
+                SettingSlider("After subtitle", "${postPadding.roundToInt()} ms", postPadding, 0f..5000f, { postPadding = it }, snapStep = 10f) { save("capture.audioPostPadding", it.toDouble()) }
             }
-            SettingSection("Picture") {
-                SettingSlider("Picture delay", "${screenshotDelay.roundToInt()} ms", screenshotDelay, 0f..30000f, { screenshotDelay = it }, snapStep = 10f) { save("capture.screenshotDelayMs", it.toDouble()) }
-                SettingSlider("Maximum picture width", if (maxWidth == 0f) "Original size" else "${maxWidth.roundToInt()} px", maxWidth, 0f..4096f, { maxWidth = it }, snapStep = 10f) { save("capture.maxWidth", it.toDouble()) }
-                SettingSlider("Maximum picture height", if (maxHeight == 0f) "Original size" else "${maxHeight.roundToInt()} px", maxHeight, 0f..4096f, { maxHeight = it }, snapStep = 10f) { save("capture.maxHeight", it.toDouble()) }
-                Text("Picture format", style = MaterialTheme.typography.labelLarge)
+            SettingSection("Image capture") {
+                SettingSlider("Capture delay", "${screenshotDelay.roundToInt()} ms", screenshotDelay, 0f..30000f, { screenshotDelay = it }, snapStep = 10f) { save("capture.screenshotDelayMs", it.toDouble()) }
+                SettingSlider("Max image width", if (maxWidth == 0f) "Original size" else "${maxWidth.roundToInt()} px", maxWidth, 0f..4096f, { maxWidth = it }, snapStep = 10f) { save("capture.maxWidth", it.toDouble()) }
+                SettingSlider("Max image height", if (maxHeight == 0f) "Original size" else "${maxHeight.roundToInt()} px", maxHeight, 0f..4096f, { maxHeight = it }, snapStep = 10f) { save("capture.maxHeight", it.toDouble()) }
+                Text("Image format", style = MaterialTheme.typography.labelLarge)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("PNG", "WebP").forEach { format -> FilterChip(selected = screenshotFormat == format, onClick = { screenshotFormat = format; save("capture.screenshotFormat", format) }, label = { Text(format) }) }
                 }
                 SettingSwitch("Crop black bars", trimBlackBars) { trimBlackBars = it; save("capture.trimBlackBars", it) }
             }
             SettingSection("Mining") {
-                SettingSwitch("Play audio during capture", playAudioDuringCapture) { playAudioDuringCapture = it; save("capture.playAudioWhileCapture", it) }
+                SettingSwitch("Play audio while capturing", playAudioDuringCapture) { playAudioDuringCapture = it; save("capture.playAudioWhileCapture", it) }
                 }
             }
         }
@@ -897,7 +908,7 @@ fun SettingsScreen(
 
         if (selectedSection == "Capture and audio") {
         item {
-            SettingSection("Pronunciation sources") {
+            SettingSection("Pronunciation audio") {
                 audioSources.forEachIndexed { index, source ->
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(
@@ -971,7 +982,7 @@ fun SettingsScreen(
             item {
                 SettingSection("Storage") {
                     Text(
-                        "Temporary files and downloaded artwork. Imported dictionaries and saved settings are stored separately.",
+                        "Temporary files and downloaded artwork. Dictionaries and settings are stored separately.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

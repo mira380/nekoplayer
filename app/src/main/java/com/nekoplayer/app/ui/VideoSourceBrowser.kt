@@ -84,6 +84,7 @@ import eu.kanade.tachiyomi.animesource.model.FetchType
 import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
+import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import kotlinx.coroutines.Dispatchers
@@ -132,6 +133,8 @@ internal fun VideoSourceBrowser(
         Int?,
         AppDatabase.SourceProgressIdentity?,
         String?,
+        (() -> Unit)?,
+        List<TimeStamp>,
     ) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -274,7 +277,11 @@ internal fun VideoSourceBrowser(
         }
     }
 
-    fun playVideoChoice(choice: StreamChoice, episode: SEpisode) {
+    fun playVideoChoice(
+        choice: StreamChoice,
+        episode: SEpisode,
+        onNextEpisode: (() -> Unit)? = null,
+    ) {
         val url = choice.video.videoUrl
         if (url.isBlank()) {
             error = "This source did not resolve a direct video stream."
@@ -313,6 +320,8 @@ internal fun VideoSourceBrowser(
             episodeNumber,
             progressIdentity,
             sourceProgressAnimeTitle,
+            onNextEpisode,
+            choice.video.timestamps,
         )
     }
 
@@ -375,7 +384,13 @@ internal fun VideoSourceBrowser(
                 if (choices.isEmpty()) {
                     error = "This episode has no playable video streams."
                 } else if (autoPlayFirst) {
-                    playVideoChoice(choices.first(), episode)
+                    val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
+                    val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
+                    playVideoChoice(
+                        choices.first(),
+                        episode,
+                        nextEpisode?.let { next -> { openEpisode(next, autoPlayFirst = true) } },
+                    )
                 }
             } catch (linkage: LinkageError) {
                 error = linkage.toExtensionRuntimeMessage(item.extension.libVersion)
@@ -893,7 +908,15 @@ internal fun VideoSourceBrowser(
                     items(streamChoices, key = { "${it.label}:${it.video.videoUrl}" }) { choice ->
                         Card(
                             onClick = {
-                                selectedEpisode?.let { playVideoChoice(choice, it) }
+                                selectedEpisode?.let { episode ->
+                                    val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
+                                    val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
+                                    playVideoChoice(
+                                        choice,
+                                        episode,
+                                        nextEpisode?.let { next -> { openEpisode(next, autoPlayFirst = true) } },
+                                    )
+                                }
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(18.dp),
