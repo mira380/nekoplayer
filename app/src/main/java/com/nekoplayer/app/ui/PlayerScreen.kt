@@ -35,18 +35,23 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
@@ -66,12 +71,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -101,18 +106,22 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.nekoplayer.app.MainActivity
 import com.nekoplayer.app.data.AppDatabase
+import eu.kanade.tachiyomi.animesource.model.ChapterType
+import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import com.nekoplayer.app.data.DictionaryEntry
 import com.nekoplayer.app.data.DictionaryRepository
 import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.JimakuSubtitleClient
-import com.nekoplayer.app.media.ExactTermLookup
 import com.nekoplayer.app.media.SubtitleCue
 import com.nekoplayer.app.media.SubtitleCueIndex
 import com.nekoplayer.app.media.SubtitleParser
@@ -131,7 +140,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
@@ -139,6 +147,7 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.hypot
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.MessageDigest
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -147,6 +156,26 @@ private val PlayerOverlaySurface = Color(0xE6111415)
 private val PlayerOverlayText = Color(0xFFDEE7EC)
 private val PlayerOverlayAccent = Color(0xFFA0CDE0)
 
+private data class PlaybackSkipPoint(
+    val type: ChapterType,
+    val startMs: Long,
+    val endMs: Long,
+)
+
+private fun Double.toPlaybackSkipTimeMsOrNull(): Long? {
+    if (!isFinite() || this < 0.0 || this > Long.MAX_VALUE.toDouble() / 1_000.0) return null
+    return (this * 1_000.0).roundToLong()
+}
+
+private fun TimeStamp.toPlaybackSkipPointOrNull(): PlaybackSkipPoint? {
+    if (type != ChapterType.Opening && type != ChapterType.Ending) return null
+    val startMs = start.toPlaybackSkipTimeMsOrNull() ?: return null
+    val endMs = end.toPlaybackSkipTimeMsOrNull() ?: return null
+    if (endMs <= startMs) return null
+    return PlaybackSkipPoint(type, startMs, endMs)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 fun PlayerScreen(
@@ -158,6 +187,9 @@ fun PlayerScreen(
     displayName: String,
     seriesTitle: String?,
     modifier: Modifier = Modifier,
+    videoMimeType: String? = null,
+    audioUri: String? = null,
+    audioMimeType: String? = null,
     requestHeaders: Map<String, String> = emptyMap(),
     subtitleEpisodeName: String? = null,
     subtitleEpisodeNumber: Int? = null,
@@ -166,6 +198,8 @@ fun PlayerScreen(
     onClose: () -> Unit,
     onPickSubtitle: (((Uri, String) -> Unit) -> Unit),
     onNotify: (String) -> Unit,
+    onPlayNextEpisode: NextEpisodeAction? = null,
+    sourceSkipTimestamps: List<TimeStamp> = emptyList(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -189,11 +223,29 @@ fun PlayerScreen(
                 .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
                 .build()
         }
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
         ExoPlayer.Builder(activity, renderersFactory)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setMediaSourceFactory(mediaSourceFactory)
             .build()
             .apply {
-                setMediaItem(MediaItem.fromUri(uri))
+                if (audioUri != null) {
+                    val videoItem = MediaItem.Builder()
+                        .setUri(uri)
+                        .setMimeType(videoMimeType ?: "video/mp4")
+                        .build()
+                    val audioItem = MediaItem.Builder()
+                        .setUri(audioUri)
+                        .setMimeType(audioMimeType ?: "audio/webm")
+                        .build()
+                    setMediaSource(
+                        MergingMediaSource(
+                            mediaSourceFactory.createMediaSource(videoItem),
+                            mediaSourceFactory.createMediaSource(audioItem),
+                        ),
+                    )
+                } else {
+                    setMediaItem(MediaItem.fromUri(uri))
+                }
                 prepare()
             }
     }
@@ -211,13 +263,54 @@ fun PlayerScreen(
     var userSelectedSubtitle by remember(uri, sourceProgressIdentity) { mutableStateOf(false) }
     var useExternalSubtitle by remember(uri, sourceProgressIdentity) { mutableStateOf(false) }
     var embeddedSubtitlesEnabled by remember(uri, sourceProgressIdentity) { mutableStateOf(true) }
-    var subtitleOffsetsMs by remember(uri, sourceProgressIdentity) { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    val subtitleAnimeName = seriesTitle?.takeIf(String::isNotBlank)
+        ?: alternateSeriesTitle?.takeIf(String::isNotBlank)
+    val subtitleAnimeIdentity = remember(sourceProgressIdentity, subtitleAnimeName, uri) {
+        sourceProgressIdentity?.let { "source:${it.sourceId}:${it.seriesAnimeUrl.trim()}" }
+            ?: subtitleAnimeName?.trim()?.lowercase(Locale.ROOT)?.let { "title:$it" }
+            ?: "uri:${uri.normalizeScheme()}"
+    }
+    val subtitleOffsetSettingKey = remember(subtitleAnimeIdentity) {
+        subtitleOffsetSettingsKeyFor(subtitleAnimeIdentity)
+    }
+    var subtitleOffsetMs by remember(database, subtitleOffsetSettingKey) {
+        mutableLongStateOf(database.readNumber(subtitleOffsetSettingKey).toLong())
+    }
     var showControls by remember(uri) { mutableStateOf(true) }
     var showTracks by remember(uri) { mutableStateOf<String?>(null) }
     var showPlayerMenu by remember(uri) { mutableStateOf(false) }
     var showSubtitleMenu by remember(uri) { mutableStateOf(false) }
     var showSubtitleTimingDialog by remember(uri) { mutableStateOf(false) }
     var subtitleOffsetDraft by remember(uri) { mutableLongStateOf(0L) }
+    var automaticNextStarted by remember(uri) { mutableStateOf(false) }
+    var isSwitchingEpisode by remember(uri) { mutableStateOf(false) }
+    var nextEpisodeFailed by remember(uri) { mutableStateOf(false) }
+    var dismissedSkipPoint by remember(uri) { mutableStateOf<PlaybackSkipPoint?>(null) }
+    val autoPlayNext = remember(database) { database.readBoolean("playback.autoPlayNext", false) }
+    val skipPointsEnabled = remember(database) { database.readBoolean("playback.skipPointsEnabled", true) }
+    val sourceSkipPoints = remember(sourceSkipTimestamps) {
+        sourceSkipTimestamps.mapNotNull { it.toPlaybackSkipPointOrNull() }.sortedBy { it.startMs }
+    }
+    val sourceSkipPointsForDuration = remember(sourceSkipPoints, durationMs) {
+        if (durationMs <= 0L) {
+            sourceSkipPoints
+        } else {
+            sourceSkipPoints.mapNotNull { point ->
+                if (point.startMs >= durationMs) {
+                    null
+                } else {
+                    point.copy(endMs = point.endMs.coerceAtMost(durationMs))
+                        .takeIf { it.endMs > it.startMs }
+                }
+            }
+        }
+    }
+    val timelineSkipPoints = remember(sourceSkipPointsForDuration) {
+        sourceSkipPointsForDuration.filter {
+            it.type == ChapterType.Opening || it.type == ChapterType.Ending
+        }
+    }
+    val latestOnPlayNextEpisode = rememberUpdatedState(onPlayNextEpisode)
     var subtitleOffsetInput by remember(uri) { mutableStateOf("0") }
     var selectedSpeed by remember(uri) { mutableFloatStateOf(1f) }
     var volume by remember(uri) { mutableFloatStateOf(database.readNumber("player.volume", 1.0).toFloat().coerceIn(0f, 1f)) }
@@ -271,16 +364,42 @@ fun PlayerScreen(
     )
     val selectedExternalTrack = externalSubtitleTracks.firstOrNull { it.id == selectedExternalSubtitleId }
     val externalSubtitle = selectedExternalTrack.takeIf { useExternalSubtitle }
-    val subtitleOffsetMs = selectedExternalSubtitleId
-        ?.takeIf { useExternalSubtitle }
-        ?.let { subtitleOffsetsMs[it] }
-        ?.coerceIn(-10_000L, 10_000L)
-        ?: 0L
+    val subtitlePositionMs = positionMs.saturatedMinus(subtitleOffsetMs)
     val latestExternalSubtitle = rememberUpdatedState(externalSubtitle)
-    val externalCueIndex = externalSubtitle?.let { SubtitleCueIndex.activeCueIndex(it, positionMs - subtitleOffsetMs) }
+    val externalCueIndex = externalSubtitle?.let {
+        SubtitleCueIndex.activeCueIndex(it, subtitlePositionMs)
+    }
+    val previousSubtitleCueIndex = externalSubtitle?.let {
+        SubtitleCueIndex.previousCueIndex(it, subtitlePositionMs)
+    }
+    val nextSubtitleCueIndex = externalSubtitle?.let {
+        SubtitleCueIndex.nextCueIndex(it, subtitlePositionMs)
+    }
     val activeCue: SubtitleCue? = externalSubtitle?.takeIf { useExternalSubtitle }
         ?.let { track -> externalCueIndex?.let(track.cues::getOrNull) }
     val subtitleText = activeCue?.plainText ?: embeddedSubtitle
+    val currentSkipPoint = if (skipPointsEnabled) {
+        sourceSkipPointsForDuration.firstOrNull { point ->
+            positionMs in point.startMs until point.endMs
+        }
+    } else {
+        null
+    }
+    val activeSkipButton = currentSkipPoint
+        ?.takeUnless { it == dismissedSkipPoint }
+        ?.let { point ->
+            val label = if (point.type == ChapterType.Opening) "Skip opening" else "Skip ending"
+            point to label
+        }
+    LaunchedEffect(positionMs, dismissedSkipPoint) {
+        val dismissed = dismissedSkipPoint ?: return@LaunchedEffect
+        if (positionMs >= dismissed.endMs) {
+            dismissedSkipPoint = null
+        }
+    }
+    val canSkipToNext = autoPlayNext && latestOnPlayNextEpisode.value != null &&
+        durationMs > 0L && !isSwitchingEpisode &&
+        (nextEpisodeFailed || (positionMs < durationMs && durationMs - positionMs <= 30_000L))
     val subtitleFont = remember(database) { database.readNumber("subtitles.fontSize", 32.0).toFloat().coerceIn(14f, 48f) }
     val subtitleAlpha = remember(database) { database.readNumber("subtitles.backgroundOpacity", 0.72).toFloat().coerceIn(0f, 1f) }
     val subtitleShadowStyle = remember(database) {
@@ -306,7 +425,32 @@ fun PlayerScreen(
         lookupMetadata = emptyList()
     }
 
-    DisposableEffect(player) {
+    fun seekToPosition(targetMs: Long) {
+        val dismissed = dismissedSkipPoint
+        if (dismissed != null && targetMs < dismissed.startMs) {
+            dismissedSkipPoint = null
+        }
+        player.seekTo(targetMs.coerceAtLeast(0L))
+    }
+
+    fun requestNextEpisode() {
+        val playNext = latestOnPlayNextEpisode.value ?: return
+        if (isSwitchingEpisode) return
+        isSwitchingEpisode = true
+        nextEpisodeFailed = false
+        errorMessage = null
+        showControls = true
+        player.pause()
+        playNext { loaded ->
+            if (!loaded) {
+                isSwitchingEpisode = false
+                nextEpisodeFailed = true
+                errorMessage = "Couldn't load the next episode with the selected video source."
+            }
+        }
+    }
+
+    DisposableEffect(player, autoPlayNext) {
         val listener = object : Player.Listener {
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 if (videoSize.width > 0 && videoSize.height > 0) {
@@ -317,6 +461,12 @@ fun PlayerScreen(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
                 if (playbackState == Player.STATE_READY) durationMs = player.duration.coerceAtLeast(0L)
+                if (playbackState == Player.STATE_ENDED && autoPlayNext && !automaticNextStarted) {
+                    if (latestOnPlayNextEpisode.value != null) {
+                        automaticNextStarted = true
+                        requestNextEpisode()
+                    }
+                }
             }
             override fun onCues(cueGroup: CueGroup) {
                 val nextText = cueGroup.cues.mapNotNull { cue -> cue.text?.toString()?.takeIf(String::isNotBlank) }
@@ -412,13 +562,13 @@ fun PlayerScreen(
                     }
                 }
             }
-            delay(250L)
+            delay(250.milliseconds)
         }
     }
 
     LaunchedEffect(showControls, playing) {
         if (showControls && playing) {
-            delay(4_000L)
+            delay(4.seconds)
             showControls = false
         }
     }
@@ -518,14 +668,13 @@ fun PlayerScreen(
 
     fun tapSubtitle(position: Offset) {
         val layout = subtitleLayout ?: return
-        val text = subtitleText
-        if (text.isBlank()) return
+        if (subtitleText.isBlank()) return
         val offset = layout.getOffsetForPosition(position)
         lookupAnchor = subtitleCoordinates?.localToRoot(position) ?: Offset.Zero
         val requestId = lookupRequestId + 1
         lookupRequestId = requestId
         lookupKeptOpenAfterMining = false
-        lookupSourceText = text
+        lookupSourceText = subtitleText
         lookup = null
         lookupMessage = null
         lookupMetadata = emptyList()
@@ -535,14 +684,14 @@ fun PlayerScreen(
         }
         scope.launch {
             val result = withContext(Dispatchers.IO) {
-                scanYomitanSubtitle(text, offset, dictionaries)
+                scanYomitanSubtitle(subtitleText, offset, dictionaries)
             }
             if (requestId != lookupRequestId) return@launch
             lookup = result
             lookupMessage = if (result == null) "No dictionary match at that subtitle position." else null
             if (result != null) {
                 val coordinates = subtitleCoordinates
-                if (result.startUtf16Offset in 0 until text.length && result.endUtf16Offset in 1..text.length) {
+                if (result.startUtf16Offset in subtitleText.indices && result.endUtf16Offset in 1..subtitleText.length) {
                     val first = layout.getBoundingBox(result.startUtf16Offset)
                     val last = layout.getBoundingBox(result.endUtf16Offset - 1)
                     val wordCenter = Offset((first.left + last.right) / 2f, (first.top + last.bottom) / 2f)
@@ -602,7 +751,6 @@ fun PlayerScreen(
     fun removeExternalSubtitle(track: SubtitleTrack) {
         userSelectedSubtitle = true
         externalSubtitleTracks = externalSubtitleTracks.filterNot { it.id == track.id }
-        subtitleOffsetsMs = subtitleOffsetsMs - track.id
         if (selectedExternalSubtitleId == track.id) {
             selectedExternalSubtitleId = null
             preferExternalSubtitles = false
@@ -660,8 +808,20 @@ fun PlayerScreen(
     }
 
     fun setSubtitleOffset(offsetMs: Long) {
-        val trackId = selectedExternalSubtitleId ?: return
-        subtitleOffsetsMs = subtitleOffsetsMs + (trackId to offsetMs.coerceIn(-10_000L, 10_000L))
+        subtitleOffsetMs = offsetMs
+        scope.launch(Dispatchers.IO) {
+            database.writeSetting(subtitleOffsetSettingKey, offsetMs)
+        }
+    }
+
+    fun seekSubtitleCue(index: Int?) {
+        val track = externalSubtitle ?: return
+        val cue = index?.let(track.cues::getOrNull) ?: return
+        val target = SubtitleCueIndex.seekPositionMs(track, cue, durationMs)
+            .saturatedPlus(subtitleOffsetMs)
+            .coerceAtLeast(0L)
+            .let { if (durationMs > 0L) it.coerceAtMost(durationMs) else it }
+        seekToPosition(target)
     }
 
     fun setSpeed(speed: Float) {
@@ -701,7 +861,7 @@ fun PlayerScreen(
                 val match = lookup?.takeIf { lookupSourceText == subtitleText }
                 val start = match?.startUtf16Offset ?: -1
                 val end = match?.endUtf16Offset ?: -1
-                if (start in 0 until subtitleText.length && end in (start + 1)..subtitleText.length) {
+                if (start in subtitleText.indices && end in (start + 1)..subtitleText.length) {
                     append(subtitleText.substring(0, start))
                     pushStyle(SpanStyle(background = selectionHighlight))
                     append(subtitleText.substring(start, end))
@@ -792,12 +952,73 @@ fun PlayerScreen(
                 onTextLayout = { subtitleLayout = it },
             )
         }
-        if (isBuffering && errorMessage == null) {
-            Text("Loading video…", Modifier.align(Alignment.Center), color = PlayerOverlayText.copy(alpha = 0.8f))
+        if ((isBuffering || isSwitchingEpisode) && errorMessage == null) {
+            Surface(
+                Modifier.align(Alignment.Center).padding(24.dp),
+                color = PlayerOverlaySurface,
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        color = PlayerOverlayAccent,
+                        strokeWidth = 3.dp,
+                    )
+                    Text(
+                        if (isSwitchingEpisode) "Finding the next episode…" else "Loading video…",
+                        color = PlayerOverlayText,
+                    )
+                }
+            }
         }
-        errorMessage?.let { message ->
-            Surface(Modifier.align(Alignment.Center).padding(24.dp), color = Color(0xF2171A1B), shape = RoundedCornerShape(16.dp)) {
-                Text(message, Modifier.padding(18.dp), color = PlayerOverlayText)
+        if (!isSwitchingEpisode && (activeSkipButton != null || canSkipToNext)) {
+            Column(
+                Modifier.align(Alignment.CenterEnd).padding(end = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                activeSkipButton?.let { (point, label) ->
+                    TextButton(
+                        onClick = {
+                            dismissedSkipPoint = point
+                            player.seekTo(point.endMs)
+                            showControls = true
+                        },
+                        modifier = Modifier.background(PlayerOverlaySurface, RoundedCornerShape(14.dp)),
+                    ) { Text(label, color = PlayerOverlayText) }
+                }
+                if (canSkipToNext) {
+                    TextButton(
+                        onClick = ::requestNextEpisode,
+                        modifier = Modifier.background(PlayerOverlaySurface, RoundedCornerShape(14.dp)),
+                    ) { Text(if (nextEpisodeFailed) "Retry next episode" else "Skip to next", color = PlayerOverlayText) }
+                }
+            }
+        }
+        if (nextEpisodeFailed && errorMessage != null) {
+            Surface(
+                Modifier.align(Alignment.Center).padding(24.dp),
+                color = Color(0xF2171A1B),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Column(
+                    Modifier.padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(errorMessage.orEmpty(), color = PlayerOverlayText)
+                    TextButton(onClick = ::requestNextEpisode) { Text("Try again") }
+                }
+            }
+        } else {
+            errorMessage?.let { message ->
+                Surface(Modifier.align(Alignment.Center).padding(24.dp), color = Color(0xF2171A1B), shape = RoundedCornerShape(16.dp)) {
+                    Text(message, Modifier.padding(18.dp), color = PlayerOverlayText)
+                }
             }
         }
         if (showControls) {
@@ -842,16 +1063,85 @@ fun PlayerScreen(
                 Column(Modifier.fillMaxWidth().background(PlayerOverlaySurface).padding(horizontal = 12.dp, vertical = 4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(formatTime(if (seekDrag >= 0f) seekDrag.roundToLong() else positionMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
-                        Slider(
-                            value = (if (seekDrag >= 0f) seekDrag else positionMs.toFloat()).coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
-                            onValueChange = { seekDrag = it },
-                            onValueChangeFinished = {
-                                if (seekDrag >= 0f) player.seekTo(seekDrag.roundToLong())
-                                seekDrag = -1f
-                            },
-                            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                            modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
-                        )
+                        Box(
+                            Modifier.weight(1f)
+                                .padding(horizontal = 10.dp)
+                                .height(48.dp),
+                        ) {
+                            Slider(
+                                value = (if (seekDrag >= 0f) seekDrag else positionMs.toFloat()).coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
+                                onValueChange = { seekDrag = it },
+                                onValueChangeFinished = {
+                                    if (seekDrag >= 0f) seekToPosition(seekDrag.roundToLong())
+                                    seekDrag = -1f
+                                },
+                                valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+                                modifier = Modifier.fillMaxSize(),
+                                track = { sliderState ->
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        SliderDefaults.Track(
+                                            sliderState = sliderState,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                        if (skipPointsEnabled && durationMs > 0L && timelineSkipPoints.isNotEmpty()) {
+                                            val openingColor = MaterialTheme.colorScheme.primary
+                                            val endingColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.62f)
+                                            val playbackFraction = sliderState.coercedValueAsFraction.coerceIn(0f, 1f)
+                                            Canvas(Modifier.fillMaxSize()) {
+                                                val markerHalfHeight = 8.dp.toPx().coerceAtMost(size.height / 2f)
+                                                val markerWidth = 2.dp.toPx()
+                                                val segmentHeight = 6.dp.toPx()
+                                                val centerY = size.height / 2f
+                                                timelineSkipPoints.forEach { point ->
+                                                    val startFraction =
+                                                        (point.startMs.toDouble() / durationMs.toDouble()).toFloat().coerceIn(0f, 1f)
+                                                    val endFraction =
+                                                        (point.endMs.toDouble() / durationMs.toDouble()).toFloat().coerceIn(0f, 1f)
+                                                    val isEnding = point.type == ChapterType.Ending
+                                                    val visibleStartFraction = maxOf(startFraction, playbackFraction)
+                                                    if (endFraction > visibleStartFraction) {
+                                                        val startX = size.width * visibleStartFraction
+                                                        val endX = size.width * endFraction
+                                                        val markerColor =
+                                                            if (isEnding) endingColor else openingColor
+                                                        drawRoundRect(
+                                                            color = markerColor.copy(alpha = 0.72f),
+                                                            topLeft = Offset(startX, centerY - segmentHeight / 2f),
+                                                            size = Size((endX - startX).coerceAtLeast(markerWidth), segmentHeight),
+                                                            cornerRadius = CornerRadius(segmentHeight / 2f, segmentHeight / 2f),
+                                                        )
+                                                        val tickTop = centerY - markerHalfHeight
+                                                        val tickHeight = markerHalfHeight * 2f
+                                                        val tickCorner = CornerRadius(markerWidth / 2f, markerWidth / 2f)
+                                                        if (playbackFraction <= startFraction) {
+                                                            val startTickLeft =
+                                                                (startX - markerWidth / 2f).coerceIn(0f, (size.width - markerWidth).coerceAtLeast(0f))
+                                                            drawRoundRect(
+                                                                color = markerColor,
+                                                                topLeft = Offset(startTickLeft, tickTop),
+                                                                size = Size(markerWidth, tickHeight),
+                                                                cornerRadius = tickCorner,
+                                                            )
+                                                        }
+                                                        val endTickLeft =
+                                                            (endX - markerWidth / 2f).coerceIn(0f, (size.width - markerWidth).coerceAtLeast(0f))
+                                                        drawRoundRect(
+                                                            color = markerColor,
+                                                            topLeft = Offset(endTickLeft, tickTop),
+                                                            size = Size(markerWidth, tickHeight),
+                                                            cornerRadius = tickCorner,
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            )
+                        }
                         Text(formatTime(durationMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
                     }
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -878,8 +1168,14 @@ fun PlayerScreen(
                         }
                         val transportControls: @Composable () -> Unit = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { player.seekTo((player.currentPosition - 10_000L).coerceAtLeast(0L)) }) {
+                                IconButton(onClick = { seekToPosition((player.currentPosition - 10_000L).coerceAtLeast(0L)) }) {
                                     Icon(Icons.Default.Replay10, contentDescription = localizeUiText("Back 10 seconds"), tint = PlayerOverlayText)
+                                }
+                                IconButton(
+                                    onClick = { seekSubtitleCue(previousSubtitleCueIndex) },
+                                    enabled = previousSubtitleCueIndex != null,
+                                ) {
+                                    Icon(Icons.Default.SkipPrevious, contentDescription = localizeUiText("Previous subtitle"), tint = PlayerOverlayText)
                                 }
                                 IconButton(onClick = {
                                     resumePlaybackAfterLookupDismiss = false
@@ -887,7 +1183,13 @@ fun PlayerScreen(
                                 }) {
                                     Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = localizeUiText(if (playing) "Pause" else "Play"), tint = PlayerOverlayText, modifier = Modifier.size(28.dp))
                                 }
-                                IconButton(onClick = { player.seekTo((player.currentPosition + 10_000L).coerceAtMost(durationMs)) }) {
+                                IconButton(
+                                    onClick = { seekSubtitleCue(nextSubtitleCueIndex) },
+                                    enabled = nextSubtitleCueIndex != null,
+                                ) {
+                                    Icon(Icons.Default.SkipNext, contentDescription = localizeUiText("Next subtitle"), tint = PlayerOverlayText)
+                                }
+                                IconButton(onClick = { seekToPosition((player.currentPosition + 10_000L).coerceAtMost(durationMs)) }) {
                                     Icon(Icons.Default.Forward10, contentDescription = localizeUiText("Forward 10 seconds"), tint = PlayerOverlayText)
                                 }
                             }
@@ -935,8 +1237,7 @@ fun PlayerScreen(
                                                     useExternalSubtitle = false
                                                     toggleEmbeddedSubtitles(false)
                                                 } else {
-                                                    val track = selectedExternalTrack
-                                                    if (preferExternalSubtitles && track != null) applyExternalSubtitle(track)
+                                                    if (preferExternalSubtitles && selectedExternalTrack != null) applyExternalSubtitle(selectedExternalTrack)
                                                     else toggleEmbeddedSubtitles(true)
                                                 }
                                                 showSubtitleMenu = false
@@ -979,7 +1280,7 @@ fun PlayerScreen(
     }
 
     if (showSubtitleTimingDialog) {
-        val validOffset = subtitleOffsetInput.toLongOrNull()?.takeIf { it in -10_000L..10_000L }
+        val validOffset = subtitleOffsetInput.toLongOrNull()
         AlertDialog(
             onDismissRequest = { showSubtitleTimingDialog = false },
             title = { Text("Subtitle timing") },
@@ -987,7 +1288,7 @@ fun PlayerScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(formatSubtitleOffset(subtitleOffsetDraft), style = MaterialTheme.typography.titleMedium)
                     Slider(
-                        value = subtitleOffsetDraft.toFloat(),
+                        value = subtitleOffsetDraft.coerceIn(-10_000L, 10_000L).toFloat(),
                         onValueChange = { value ->
                             val snapped = ((value / 100f).roundToInt() * 100L).coerceIn(-10_000L, 10_000L)
                             subtitleOffsetDraft = snapped
@@ -1003,12 +1304,9 @@ fun PlayerScreen(
                     OutlinedTextField(
                         value = subtitleOffsetInput,
                         onValueChange = { candidate ->
-                            if (candidate.matches(Regex("[+-]?\\d{0,5}"))) {
-                                val parsed = candidate.toLongOrNull()
-                                if (parsed == null || parsed in -10_000L..10_000L) {
-                                    subtitleOffsetInput = candidate
-                                    parsed?.let { subtitleOffsetDraft = it }
-                                }
+                            if (candidate.matches(Regex("[+-]?\\d*"))) {
+                                subtitleOffsetInput = candidate
+                                candidate.toLongOrNull()?.let { subtitleOffsetDraft = it }
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -1092,12 +1390,16 @@ fun PlayerScreen(
                     miningInProgress = true
                     val mineRequestId = lookupRequestId
                     val sentence = activeCue?.plainText ?: embeddedSubtitle
-                    val cueStart = activeCue?.let {
-                        (it.startMs + externalSubtitle.offsetMs + subtitleOffsetMs).coerceAtLeast(0L)
-                    } ?: positionMs
-                    val cueEnd = activeCue?.let {
-                        (it.endMs + externalSubtitle.offsetMs + subtitleOffsetMs).coerceAtLeast(cueStart)
-                    } ?: (cueStart + 1_500L)
+                    val cueStart = activeCue?.startMs
+                        ?.saturatedPlus(externalSubtitle.offsetMs)
+                        ?.saturatedPlus(subtitleOffsetMs)
+                        ?.coerceAtLeast(0L)
+                        ?: positionMs
+                    val cueEnd = activeCue?.endMs
+                        ?.saturatedPlus(externalSubtitle.offsetMs)
+                        ?.saturatedPlus(subtitleOffsetMs)
+                        ?.coerceAtLeast(cueStart)
+                        ?: cueStart.saturatedPlus(1_500L)
                     val related = lookupResult.entries + lookupResult.relatedEntries
                     val allEntries = (listOf(entry) + related).distinctBy { it.dictionaryId to it.id }
                     val sourceCapture = sourceProgressIdentity != null ||
@@ -1270,9 +1572,27 @@ private fun formatTime(timeMs: Long): String {
     else String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
 }
 
+private fun Long.saturatedPlus(other: Long): Long = when {
+    other > 0L && this > Long.MAX_VALUE - other -> Long.MAX_VALUE
+    other < 0L && this < Long.MIN_VALUE - other -> Long.MIN_VALUE
+    else -> this + other
+}
+
+private fun Long.saturatedMinus(other: Long): Long = when {
+    other > 0L && this < Long.MIN_VALUE + other -> Long.MIN_VALUE
+    other < 0L && this > Long.MAX_VALUE + other -> Long.MAX_VALUE
+    else -> this - other
+}
+
+private fun subtitleOffsetSettingsKeyFor(identity: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
+    val stableHash = digest.joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
+    return "player.subtitleOffset.$stableHash"
+}
+
 private fun formatSubtitleOffset(offsetMs: Long): String = when {
     offsetMs > 0L -> "+${offsetMs} ms"
-    offsetMs < 0L -> "−${-offsetMs} ms"
+    offsetMs < 0L -> "−${offsetMs.toString().drop(1)} ms"
     else -> "0 ms"
 }
 

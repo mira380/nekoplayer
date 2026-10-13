@@ -84,13 +84,46 @@ import eu.kanade.tachiyomi.animesource.model.FetchType
 import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
+import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private data class StreamChoice(val label: String, val video: Video)
+private data class StreamIdentity(
+    val hosterName: String,
+    val videoTitle: String,
+)
+
+private data class StreamChoice(
+    val label: String,
+    val video: Video,
+    val identity: StreamIdentity,
+)
+
+private val episodeNumberInStreamTitle = listOf(
+    Regex("""(?i)\b(?:episode|ep\.?)\s*#?\s*\d+(?:\.\d+)?\b"""),
+    Regex("""(?i)\bs\d+\s*e\d+\b"""),
+    Regex("""(?i)\b\d+\s*x\s*\d+\b"""),
+    Regex("""(?i)^\s*\d+(?:\.\d+)?\s*[-:|]\s*"""),
+)
+
+private fun normalizedStreamLabel(value: String): String =
+    value.lowercase(java.util.Locale.ROOT)
+        .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+        .trim()
+        .replace(Regex("""\s+"""), " ")
+
+private fun streamIdentity(hosterName: String, videoTitle: String): StreamIdentity {
+    val normalizedTitle = episodeNumberInStreamTitle.fold(videoTitle.lowercase(java.util.Locale.ROOT)) { title, regex ->
+        title.replace(regex, " ")
+    }
+    return StreamIdentity(
+        hosterName = normalizedStreamLabel(hosterName),
+        videoTitle = normalizedStreamLabel(normalizedTitle),
+    )
+}
 
 private enum class EpisodeSortOrder { NumberAscending, NumberDescending }
 
@@ -132,6 +165,8 @@ internal fun VideoSourceBrowser(
         Int?,
         AppDatabase.SourceProgressIdentity?,
         String?,
+        NextEpisodeAction?,
+        List<TimeStamp>,
     ) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -274,11 +309,17 @@ internal fun VideoSourceBrowser(
         }
     }
 
-    fun playVideoChoice(choice: StreamChoice, episode: SEpisode) {
+    fun playVideoChoice(
+        choice: StreamChoice,
+        episode: SEpisode,
+        onNextEpisode: NextEpisodeAction? = null,
+        onAutoPlayFinished: ((Boolean) -> Unit)? = null,
+    ): Boolean {
         val url = choice.video.videoUrl
         if (url.isBlank()) {
             error = "This source did not resolve a direct video stream."
-            return
+            onAutoPlayFinished?.invoke(false)
+            return false
         }
         val sourceHeaders = choice.video.headers
         val headers = buildMap {
@@ -313,10 +354,19 @@ internal fun VideoSourceBrowser(
             episodeNumber,
             progressIdentity,
             sourceProgressAnimeTitle,
+            onNextEpisode,
+            choice.video.timestamps,
         )
+        onAutoPlayFinished?.invoke(true)
+        return true
     }
 
-    fun openEpisode(episode: SEpisode, autoPlayFirst: Boolean = false) {
+    fun openEpisode(
+        episode: SEpisode,
+        autoPlayFirst: Boolean = false,
+        preferredStream: StreamIdentity? = null,
+        onAutoPlayFinished: ((Boolean) -> Unit)? = null,
+    ) {
         selectedEpisode = episode
         streamChoices = emptyList()
         scope.launch {
@@ -341,18 +391,48 @@ internal fun VideoSourceBrowser(
                         directVideoHoster()
                     }
                     val sortedHosters = httpSource?.run { hosters.sortHosters() } ?: hosters
-                    sortedHosters.flatMap { hoster ->
+                    val resolvedChoices = mutableListOf<StreamChoice>()
+                    hosterLoop@ for (hoster in sortedHosters) {
+                        val hosterLabel = hoster.hosterName
+                            .takeUnless { it == Hoster.NO_HOSTER_LIST }
+                            .orEmpty()
+                        val hosterIdentity = normalizedStreamLabel(hosterLabel)
+                        if (preferredStream != null && hosterIdentity != preferredStream.hosterName) {
+                            continue@hosterLoop
+                        }
                         val videos = if (!hoster.lazy && hoster.videoList != null) {
                             hoster.videoList
                         } else {
                             source.getVideoList(hoster)
                         }
                         val sortedVideos = httpSource?.run { videos.sortVideos() } ?: videos
-                        sortedVideos.mapNotNull { video ->
+                        val matchingVideos = if (preferredStream == null) {
+                            sortedVideos
+                        } else {
+                            sortedVideos.filter { video ->
+                                video.videoTitle.isBlank() ||
+                                    streamIdentity(hosterLabel, video.videoTitle) == preferredStream
+                            }
+                        }
+                        if (
+                            autoPlayFirst &&
+                            preferredStream != null &&
+                            preferredStream.videoTitle.isBlank() &&
+                            matchingVideos.size > 1
+                        ) {
+                            continue@hosterLoop
+                        }
+                        for (video in matchingVideos) {
                             val resolved = if (httpSource != null) {
-                                httpSource.resolveVideo(video) ?: return@mapNotNull null
+                                httpSource.resolveVideo(video) ?: continue
                             } else {
                                 video
+                            }
+                            if (
+                                preferredStream != null &&
+                                streamIdentity(hosterLabel, resolved.videoTitle.ifBlank { video.videoTitle }) != preferredStream
+                            ) {
+                                continue
                             }
                             if (
                                 httpSource != null &&
@@ -363,24 +443,64 @@ internal fun VideoSourceBrowser(
                                     ?.takeIf(String::isNotBlank)
                                     ?.let { resolved.videoUrl = it }
                             }
-                            val hosterLabel = hoster.hosterName.takeUnless { it == Hoster.NO_HOSTER_LIST }.orEmpty()
-                            StreamChoice(
-                                label = listOf(hosterLabel, resolved.videoTitle).asSequence().filter(String::isNotBlank).joinToString(" · "),
+                            if (resolved.videoUrl.isBlank() || resolved.videoUrl == "null") {
+                                continue
+                            }
+                            resolvedChoices += StreamChoice(
+                                label = listOf(hosterLabel, resolved.videoTitle)
+                                    .asSequence()
+                                    .filter(String::isNotBlank)
+                                    .joinToString(" · "),
                                 video = resolved,
+                                identity = streamIdentity(
+                                    hosterLabel,
+                                    resolved.videoTitle.ifBlank { video.videoTitle },
+                                ),
                             )
+                            if (autoPlayFirst) break@hosterLoop
                         }
                     }
+                    resolvedChoices
                 }
                 streamChoices = choices
-                if (choices.isEmpty()) {
+                if (autoPlayFirst) {
+                    val choice = choices.firstOrNull()
+                    if (choice == null) {
+                        error = if (preferredStream == null) {
+                            "This episode has no playable video streams."
+                        } else {
+                            "The selected video stream is unavailable for this episode."
+                        }
+                        onAutoPlayFinished?.invoke(false)
+                    } else {
+                        val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
+                        val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
+                        val nextAction: NextEpisodeAction? = nextEpisode?.let { next ->
+                            { onFinished ->
+                                openEpisode(
+                                    next,
+                                    autoPlayFirst = true,
+                                    preferredStream = choice.identity,
+                                    onAutoPlayFinished = onFinished,
+                                )
+                            }
+                        }
+                        playVideoChoice(
+                            choice,
+                            episode,
+                            nextAction,
+                            onAutoPlayFinished,
+                        )
+                    }
+                } else if (choices.isEmpty()) {
                     error = "This episode has no playable video streams."
-                } else if (autoPlayFirst) {
-                    playVideoChoice(choices.first(), episode)
                 }
             } catch (linkage: LinkageError) {
                 error = linkage.toExtensionRuntimeMessage(item.extension.libVersion)
+                onAutoPlayFinished?.invoke(false)
             } catch (_: Exception) {
                 error = "Couldn’t load video streams for ${episode.name}."
+                onAutoPlayFinished?.invoke(false)
             } finally {
                 busy = false
             }
@@ -893,7 +1013,21 @@ internal fun VideoSourceBrowser(
                     items(streamChoices, key = { "${it.label}:${it.video.videoUrl}" }) { choice ->
                         Card(
                             onClick = {
-                                selectedEpisode?.let { playVideoChoice(choice, it) }
+                                selectedEpisode?.let { episode ->
+                                    val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
+                                    val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
+                                    val nextAction: NextEpisodeAction? = nextEpisode?.let { next ->
+                                        { onFinished: (Boolean) -> Unit ->
+                                            openEpisode(
+                                                next,
+                                                autoPlayFirst = true,
+                                                preferredStream = choice.identity,
+                                                onAutoPlayFinished = onFinished,
+                                            )
+                                        }
+                                    }
+                                    playVideoChoice(choice, episode, nextAction)
+                                }
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(18.dp),

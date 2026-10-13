@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.extensions.ExtensionManager
+import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import com.nekoplayer.app.extensions.model.Extension
@@ -102,6 +103,8 @@ fun ExtensionsScreen(
         Int?,
         AppDatabase.SourceProgressIdentity?,
         String?,
+        NextEpisodeAction?,
+        List<TimeStamp>,
     ) -> Unit,
     onDetailScreenChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,

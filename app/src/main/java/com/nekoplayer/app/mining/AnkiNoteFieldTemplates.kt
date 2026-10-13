@@ -24,22 +24,11 @@ object AnkiNoteFieldTemplates {
         AnkiTemplateValue("sentenceAudio", "Sentence audio", listOf("sentenceaudio", "sentencesound", "audiosentence")),
         AnkiTemplateValue("audio", "Pronunciation audio", listOf("expressionaudio", "audio")),
         AnkiTemplateValue("pronunciationAudio", "Pronunciation audio (camelCase alias)", listOf("pronunciationaudio", "wordaudio", "vocabularyaudio", "sound")),
-        AnkiTemplateValue("screenshot", "ScreensselectionText\", \"Selected subtitle text (camelCase alias)\", emptyList())hot", listOf("definitionpicture", "screenshot", "image", "picture", "capture")),
+        AnkiTemplateValue("screenshot", "Screenshot", listOf("definitionpicture", "screenshot", "image", "picture", "capture")),
         AnkiTemplateValue("frequency", "Frequency", listOf("frequency", "freq", "rank", "wordfrequency")),
         AnkiTemplateValue("popup-selection-text", "Selected subtitle text", listOf("selectiontext", "selectedtext", "popupselectiontext")),
         AnkiTemplateValue("selectionText", "Selected subtitle text (camelCase alias)", emptyList()),
     )
-
-    fun valuesForDictionaries(dictionaryNames: Iterable<String>): List<AnkiTemplateValue> =
-        values + dictionaryNames.mapNotNull { name ->
-            name.trim().takeIf(String::isNotEmpty)?.let { dictionaryName ->
-                AnkiTemplateValue(
-                    token = "single-glossary-$dictionaryName",
-                    label = "Selected entry · $dictionaryName",
-                    aliases = emptyList(),
-                )
-            }
-        }.distinctBy { canonicalToken(it.token) }
 
     private val tokenPattern = Regex("\\{([^{}]+)\\}")
 
@@ -84,11 +73,10 @@ object AnkiNoteFieldTemplates {
             val field = legacy?.optString(value.token)?.trim().orEmpty()
             if (field.isNotEmpty()) {
                 val previous = legacyTemplates[field]
-                legacyTemplates[field] = when {
-                    previous == "{definition}" && value.token == "glossary" -> previous
-                    previous == "{glossary}" && value.token == "definition" -> "{definition}"
-                    previous == null -> "{${value.token}}"
-                    else -> "$previous {${value.token}}"
+                legacyTemplates[field] = when (previous to value.token) {
+                    "{definition}" to "glossary",
+                    "{glossary}" to "definition" -> "{definition}"
+                    else -> previous?.let { "$it {${value.token}}" } ?: "{${value.token}}"
                 }
             }
         }
