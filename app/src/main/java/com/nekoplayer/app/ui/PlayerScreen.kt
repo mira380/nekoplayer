@@ -512,7 +512,7 @@ fun PlayerScreen(
         player.playWhenReady = true
         selectedSpeed = 1f
         player.playbackParameters = PlaybackParameters(1f)
-        activity.setPlayerImmewwrsive(true)
+        activity.setPlayerImmersive(true)
     }
 
     LaunchedEffect(database) {

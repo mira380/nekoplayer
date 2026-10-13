@@ -331,7 +331,7 @@ fun NekoApp(
         }
     }
     LaunchedEffect(activeVideo != null) {
-        activity.setPlayerImmewwrsive(activeVideo != null)
+        activity.setPlayerImmersive(activeVideo != null)
         if (activeVideo != null) {
             hasPlayedVideo = true
         } else if (hasPlayedVideo) {
