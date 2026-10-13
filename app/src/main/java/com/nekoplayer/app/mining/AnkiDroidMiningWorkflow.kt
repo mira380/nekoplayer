@@ -35,7 +35,7 @@ class AnkiDroidMiningWorkflow(
         val expression = mainEntry.expression.trim()
         require(expression.isNotEmpty()) { "Look up a word before mining a card." }
         require(cleanSentence.isNotEmpty()) { "Select a subtitle cue before mining a card." }
-        require(cueStartMs >= 0L && cueEndMs >= cueStartMs) { "The selected subtitle timing is invalid." }
+        require(cueStartMs in (0L..cueEndMs)) { "The selected subtitle timing is invalid." }
 
         val status = client.status()
         if (!status.installed || !status.apiEnabled) {
@@ -153,7 +153,7 @@ class AnkiDroidMiningWorkflow(
                             sentenceAudioFields.forEach { field ->
                                 add(AnkiDroidAttachment(
                                     file = media.audioFile,
-                                    preferredName = "sentence_$safeName.${media.audioFile.extension}",
+                                    preferredName = "nekoplayer_audio_$safeName.${media.audioFile.extension}",
                                     mimeType = if (media.audioFile.extension.equals("wav", ignoreCase = true)) {
                                         "audio/wav"
                                     } else {

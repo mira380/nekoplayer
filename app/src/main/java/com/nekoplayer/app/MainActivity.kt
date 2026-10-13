@@ -73,7 +73,7 @@ class MainActivity : ComponentActivity(), AnkiDroidPermissionRequester {
         permissionLauncher.launch(permission)
     }
 
-    fun setPlayerImmersive(enabled: Boolean) {
+    fun setPlayerImmewwrsive(enabled: Boolean) {
         playerImmersive = enabled
         updateSystemBars()
     }

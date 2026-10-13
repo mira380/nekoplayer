@@ -74,16 +74,21 @@ private enum class AppPage(val label: String) {
     Settings("Settings"),
 }
 
+internal typealias NextEpisodeAction = ((Boolean) -> Unit) -> Unit
+
 data class VideoTarget(
     val uri: Uri,
     val displayName: String,
     val seriesTitle: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+    val videoMimeType: String? = null,
+    val audioUri: String? = null,
+    val audioMimeType: String? = null,
     val subtitleEpisodeName: String? = null,
     val subtitleEpisodeNumber: Int? = null,
     val sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
     val alternateSeriesTitle: String? = null,
-    val onPlayNextEpisode: (() -> Unit)? = null,
+    val onPlayNextEpisode: NextEpisodeAction? = null,
     val sourceSkipTimestamps: List<TimeStamp> = emptyList(),
 )
 
@@ -189,11 +194,14 @@ fun NekoApp(
         name: String,
         seriesTitle: String? = null,
         requestHeaders: Map<String, String> = emptyMap(),
+        videoMimeType: String? = null,
+        audioUri: String? = null,
+        audioMimeType: String? = null,
         subtitleEpisodeName: String? = null,
         subtitleEpisodeNumber: Int? = null,
         sourceProgressIdentity: AppDatabase.SourceProgressIdentity? = null,
         alternateSeriesTitle: String? = null,
-        onPlayNextEpisode: (() -> Unit)? = null,
+        onPlayNextEpisode: NextEpisodeAction? = null,
         sourceSkipTimestamps: List<TimeStamp> = emptyList(),
     ) {
         val uri = if (sourceUri.scheme.isNullOrBlank()) Uri.fromFile(File(sourceUri.toString())) else sourceUri
@@ -207,6 +215,9 @@ fun NekoApp(
                         name,
                         seriesTitle,
                         requestHeaders,
+                        videoMimeType,
+                        audioUri,
+                        audioMimeType,
                         subtitleEpisodeName,
                         subtitleEpisodeNumber,
                         sourceProgressIdentity,
@@ -224,6 +235,9 @@ fun NekoApp(
             name,
             seriesTitle,
             requestHeaders,
+            videoMimeType,
+            audioUri,
+            audioMimeType,
             subtitleEpisodeName,
             subtitleEpisodeNumber,
             sourceProgressIdentity,
@@ -317,9 +331,8 @@ fun NekoApp(
         }
     }
     LaunchedEffect(activeVideo != null) {
-        val playerOpen = activeVideo != null
-        activity.setPlayerImmersive(playerOpen)
-        if (playerOpen) {
+        activity.setPlayerImmewwrsive(activeVideo != null)
+        if (activeVideo != null) {
             hasPlayedVideo = true
         } else if (hasPlayedVideo) {
             libraryProgressRefreshKey++
@@ -330,7 +343,9 @@ fun NekoApp(
     NekoTheme(darkMode, palette, accent) {
       ProvideNekoLanguage(language) {
         val current = activeVideo
-        SideEffect { activity.setSystemBarDarkIcons(enabled = !darkMode && current == null) }
+        SideEffect {
+            activity.setSystemBarDarkIcons(enabled = !darkMode && current == null)
+        }
         Box(Modifier.fillMaxSize()) {
             val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
             val safeSides = if (detailScreen) {
@@ -398,16 +413,16 @@ fun NekoApp(
                                 },
                                 onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle, onNextEpisode, sourceSkipTimestamps ->
                                     openVideo(
-                                        uri,
-                                        name,
-                                        title,
-                                        headers,
-                                        episodeName,
-                                        episodeNumber,
-                                        progressIdentity,
-                                        alternateTitle,
-                                        onNextEpisode,
-                                        sourceSkipTimestamps,
+                                        sourceUri = uri,
+                                        name = name,
+                                        seriesTitle = title,
+                                        requestHeaders = headers,
+                                        subtitleEpisodeName = episodeName,
+                                        subtitleEpisodeNumber = episodeNumber,
+                                        sourceProgressIdentity = progressIdentity,
+                                        alternateSeriesTitle = alternateTitle,
+                                        onPlayNextEpisode = onNextEpisode,
+                                        sourceSkipTimestamps = sourceSkipTimestamps,
                                     )
                                 },
                                 onDetailScreenChanged = { detailScreen = it },
@@ -492,6 +507,9 @@ fun NekoApp(
                         uri = current.uri,
                         displayName = current.displayName,
                         seriesTitle = current.seriesTitle,
+                        videoMimeType = current.videoMimeType,
+                        audioUri = current.audioUri,
+                        audioMimeType = current.audioMimeType,
                         requestHeaders = current.requestHeaders,
                         subtitleEpisodeName = current.subtitleEpisodeName,
                         subtitleEpisodeNumber = current.subtitleEpisodeNumber,

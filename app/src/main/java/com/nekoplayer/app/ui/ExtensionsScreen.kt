@@ -103,7 +103,7 @@ fun ExtensionsScreen(
         Int?,
         AppDatabase.SourceProgressIdentity?,
         String?,
-        (() -> Unit)?,
+        NextEpisodeAction?,
         List<TimeStamp>,
     ) -> Unit,
     onDetailScreenChanged: (Boolean) -> Unit,

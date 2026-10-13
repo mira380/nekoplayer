@@ -22,20 +22,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FilterList
@@ -47,6 +46,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -97,6 +97,50 @@ private enum class LibraryShowSort(val title: String) {
     }
 }
 
+private sealed interface LibraryShelfItem {
+    val key: String
+    val title: String
+    val episodeCount: Int
+    val lastWatchedAtMs: Long
+
+    data class LocalShow(
+        val showName: String,
+        val episodes: List<AnimeLibraryEpisode>,
+        override val lastWatchedAtMs: Long,
+    ) : LibraryShelfItem {
+        override val key: String get() = "show:$showName"
+        override val title: String get() = showName
+        override val episodeCount: Int get() = episodes.size
+    }
+
+    data class SourceTitle(
+        val entry: AppDatabase.SourceLibraryEntry,
+        override val lastWatchedAtMs: Long,
+    ) : LibraryShelfItem {
+        override val key: String get() = "source:${entry.key}"
+        override val title: String get() = entry.title
+        override val episodeCount: Int get() = entry.episodeCount ?: 0
+    }
+}
+
+private data class LibraryShelf(
+    val key: String,
+    val title: String,
+    val entries: List<LibraryShelfItem>,
+)
+
+private fun sourceTitleSortKey(entry: AppDatabase.SourceLibraryEntry): String =
+    entry.title.lowercase()
+
+private fun sourceEpisodeCount(entry: AppDatabase.SourceLibraryEntry): Int =
+    entry.episodeCount ?: 0
+
+private fun String.toLibraryTimestampMs(): Long = runCatching {
+    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US)
+        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        .parse(this)?.time ?: 0L
+}.getOrDefault(0L)
+
 @Composable
 fun LibraryScreen(
     database: AppDatabase,
@@ -109,7 +153,7 @@ fun LibraryScreen(
     progressRefreshKey: Int,
     onPickFolder: () -> Unit,
     onPickVideo: () -> Unit,
-    onOpenVideo: (Uri, String, String?, (() -> Unit)?) -> Unit,
+    onOpenVideo: (Uri, String, String?, NextEpisodeAction?) -> Unit,
     onOpenSourceEntry: (AppDatabase.SourceLibraryEntry) -> Unit,
     onPickCover: (String) -> Unit,
     onDetailScreenChanged: (Boolean) -> Unit,
@@ -120,78 +164,186 @@ fun LibraryScreen(
     var recent by remember { mutableStateOf(emptyList<AppDatabase.RecentMedia>()) }
     var sourceEntries by remember(database) { mutableStateOf(database.listSourceLibraryEntries()) }
     var sourceRecency by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
-    var covers by remember { mutableStateOf(database.readSetting("library.customCovers") as? org.json.JSONObject ?: org.json.JSONObject()) }
+    var covers by remember {
+        mutableStateOf((database.readSetting("library.customCovers") as? org.json.JSONObject) ?: org.json.JSONObject())
+    }
+    var libraryGroups by remember(database) { mutableStateOf(readLibraryGroups(database)) }
+    var groupAssignments by remember(database) { mutableStateOf(readLibraryGroupAssignments(database)) }
+    var collapsedGroups by remember { mutableStateOf(emptySet<String>()) }
+    var showGroupManager by remember { mutableStateOf(value = false) }
+    var groupNameDraft by remember { mutableStateOf("") }
+    var groupToDelete by remember { mutableStateOf<String?>(null) }
+    var groupAssignmentTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var assignmentDraft by remember { mutableStateOf(emptySet<String>()) }
     var search by remember { mutableStateOf("") }
-    var sortMenuExpanded by remember { mutableStateOf(false) }
+    var sortMenuExpanded by remember { mutableStateOf(value = false) }
     var librarySort by remember(database) {
         mutableStateOf(LibraryShowSort.fromStored(database.readString("library.sortOrder", "TITLE")))
     }
     var expandedShow by remember { mutableStateOf<String?>(null) }
     var coverUrlTarget by remember { mutableStateOf<String?>(null) }
     var coverUrl by remember { mutableStateOf("") }
-    var selectingSources by remember { mutableStateOf(false) }
+    var selectingSources by remember { mutableStateOf(value = false) }
     var selectedSourceKeys by remember { mutableStateOf(emptySet<String>()) }
-    var removingSelected by remember { mutableStateOf(false) }
-    var confirmRemoveSources by remember { mutableStateOf(false) }
+    var removingSelected by remember { mutableStateOf(value = false) }
+    var confirmRemoveSources by remember { mutableStateOf(value = false) }
     var selectionError by remember { mutableStateOf<String?>(null) }
     val expandedMenus = remember { mutableStateMapOf<String, Boolean>() }
-    val gridState = rememberLazyGridState()
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(database, progressRefreshKey) {
-        val libraryData = withContext(Dispatchers.IO) {
+        val (loadedRecent, loadedSourceEntries, loadedSourceRecency) = withContext(Dispatchers.IO) {
             val entries = database.listSourceLibraryEntries()
-            val recency = entries.associate { entry ->
-                entry.key to (database.latestSourceProgress(entry.sourceId, entry.animeUrl)?.updatedAtMs ?: 0L)
+            val recency = entries.associateBy(
+                keySelector = { it.key },
+            ) { (sourceId, _, _, animeUrl) ->
+                database.latestSourceProgress(sourceId, animeUrl)?.updatedAtMs ?: 0L
             }
             Triple(database.listRecent(), entries, recency)
         }
-        recent = libraryData.first
-        sourceEntries = libraryData.second
-        sourceRecency = libraryData.third
+        recent = loadedRecent
+        sourceEntries = loadedSourceEntries
+        sourceRecency = loadedSourceRecency
     }
     LaunchedEffect(coverVersion) {
         covers = withContext(Dispatchers.IO) {
-            database.readSetting("library.customCovers") as? org.json.JSONObject ?: org.json.JSONObject()
+            (database.readSetting("library.customCovers") as? org.json.JSONObject) ?: org.json.JSONObject()
         }
     }
 
     val groups = remember(episodes) {
-        episodes.groupBy { it.showName }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
+        episodes.groupBy(AnimeLibraryEpisode::showName).toSortedMap(String.CASE_INSENSITIVE_ORDER)
     }
-    val recentByUri = remember(recent) { recent.associateBy { it.uri } }
+    val recentByUri = remember(recent) { recent.associateBy(AppDatabase.RecentMedia::uri) }
     val visibleGroups = remember(groups, search, librarySort, recentByUri) {
-        val filtered = groups.filterKeys { search.isBlank() || it.contains(search, ignoreCase = true) }
-        fun latestWatch(episodesForShow: List<AnimeLibraryEpisode>): String =
-            episodesForShow.mapNotNull { recentByUri[it.uri.toString()]?.lastOpenedAt }.maxOrNull().orEmpty()
-        val comparator = when (librarySort) {
-            LibraryShowSort.TITLE -> compareBy<Map.Entry<String, List<AnimeLibraryEpisode>>> { it.key.lowercase() }
-            LibraryShowSort.RECENT -> compareByDescending<Map.Entry<String, List<AnimeLibraryEpisode>>> { latestWatch(it.value) }
-                .thenBy { it.key.lowercase() }
-            LibraryShowSort.EPISODES -> compareByDescending<Map.Entry<String, List<AnimeLibraryEpisode>>> { it.value.size }
-                .thenBy { it.key.lowercase() }
+        val filtered = groups.filter { (showName, _) ->
+            search.isBlank() || showName.contains(search, ignoreCase = true)
         }
-        filtered.entries.sortedWith(comparator).associate { it.key to it.value }
+        fun latestWatch(episodesForShow: List<AnimeLibraryEpisode>): Long =
+            episodesForShow.asSequence()
+                .mapNotNull { (uri, _, _, _) -> recentByUri[uri.toString()]?.lastOpenedAt }
+                .maxOfOrNull(String::toLibraryTimestampMs) ?: 0L
+        val comparator = when (librarySort) {
+            LibraryShowSort.TITLE -> compareBy { (key, _) -> key.lowercase() }
+            LibraryShowSort.RECENT -> compareByDescending<Map.Entry<String, List<AnimeLibraryEpisode>>> { (_, showEpisodes) ->
+                latestWatch(showEpisodes)
+            }.thenBy { (key, _) -> key.lowercase() }
+            LibraryShowSort.EPISODES -> compareByDescending<Map.Entry<String, List<AnimeLibraryEpisode>>> { (_, showEpisodes) ->
+                showEpisodes.size
+            }.thenBy { (key, _) -> key.lowercase() }
+        }
+        filtered.entries.asSequence()
+            .sortedWith(comparator)
+            .associateBy({ (key, _) -> key }) { (_, value) -> value }
     }
-    val visibleGroupEntries = remember(visibleGroups) { visibleGroups.toList() }
     val visibleSourceEntries = remember(sourceEntries, search, librarySort, sourceRecency) {
-        val filtered = sourceEntries.filter {
+        val filtered = sourceEntries.filter { (_, sourceName, extensionName, _, title, _, _, _) ->
             search.isBlank() ||
-                it.title.contains(search, ignoreCase = true) ||
-                it.sourceName.contains(search, ignoreCase = true) ||
-                it.extensionName.contains(search, ignoreCase = true)
+                title.contains(search, ignoreCase = true) ||
+                sourceName.contains(search, ignoreCase = true) ||
+                extensionName.contains(search, ignoreCase = true)
         }
         val comparator = when (librarySort) {
-            LibraryShowSort.TITLE -> compareBy<AppDatabase.SourceLibraryEntry> { it.title.lowercase() }
+            LibraryShowSort.TITLE -> compareBy(::sourceTitleSortKey)
             LibraryShowSort.RECENT -> compareByDescending<AppDatabase.SourceLibraryEntry> { sourceRecency[it.key] ?: 0L }
-                .thenBy { it.title.lowercase() }
-            LibraryShowSort.EPISODES -> compareByDescending<AppDatabase.SourceLibraryEntry> { it.episodeCount ?: 0 }
-                .thenBy { it.title.lowercase() }
+                .thenBy(::sourceTitleSortKey)
+            LibraryShowSort.EPISODES -> compareByDescending(::sourceEpisodeCount)
+                .thenBy(::sourceTitleSortKey)
         }
         filtered.sortedWith(comparator)
     }
+    val libraryShelves = remember(
+        libraryGroups,
+        visibleGroups,
+        visibleSourceEntries,
+        groupAssignments,
+        sourceRecency,
+        recentByUri,
+        librarySort,
+        search,
+    ) {
+        fun entriesForGroup(groupName: String?): List<LibraryShelfItem> {
+            fun isAssignedToShelf(key: String): Boolean {
+                val assignedGroups = groupAssignments[key].orEmpty()
+                    .filter { assigned -> libraryGroups.any { it.equals(assigned, ignoreCase = true) } }
+                return if (groupName == null) {
+                    assignedGroups.isEmpty()
+                } else {
+                    assignedGroups.any { it.equals(groupName, ignoreCase = true) }
+                }
+            }
+
+            val entries = buildList {
+                visibleGroups.forEach { (showName, showEpisodes) ->
+                    val key = localLibraryGroupKey(showName)
+                    if (isAssignedToShelf(key)) {
+                        val lastWatchedAt = showEpisodes.asSequence()
+                            .mapNotNull { (uri, _, _, _) -> recentByUri[uri.toString()]?.lastOpenedAt }
+                            .maxOfOrNull(String::toLibraryTimestampMs) ?: 0L
+                        add(LibraryShelfItem.LocalShow(showName, showEpisodes, lastWatchedAt))
+                    }
+                }
+                visibleSourceEntries.forEach { entry ->
+                    if (isAssignedToShelf(sourceLibraryGroupKey(entry))) {
+                        add(LibraryShelfItem.SourceTitle(entry, sourceRecency[entry.key] ?: 0L))
+                    }
+                }
+            }
+            val comparator = when (librarySort) {
+                LibraryShowSort.TITLE -> compareBy { it.title.lowercase() }
+                LibraryShowSort.RECENT -> compareByDescending<LibraryShelfItem> { it.lastWatchedAtMs }
+                    .thenBy { it.title.lowercase() }
+                LibraryShowSort.EPISODES -> compareByDescending<LibraryShelfItem> { it.episodeCount }
+                    .thenBy { it.title.lowercase() }
+            }
+            return entries.sortedWith(comparator)
+        }
+
+        buildList {
+            libraryGroups.forEach { groupName ->
+                val entries = entriesForGroup(groupName)
+                if (entries.isNotEmpty()) {
+                    add(LibraryShelf("group:$groupName", groupName, entries))
+                }
+            }
+            val ungroupedEntries = entriesForGroup(null)
+            if (ungroupedEntries.isNotEmpty()) {
+                add(LibraryShelf("ungrouped", "Ungrouped", ungroupedEntries))
+            }
+        }
+    }
     val selectedEpisodes = remember(expandedShow, groups) {
         expandedShow?.let { name -> groups[name] }.orEmpty()
+    }
+
+    fun saveLibraryGroups(updatedGroups: List<String>) {
+        libraryGroups = updatedGroups
+        database.writeSetting("library.groups", updatedGroups)
+    }
+
+    fun saveGroupAssignments(updatedAssignments: Map<String, Set<String>>) {
+        groupAssignments = updatedAssignments
+        val encoded = org.json.JSONObject()
+        updatedAssignments.forEach { (itemKey, assignedGroups) ->
+            if (assignedGroups.isNotEmpty()) {
+                encoded.put(itemKey, org.json.JSONArray(assignedGroups.sorted()))
+            }
+        }
+        database.writeSetting("library.groupAssignments", encoded)
+    }
+
+    fun deleteLibraryGroup(groupName: String) {
+        saveLibraryGroups(libraryGroups.filterNot { it.equals(groupName, ignoreCase = true) })
+        saveGroupAssignments(
+            groupAssignments.mapValues { (_, assigned) -> assigned - groupName }
+                .filterValues { it.isNotEmpty() },
+        )
+        collapsedGroups -= "group:$groupName"
+    }
+
+    fun openGroupAssignment(itemKey: String, title: String) {
+        assignmentDraft = groupAssignments[itemKey].orEmpty()
+        groupAssignmentTarget = itemKey to title
     }
 
     fun clearSourceSelection() {
@@ -213,8 +365,9 @@ fun LibraryScreen(
                 }
                 sourceEntries = updatedEntries
                 clearSourceSelection()
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
                 selectionError = "Couldn't remove the selected titles. Try again."
             } finally {
                 removingSelected = false
@@ -222,7 +375,7 @@ fun LibraryScreen(
         }
     }
 
-    BackHandler(enabled = expandedShow != null || selectingSources) {
+    BackHandler(enabled = (expandedShow != null) || selectingSources) {
         when {
             expandedShow != null -> expandedShow = null
             confirmRemoveSources -> confirmRemoveSources = false
@@ -231,14 +384,14 @@ fun LibraryScreen(
     }
     LaunchedEffect(expandedShow) { onDetailScreenChanged(expandedShow != null) }
 
-    if (expandedShow != null && selectedEpisodes.isNotEmpty()) {
+    if ((expandedShow != null) && selectedEpisodes.isNotEmpty()) {
         ShowDetailScreen(
             showName = expandedShow.orEmpty(),
             episodes = selectedEpisodes,
             recent = recent,
             onBack = { expandedShow = null },
-            onOpenVideo = { episode, onNextEpisode ->
-                onOpenVideo(episode.uri, episode.displayName, episode.showName, onNextEpisode)
+            onOpenVideo = { (uri, displayName, showName, _), onNextEpisode ->
+                onOpenVideo(uri, displayName, showName, onNextEpisode)
                 expandedShow = null
             },
             modifier = modifier,
@@ -363,6 +516,28 @@ fun LibraryScreen(
             }
         }
 
+        if (!selectingSources && (episodes.isNotEmpty() || sourceEntries.isNotEmpty())) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 2.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Collections",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                TextButton(
+                    onClick = { showGroupManager = true },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (libraryGroups.isEmpty()) "Create group" else "Manage groups")
+                }
+            }
+        }
+
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
 
         if (episodes.isEmpty() && sourceEntries.isEmpty() && !loading) {
@@ -386,93 +561,300 @@ fun LibraryScreen(
                     },
                 )
             }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 126.dp),
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                state = gridState,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+        } else if (libraryShelves.isEmpty() && !loading) {
+            Box(
+                Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
             ) {
-                if (sourceEntries.isNotEmpty() && visibleSourceEntries.isNotEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }, contentType = "section_header") {
-                        Text(
-                            "Sources",
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                EmptyLibraryCard(
+                    onPickFolder = onPickFolder,
+                    onPickVideo = onPickVideo,
+                    title = "No matching titles",
+                    detail = "Try a shorter show name or clear the search.",
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 4.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(libraryShelves, key = LibraryShelf::key, contentType = { "library_shelf" }) { shelf ->
+                    val (shelfKey, shelfTitle, shelfEntries) = shelf
+                    val expanded = shelfKey !in collapsedGroups
+                    Column(Modifier.fillMaxWidth()) {
+                        TextButton(
+                            onClick = {
+                                collapsedGroups = if (expanded) {
+                                    collapsedGroups + shelfKey
+                                } else {
+                                    collapsedGroups - shelfKey
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                horizontal = 20.dp,
+                                vertical = 10.dp,
+                            ),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    shelfTitle,
+                                    modifier = Modifier.widthIn(max = 260.dp),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    shelfEntries.size.toString(),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Icon(
+                                    if (expanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
+                                    contentDescription = localizeUiText(
+                                        if (expanded) "Collapse $shelfTitle" else "Expand $shelfTitle",
+                                    ),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.weight(1f))
+                            }
+                        }
+
+                        if (expanded) {
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 14.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(
+                                    shelfEntries,
+                                    key = { it.key },
+                                    contentType = {
+                                        if (it is LibraryShelfItem.SourceTitle) "source_card" else "show_card"
+                                    },
+                                ) { shelfItem ->
+                                    when (shelfItem) {
+                                        is LibraryShelfItem.SourceTitle -> {
+                                            val entry = shelfItem.entry
+                                            SourceLibraryCard(
+                                                context = context,
+                                                client = aniList,
+                                                artworkCache = artworkCache,
+                                                entry = entry,
+                                                selectionMode = selectingSources,
+                                                selected = entry.key in selectedSourceKeys,
+                                                menuExpanded = expandedMenus["source:${entry.key}"] == true,
+                                                onOpen = { onOpenSourceEntry(entry) },
+                                                onMenu = { expandedMenus["source:${entry.key}"] = true },
+                                                onDismissMenu = { expandedMenus["source:${entry.key}"] = false },
+                                                onManageGroups = {
+                                                    openGroupAssignment(sourceLibraryGroupKey(entry), entry.title)
+                                                },
+                                                onToggleSelected = {
+                                                    selectionError = null
+                                                    selectedSourceKeys =
+                                                        if (entry.key in selectedSourceKeys) selectedSourceKeys - entry.key
+                                                        else selectedSourceKeys + entry.key
+                                                },
+                                                modifier = Modifier.width(124.dp),
+                                            )
+                                        }
+
+                                        is LibraryShelfItem.LocalShow -> {
+                                            val showName = shelfItem.showName
+                                            val showEpisodes = shelfItem.episodes
+                                            val customCover = covers.optString(showName).takeIf { it.isNotBlank() }
+                                            ShowCard(
+                                                context = context,
+                                                client = aniList,
+                                                artworkCache = artworkCache,
+                                                showName = showName,
+                                                episodeCount = showEpisodes.size,
+                                                episodeNames = showEpisodes.asSequence()
+                                                    .take(8)
+                                                    .map { it.displayName }
+                                                    .toList(),
+                                                coverSource = customCover,
+                                                menuExpanded = expandedMenus[showName] == true,
+                                                onToggle = { expandedShow = showName },
+                                                onMenu = { expandedMenus[showName] = true },
+                                                onDismissMenu = { expandedMenus[showName] = false },
+                                                onManageGroups = {
+                                                    openGroupAssignment(localLibraryGroupKey(showName), showName)
+                                                },
+                                                onSetUrl = {
+                                                    coverUrlTarget = showName
+                                                    coverUrl = customCover.orEmpty()
+                                                        .takeIf { it.startsWith("http") }.orEmpty()
+                                                },
+                                                onPickLocal = { onPickCover(showName) },
+                                                onRemoveCover = {
+                                                    covers = org.json.JSONObject(covers.toString())
+                                                        .apply { remove(showName) }
+                                                    database.writeSetting("library.customCovers", covers)
+                                                },
+                                                modifier = Modifier.width(124.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
-                items(visibleSourceEntries, key = { "source:${it.key}" }, contentType = { "source_card" }) { entry ->
-                    SourceLibraryCard(
-                        context = context,
-                        client = aniList,
-                        artworkCache = artworkCache,
-                        entry = entry,
-                        selectionMode = selectingSources,
-                        selected = entry.key in selectedSourceKeys,
-                        onOpen = { onOpenSourceEntry(entry) },
-                        onToggleSelected = {
-                            selectionError = null
-                            selectedSourceKeys =
-                                if (entry.key in selectedSourceKeys) selectedSourceKeys - entry.key
-                                else selectedSourceKeys + entry.key
-                        },
-                    )
-                }
-                if (sourceEntries.isNotEmpty() && visibleGroups.isNotEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }, contentType = "section_header") {
-                        Text(
-                            "Local episodes",
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-                if ((episodes.isNotEmpty() || sourceEntries.isNotEmpty()) &&
-                    !loading && visibleGroups.isEmpty() && visibleSourceEntries.isEmpty()
-                ) {
-                    item(span = { GridItemSpan(maxLineSpan) }, contentType = "empty_state") {
-                        EmptyLibraryCard(
-                            onPickFolder = onPickFolder,
-                            onPickVideo = onPickVideo,
-                            title = "No matching shows",
-                            detail = "Try a shorter show name.",
-                        )
-                    }
-                }
-                items(visibleGroupEntries, key = { "show:${it.first}" }, contentType = { "show_card" }) { (showName, showEpisodes) ->
-                    val customCover = covers.optString(showName).takeIf { it.isNotBlank() }
-                    ShowCard(
-                        context = context,
-                        client = aniList,
-                        artworkCache = artworkCache,
-                        showName = showName,
-                        episodeCount = showEpisodes.size,
-                        episodeNames = showEpisodes.take(8).map { it.displayName },
-                        coverSource = customCover,
-                        menuExpanded = expandedMenus[showName] == true,
-                        onToggle = { expandedShow = showName },
-                        onMenu = { expandedMenus[showName] = true },
-                        onDismissMenu = { expandedMenus[showName] = false },
-                        onSetUrl = {
-                            coverUrlTarget = showName
-                            coverUrl = customCover.orEmpty().takeIf { it.startsWith("http") }.orEmpty()
-                        },
-                        onPickLocal = { onPickCover(showName) },
-                        onRemoveCover = {
-                            covers = org.json.JSONObject(covers.toString()).apply { remove(showName) }
-                            database.writeSetting("library.customCovers", covers)
-                        },
-                    )
                 }
             }
         }
     }
 
+
+    if (showGroupManager) {
+        AlertDialog(
+            onDismissRequest = { showGroupManager = false },
+            title = { Text("Library groups") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = groupNameDraft,
+                        onValueChange = { groupNameDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("New group name") },
+                        singleLine = true,
+                    )
+                    TextButton(
+                        onClick = {
+                            val name = groupNameDraft.trim()
+                            if (name.isNotEmpty() && libraryGroups.none { it.equals(name, ignoreCase = true) }) {
+                                saveLibraryGroups((libraryGroups + name).sortedBy { it.lowercase() })
+                                groupNameDraft = ""
+                            }
+                        },
+                        enabled = groupNameDraft.isNotBlank() &&
+                            libraryGroups.none { it.equals(groupNameDraft.trim(), ignoreCase = true) },
+                    ) { Text("Create group") }
+                    if (libraryGroups.isEmpty()) {
+                        Text("Create a group, then assign it from a title’s menu.")
+                    } else {
+                        LazyColumn(Modifier.heightIn(max = 260.dp)) {
+                            items(libraryGroups, key = { "library-group:$it" }) { groupName ->
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(groupName, Modifier.weight(1f))
+                                    IconButton(
+                                        onClick = {
+                                            groupToDelete = groupName
+                                            showGroupManager = false
+                                        },
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Delete,
+                                            contentDescription = localizeUiText("Delete $groupName"),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showGroupManager = false }) { Text("Done") }
+            },
+        )
+    }
+
+    if (groupToDelete != null) {
+        val deletingGroup = groupToDelete.orEmpty()
+        AlertDialog(
+            onDismissRequest = {
+                groupToDelete = null
+                showGroupManager = true
+            },
+            title = { Text("Delete group?") },
+            text = { Text("Remove “$deletingGroup” from the library and all assigned titles?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteLibraryGroup(deletingGroup)
+                        groupToDelete = null
+                        showGroupManager = true
+                    },
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        groupToDelete = null
+                        showGroupManager = true
+                    },
+                ) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (groupAssignmentTarget != null) {
+        val target = groupAssignmentTarget!!
+        AlertDialog(
+            onDismissRequest = { groupAssignmentTarget = null },
+            title = { Text("Organize ${target.second}") },
+            text = {
+                if (libraryGroups.isEmpty()) {
+                    Text("Create a library group first, then assign titles to it.")
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 260.dp)) {
+                        items(libraryGroups, key = { "assign-group:$it" }) { groupName ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    assignmentDraft = if (groupName in assignmentDraft) {
+                                        assignmentDraft - groupName
+                                    } else {
+                                        assignmentDraft + groupName
+                                    }
+                                },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(
+                                    checked = groupName in assignmentDraft,
+                                    onCheckedChange = { checked ->
+                                        assignmentDraft = if (checked) assignmentDraft + groupName
+                                        else assignmentDraft - groupName
+                                    },
+                                )
+                                Text(groupName)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val updated = groupAssignments.toMutableMap()
+                        if (assignmentDraft.isEmpty()) updated.remove(target.first)
+                        else updated[target.first] = assignmentDraft
+                        saveGroupAssignments(updated)
+                        groupAssignmentTarget = null
+                    },
+                ) {
+                    Text("Done")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { groupAssignmentTarget = null }) { Text("Cancel") }
+            },
+        )
+    }
 
     if (coverUrlTarget != null) {
         AlertDialog(
@@ -487,15 +869,19 @@ fun LibraryScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val target = coverUrlTarget ?: return@TextButton
-                    val value = coverUrl.trim()
-                    if (value.startsWith("https://")) {
-                        covers = org.json.JSONObject(covers.toString()).put(target, value)
-                        database.writeSetting("library.customCovers", covers)
-                    }
-                    coverUrlTarget = null
-                }) { Text("Save") }
+                TextButton(
+                    onClick = {
+                        val target = coverUrlTarget ?: return@TextButton
+                        val value = coverUrl.trim()
+                        if (value.startsWith("https://")) {
+                            covers = org.json.JSONObject(covers.toString()).put(target, value)
+                            database.writeSetting("library.customCovers", covers)
+                        }
+                        coverUrlTarget = null
+                    },
+                ) {
+                    Text("Save")
+                }
             },
             dismissButton = {
                 TextButton(onClick = { coverUrlTarget = null }) { Text("Cancel") }
@@ -511,7 +897,7 @@ fun LibraryScreen(
                 val titleWord = if (selectedSourceKeys.size == 1) "title" else "titles"
                 Text(
                     "Remove ${selectedSourceKeys.size} saved $titleWord from your library? " +
-                        "You can add them again from the video source."
+                        "You can add them again from the video source.",
                 )
             },
             confirmButton = {
@@ -529,11 +915,6 @@ fun LibraryScreen(
             },
         )
     }
-}
-
-private fun mediaUri(value: String): Uri {
-    val parsed = value.toUri()
-    return if (parsed.scheme.isNullOrBlank()) Uri.fromFile(File(value)) else parsed
 }
 
 @Composable
@@ -574,7 +955,7 @@ private fun ShowDetailScreen(
     episodes: List<AnimeLibraryEpisode>,
     recent: List<AppDatabase.RecentMedia>,
     onBack: () -> Unit,
-    onOpenVideo: (AnimeLibraryEpisode, (() -> Unit)?) -> Unit,
+    onOpenVideo: (AnimeLibraryEpisode, NextEpisodeAction?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
@@ -601,7 +982,10 @@ private fun ShowDetailScreen(
         fun openEpisodeAt(index: Int) {
             val episode = episodes.getOrNull(index) ?: return
             val nextEpisode = if (index < episodes.lastIndex) {
-                { openEpisodeAt(index + 1) }
+                { onFinished: (Boolean) -> Unit ->
+                    openEpisodeAt(index + 1)
+                    onFinished(true)
+                }
             } else {
                 null
             }
@@ -635,11 +1019,13 @@ private fun ShowCard(
     onSetUrl: () -> Unit,
     onPickLocal: () -> Unit,
     onRemoveCover: () -> Unit,
+    onManageGroups: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val coverKey = remember(showName, coverSource, episodeNames) {
         coverCacheKey(coverSource, showName, episodeNames)
     }
-    var loadedBitmap by remember(coverKey) { mutableStateOf(artworkCache.get(coverKey)) }
+    var loadedBitmap by remember(coverKey) { mutableStateOf(artworkCache[coverKey]) }
     LaunchedEffect(coverKey) {
         if (loadedBitmap == null) {
             loadedBitmap = withContext(Dispatchers.IO) {
@@ -648,7 +1034,7 @@ private fun ShowCard(
         }
     }
     val imageBitmap = remember(loadedBitmap) { loadedBitmap?.asImageBitmap() }
-    Column(Modifier.fillMaxWidth()) {
+    Column(modifier.fillMaxWidth()) {
         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClick = onToggle)) {
             if (imageBitmap != null) {
                 Image(imageBitmap, contentDescription = localizeUiText("$showName artwork"), modifier = Modifier.fillMaxWidth().aspectRatio(0.78f), contentScale = ContentScale.Crop)
@@ -658,8 +1044,16 @@ private fun ShowCard(
                 }
             }
             Box(Modifier.align(Alignment.TopEnd)) {
-                IconButton(onClick = onMenu) { Icon(Icons.Default.MoreVert, contentDescription = localizeUiText("Artwork options"), tint = androidx.compose.ui.graphics.Color.White) }
+                IconButton(onClick = onMenu) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = localizeUiText("Show options"),
+                        modifier = Modifier.size(18.dp),
+                        tint = androidx.compose.ui.graphics.Color.White,
+                    )
+                }
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = onDismissMenu) {
+                    DropdownMenuItem(text = { Text("Organize groups") }, onClick = { onDismissMenu(); onManageGroups() })
                     DropdownMenuItem(text = { Text("Set image URL") }, onClick = { onDismissMenu(); onSetUrl() })
                     DropdownMenuItem(text = { Text("Choose local image") }, onClick = { onDismissMenu(); onPickLocal() })
                     if (coverSource != null) DropdownMenuItem(text = { Text("Use AniList artwork") }, onClick = { onDismissMenu(); onRemoveCover() })
@@ -679,13 +1073,18 @@ private fun SourceLibraryCard(
     entry: AppDatabase.SourceLibraryEntry,
     selectionMode: Boolean,
     selected: Boolean,
+    menuExpanded: Boolean,
     onOpen: () -> Unit,
+    onMenu: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onManageGroups: () -> Unit,
     onToggleSelected: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val coverKey = remember(entry.key, entry.thumbnailUrl) {
         coverCacheKey(entry.thumbnailUrl, entry.title, emptyList())
     }
-    var loadedBitmap by remember(coverKey) { mutableStateOf(artworkCache.get(coverKey)) }
+    var loadedBitmap by remember(coverKey) { mutableStateOf(artworkCache[coverKey]) }
     LaunchedEffect(coverKey) {
         if (loadedBitmap == null) {
             loadedBitmap = withContext(Dispatchers.IO) {
@@ -697,7 +1096,7 @@ private fun SourceLibraryCard(
 
     val cardShape = RoundedCornerShape(16.dp)
     Column(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .clip(cardShape)
             .then(
                 if (selected) Modifier.background(
@@ -736,15 +1135,44 @@ private fun SourceLibraryCard(
             if (selectionMode) {
                 IconButton(
                     onClick = onToggleSelected,
-                    modifier = Modifier.align(Alignment.TopEnd)
-                        .padding(4.dp)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
+                    modifier = Modifier.align(Alignment.TopEnd),
                 ) {
-                    Icon(
-                        if (selected) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
-                        contentDescription = localizeUiText(if (selected) "Deselect ${entry.title}" else "Select ${entry.title}"),
-                        tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    )
+                    Box(
+                        Modifier.size(32.dp)
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (selected) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
+                            contentDescription = localizeUiText(if (selected) "Deselect ${entry.title}" else "Select ${entry.title}"),
+                            modifier = Modifier.size(18.dp),
+                            tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            } else {
+                Box(Modifier.align(Alignment.TopEnd)) {
+                    IconButton(
+                        onClick = onMenu,
+                    ) {
+                        Box(
+                            Modifier.size(32.dp)
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = localizeUiText("Title options"),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                    DropdownMenu(expanded = menuExpanded, onDismissRequest = onDismissMenu) {
+                        DropdownMenuItem(
+                            text = { Text("Organize groups") },
+                            onClick = { onDismissMenu(); onManageGroups() },
+                        )
+                    }
                 }
             }
         }
@@ -779,6 +1207,38 @@ private fun SourceLibraryCard(
     }
 }
 
+private fun readLibraryGroups(database: AppDatabase): List<String> {
+    val stored = (database.readSetting("library.groups") as? org.json.JSONArray) ?: return emptyList()
+    return (0 until stored.length()).asSequence()
+        .mapNotNull { index -> stored.optString(index).trim().takeIf(String::isNotEmpty) }
+        .distinctBy { it.lowercase(java.util.Locale.ROOT) }
+        .sortedBy { it.lowercase(java.util.Locale.ROOT) }
+        .toList()
+}
+
+private fun readLibraryGroupAssignments(database: AppDatabase): Map<String, Set<String>> {
+    val stored = (database.readSetting("library.groupAssignments") as? org.json.JSONObject) ?: return emptyMap()
+    return buildMap {
+        val keys = stored.keys()
+        while (keys.hasNext()) {
+            val itemKey = keys.next()
+            val assigned = stored.optJSONArray(itemKey) ?: continue
+            val names = (0 until assigned.length()).asSequence()
+                .mapNotNull { index ->
+                    assigned.optString(index).trim().takeIf(String::isNotEmpty)
+                }
+                .toSet()
+            if (names.isNotEmpty()) put(itemKey, names)
+        }
+    }
+}
+
+private fun localLibraryGroupKey(showName: String): String =
+    "local:${showName.trim().lowercase(java.util.Locale.ROOT)}"
+
+private fun sourceLibraryGroupKey(entry: AppDatabase.SourceLibraryEntry): String =
+    "source:${entry.key}"
+
 private fun createLibraryArtworkCache(): LruCache<String, Bitmap> =
     object : LruCache<String, Bitmap>(6 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
@@ -801,7 +1261,7 @@ private suspend fun loadCachedCover(
     cache: LruCache<String, Bitmap>,
 ): Bitmap? {
     val key = coverCacheKey(source, showName, episodeNames)
-    cache.get(key)?.let { return it }
+    cache[key]?.let { return it }
     return loadCover(context, source, client, showName, episodeNames)?.also { cache.put(key, it) }
 }
 
@@ -817,15 +1277,23 @@ private suspend fun loadCover(
             val file = client.coverFor(showName, episodeNames) ?: return null
             file.inputStream().use { it.readBytesBounded(12 * 1024 * 1024) }
         }
-        source.startsWith("https://") -> {
+        source.startsWith("https://") -> withContext(Dispatchers.IO) {
             val connection = (URL(source).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 8000
                 readTimeout = 15000
             }
             try {
-                if (connection.responseCode !in 200..299 || !connection.contentType.orEmpty().startsWith("image/")) return null
-                connection.inputStream.use { it.readBytesBounded(12 * 1024 * 1024) }
-            } finally { connection.disconnect() }
+                val responseCode = connection.responseCode
+                if (responseCode !in (200..299)) {
+                    null
+                } else if (!connection.contentType.orEmpty().startsWith("image/")) {
+                    null
+                } else {
+                    connection.inputStream.use { it.readBytesBounded(12 * 1024 * 1024) }
+                }
+            } finally {
+                connection.disconnect()
+            }
         }
         source.startsWith("content://") -> context.contentResolver.openInputStream(source.toUri())?.use { it.readBytesBounded(12 * 1024 * 1024) }
         source.startsWith("file://") -> File(source.toUri().path.orEmpty()).inputStream().use { it.readBytesBounded(12 * 1024 * 1024) }
@@ -834,7 +1302,12 @@ private suspend fun loadCover(
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     var sample = 1
-    while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 720) sample *= 2
+    while ((bounds.outWidth / sample) > 512) {
+        sample *= 2
+    }
+    while ((bounds.outHeight / sample) > 720) {
+        sample *= 2
+    }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
 } catch (_: Exception) { null }
 
@@ -862,7 +1335,7 @@ private fun EpisodeRow(episode: AnimeLibraryEpisode, saved: AppDatabase.RecentMe
             Material3Text(episode.displayName, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
             if (progress != null) LinearProgressIndicator(progress = { progress }, Modifier.fillMaxWidth().padding(top = 4.dp))
         }
-        if (saved != null && saved.positionMs > 0) Text(formatTime(saved.positionMs), Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if ((saved != null) && (saved.positionMs > 0)) Text(formatTime(saved.positionMs), Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
