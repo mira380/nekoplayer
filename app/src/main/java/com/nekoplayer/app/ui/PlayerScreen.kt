@@ -671,40 +671,54 @@ fun PlayerScreen(
 
     fun tapSubtitle(position: Offset) {
         val layout = subtitleLayout ?: return
-        if (subtitleText.isBlank()) return
+        val tappedText = subtitleText
+        if (tappedText.isBlank()) return
         val offset = layout.getOffsetForPosition(position)
-        lookupAnchor = subtitleCoordinates?.localToRoot(position) ?: Offset.Zero
+        val tappedCoordinates = subtitleCoordinates
+        val tappedAnchor = tappedCoordinates?.localToRoot(position) ?: Offset.Zero
+        val hadOpenLookup = lookup != null || lookupMessage != null
         val requestId = lookupRequestId + 1
         lookupRequestId = requestId
         lookupKeptOpenAfterMining = false
-        lookupSourceText = subtitleText
-        lookup = null
-        lookupMessage = null
-        lookupMetadata = emptyList()
+        lookupSourceText = null
+        if (!hadOpenLookup) {
+            lookup = null
+            lookupMessage = null
+            lookupMetadata = emptyList()
+        } else if (lookup == null) {
+            lookupMessage = "Looking up…"
+        }
         if (pauseOnDictionaryLookup && player.playWhenReady) {
             resumePlaybackAfterLookupDismiss = true
             player.pause()
         }
         scope.launch {
             val result = withContext(Dispatchers.IO) {
-                scanYomitanSubtitle(subtitleText, offset, dictionaries)
+                scanYomitanSubtitle(tappedText, offset, dictionaries)
             }
             if (requestId != lookupRequestId) return@launch
-            lookup = result
-            lookupMessage = if (result == null) "No dictionary match at that subtitle position." else null
-            if (result != null) {
-                val coordinates = subtitleCoordinates
-                if (result.startUtf16Offset in subtitleText.indices && result.endUtf16Offset in 1..subtitleText.length) {
-                    val first = layout.getBoundingBox(result.startUtf16Offset)
-                    val last = layout.getBoundingBox(result.endUtf16Offset - 1)
-                    val wordCenter = Offset((first.left + last.right) / 2f, (first.top + last.bottom) / 2f)
-                    lookupAnchor = coordinates?.localToRoot(wordCenter) ?: lookupAnchor
-                }
-                lookupMetadata = withContext(Dispatchers.IO) {
+            val resultMetadata = if (result == null) {
+                emptyList()
+            } else {
+                withContext(Dispatchers.IO) {
                     loadYomitanMetadata(result, dictionaries)
                 }
-                if (requestId != lookupRequestId) return@launch
             }
+            if (requestId != lookupRequestId) return@launch
+            lookupAnchor = tappedAnchor
+            if (result != null &&
+                result.startUtf16Offset in tappedText.indices &&
+                result.endUtf16Offset in 1..tappedText.length
+            ) {
+                val first = layout.getBoundingBox(result.startUtf16Offset)
+                val last = layout.getBoundingBox(result.endUtf16Offset - 1)
+                val wordCenter = Offset((first.left + last.right) / 2f, (first.top + last.bottom) / 2f)
+                lookupAnchor = tappedCoordinates?.localToRoot(wordCenter) ?: tappedAnchor
+            }
+            lookup = result
+            lookupSourceText = result?.let { tappedText }
+            lookupMessage = if (result == null) "No dictionary match at that subtitle position." else null
+            lookupMetadata = resultMetadata
         }
     }
 
@@ -1419,7 +1433,7 @@ fun PlayerScreen(
             onDismiss = ::dismissLookup,
             onPlayAudio = ::playPronunciation,
             onMine = { entry, lookupResult, pageMetadata ->
-                if (!miningInProgress) {
+                if (!miningInProgress && lookupSourceText != null) {
                     miningInProgress = true
                     val mineRequestId = lookupRequestId
                     val sentence = activeCue?.plainText ?: embeddedSubtitle

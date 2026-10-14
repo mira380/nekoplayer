@@ -11,19 +11,20 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -58,6 +59,7 @@ import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -627,83 +629,96 @@ fun LibraryScreen(
                         }
 
                         if (expanded) {
-                            LazyRow(
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 14.dp),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                items(
-                                    shelfEntries,
-                                    key = { it.key },
-                                    contentType = {
-                                        if (it is LibraryShelfItem.SourceTitle) "source_card" else "show_card"
-                                    },
-                                ) { shelfItem ->
-                                    when (shelfItem) {
-                                        is LibraryShelfItem.SourceTitle -> {
-                                            val entry = shelfItem.entry
-                                            SourceLibraryCard(
-                                                context = context,
-                                                client = aniList,
-                                                artworkCache = artworkCache,
-                                                entry = entry,
-                                                selectionMode = selectingSources,
-                                                selected = entry.key in selectedSourceKeys,
-                                                menuExpanded = expandedMenus["source:${entry.key}"] == true,
-                                                onOpen = { onOpenSourceEntry(entry) },
-                                                onMenu = { expandedMenus["source:${entry.key}"] = true },
-                                                onDismissMenu = { expandedMenus["source:${entry.key}"] = false },
-                                                onManageGroups = {
-                                                    openGroupAssignment(sourceLibraryGroupKey(entry), entry.title)
-                                                },
-                                                onToggleSelected = {
-                                                    selectionError = null
-                                                    selectedSourceKeys =
-                                                        if (entry.key in selectedSourceKeys) selectedSourceKeys - entry.key
-                                                        else selectedSourceKeys + entry.key
-                                                },
-                                                modifier = Modifier.width(124.dp),
-                                            )
-                                        }
+                            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                                val horizontalInset = 20.dp
+                                val cardSpacing = 8.dp
+                                val availableCardWidth = maxWidth - (horizontalInset * 2)
+                                val columnCount = ((availableCardWidth + cardSpacing) / (108.dp + cardSpacing))
+                                    .toInt()
+                                    .coerceIn(1, 5)
+                                val cardWidth =
+                                    (availableCardWidth - cardSpacing * (columnCount - 1)) / columnCount - 1.dp
 
-                                        is LibraryShelfItem.LocalShow -> {
-                                            val showName = shelfItem.showName
-                                            val showEpisodes = shelfItem.episodes
-                                            val customCover = covers.optString(showName).takeIf { it.isNotBlank() }
-                                            ShowCard(
-                                                context = context,
-                                                client = aniList,
-                                                artworkCache = artworkCache,
-                                                showName = showName,
-                                                episodeCount = showEpisodes.size,
-                                                episodeNames = showEpisodes.asSequence()
-                                                    .take(8)
-                                                    .map { it.displayName }
-                                                    .toList(),
-                                                coverSource = customCover,
-                                                menuExpanded = expandedMenus[showName] == true,
-                                                onToggle = { expandedShow = showName },
-                                                onMenu = { expandedMenus[showName] = true },
-                                                onDismissMenu = { expandedMenus[showName] = false },
-                                                onManageGroups = {
-                                                    openGroupAssignment(localLibraryGroupKey(showName), showName)
-                                                },
-                                                onSetUrl = {
-                                                    coverUrlTarget = showName
-                                                    coverUrl = customCover.orEmpty()
-                                                        .takeIf { it.startsWith("http") }.orEmpty()
-                                                },
-                                                onPickLocal = { onPickCover(showName) },
-                                                onRemoveCover = {
-                                                    covers = org.json.JSONObject(covers.toString())
-                                                        .apply { remove(showName) }
-                                                    database.writeSetting("library.customCovers", covers)
-                                                },
-                                                modifier = Modifier.width(124.dp),
-                                            )
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth().padding(
+                                        start = horizontalInset,
+                                        top = 8.dp,
+                                        end = horizontalInset,
+                                        bottom = 14.dp,
+                                    ),
+                                    maxItemsInEachRow = columnCount,
+                                    horizontalArrangement = Arrangement.spacedBy(cardSpacing),
+                                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                                ) {
+                                shelfEntries.forEach { shelfItem ->
+                                    key(shelfItem.key) {
+                                        when (shelfItem) {
+                                            is LibraryShelfItem.SourceTitle -> {
+                                                val entry = shelfItem.entry
+                                                SourceLibraryCard(
+                                                    context = context,
+                                                    client = aniList,
+                                                    artworkCache = artworkCache,
+                                                    entry = entry,
+                                                    selectionMode = selectingSources,
+                                                    selected = entry.key in selectedSourceKeys,
+                                                    menuExpanded = expandedMenus["source:${entry.key}"] == true,
+                                                    onOpen = { onOpenSourceEntry(entry) },
+                                                    onMenu = { expandedMenus["source:${entry.key}"] = true },
+                                                    onDismissMenu = { expandedMenus["source:${entry.key}"] = false },
+                                                    onManageGroups = {
+                                                        openGroupAssignment(sourceLibraryGroupKey(entry), entry.title)
+                                                    },
+                                                    onToggleSelected = {
+                                                        selectionError = null
+                                                        selectedSourceKeys =
+                                                            if (entry.key in selectedSourceKeys) selectedSourceKeys - entry.key
+                                                            else selectedSourceKeys + entry.key
+                                                    },
+                                                    modifier = Modifier.width(cardWidth),
+                                                )
+                                            }
+
+                                            is LibraryShelfItem.LocalShow -> {
+                                                val showName = shelfItem.showName
+                                                val showEpisodes = shelfItem.episodes
+                                                val customCover = covers.optString(showName).takeIf { it.isNotBlank() }
+                                                ShowCard(
+                                                    context = context,
+                                                    client = aniList,
+                                                    artworkCache = artworkCache,
+                                                    showName = showName,
+                                                    episodeCount = showEpisodes.size,
+                                                    episodeNames = showEpisodes.asSequence()
+                                                        .take(8)
+                                                        .map { it.displayName }
+                                                        .toList(),
+                                                    coverSource = customCover,
+                                                    menuExpanded = expandedMenus[showName] == true,
+                                                    onToggle = { expandedShow = showName },
+                                                    onMenu = { expandedMenus[showName] = true },
+                                                    onDismissMenu = { expandedMenus[showName] = false },
+                                                    onManageGroups = {
+                                                        openGroupAssignment(localLibraryGroupKey(showName), showName)
+                                                    },
+                                                    onSetUrl = {
+                                                        coverUrlTarget = showName
+                                                        coverUrl = customCover.orEmpty()
+                                                            .takeIf { it.startsWith("http") }.orEmpty()
+                                                    },
+                                                    onPickLocal = { onPickCover(showName) },
+                                                    onRemoveCover = {
+                                                        covers = org.json.JSONObject(covers.toString())
+                                                            .apply { remove(showName) }
+                                                        database.writeSetting("library.customCovers", covers)
+                                                    },
+                                                    modifier = Modifier.width(cardWidth),
+                                                )
+                                            }
                                         }
                                     }
                                 }
+                            }
                             }
                         }
                     }

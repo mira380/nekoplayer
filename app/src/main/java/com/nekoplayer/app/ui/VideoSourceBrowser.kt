@@ -675,7 +675,7 @@ internal fun VideoSourceBrowser(
 
         if (selectedAnime == null) {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 148.dp),
+                columns = GridCells.Adaptive(minSize = 108.dp),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
