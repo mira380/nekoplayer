@@ -12,6 +12,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.text.Normalizer
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -107,17 +108,25 @@ class PronunciationAudioClient(
     private fun loadSources(): List<Source> {
         val saved = database.readSetting("audio.pronunciationSources") as? JSONArray
             ?: return defaultSources
+        if (saved.length() == 0) return defaultSources
+
+        val defaultByKey = PronunciationAudioPresets.defaults.associateBy { it.id to it.kind }
         val sources = (0 until saved.length()).mapNotNull { index ->
             val item = saved.optJSONObject(index) ?: return@mapNotNull null
             val id = item.optString("id").trim()
             val kind = item.optString("kind").trim()
-            if (id.isEmpty() || kind.isEmpty()) null
-            else Source(
-                id = id,
-                kind = kind,
-                enabled = item.optBoolean("enabled", false),
-                urlTemplate = item.optString("urlTemplate").takeIf(String::isNotBlank),
-            )
+            if (id.isEmpty() || kind.isEmpty()) {
+                null
+            } else {
+                val preset = defaultByKey[id to kind]
+                Source(
+                    id = id,
+                    kind = kind,
+                    enabled = item.optBoolean("enabled", preset != null),
+                    urlTemplate = item.optString("urlTemplate").takeIf(String::isNotBlank)
+                        ?: preset?.url,
+                )
+            }
         }
         val legacyDefault = sources.size == 3 &&
             sources.all { it.enabled && it.urlTemplate.isNullOrBlank() } &&
@@ -126,7 +135,11 @@ class PronunciationAudioClient(
                 "language-pod-101" to "language-pod-101",
                 "jisho" to "jisho",
             )
-        return if (legacyDefault) defaultSources else sources
+        return when {
+            legacyDefault -> defaultSources
+            sources.isEmpty() -> defaultSources
+            else -> sources
+        }
     }
 
     private fun resolveSource(source: Source, term: String, reading: String, language: String): ByteArray? {
@@ -208,7 +221,16 @@ class PronunciationAudioClient(
 
     private fun resolveAjattIndex(source: Source, term: String, reading: String): ByteArray? {
         val index = loadAjattIndex(source) ?: return null
-        val keys = listOf(term, reading).filter(String::isNotBlank).distinct()
+        val normalizedReading = normalizeKana(reading)
+        val keys = buildList {
+            if (term.isNotBlank()) add(term)
+            if (reading.isNotBlank()) {
+                add(reading)
+                add(normalizedReading)
+                add(toKatakana(normalizedReading))
+            }
+        }.distinct()
+        val candidateFiles = linkedSetOf<String>()
         for (key in keys) {
             val files = index.headwords.optJSONArray(key) ?: continue
             for (position in 0 until files.length()) {
@@ -217,16 +239,26 @@ class PronunciationAudioClient(
                     is JSONObject -> value.optString("url").ifBlank { value.optString("file") }
                     else -> ""
                 }.trim()
-                if (fileName.isBlank()) continue
-                val fileInfo = index.files.optJSONObject(fileName)
-                val fileReading = fileInfo?.optString("kana_reading").orEmpty().trim()
-                if (reading.isNotBlank() && fileReading.isNotBlank() && fileReading != reading) continue
-                val path = fileName.trimStart('/').split('/').joinToString("/") {
-                    URLEncoder.encode(it, "UTF-8").replace("+", "%20")
-                }
-                val mediaUrl = resolveUrl(index.mediaDirectory, path) ?: continue
-                download(mediaUrl)?.let { return it }
+                if (fileName.isNotBlank()) candidateFiles += fileName
             }
+        }
+
+        val matchingReadings = candidateFiles.filter { fileName ->
+            val fileReading = index.files.optJSONObject(fileName)
+                ?.optString("kana_reading").orEmpty().trim()
+            normalizedReading.isBlank() || fileReading.isBlank() ||
+                normalizeKana(fileReading) == normalizedReading
+        }.toSet()
+        // AJT sources such as NHK use phonetic kana (for example, きょーく゚ー),
+        // which may differ from the dictionary's standard spelling. Keep headword
+        // matches as a fallback instead of rejecting every recording for that word.
+        val orderedFiles = candidateFiles.sortedBy { if (it in matchingReadings) 0 else 1 }
+        for (fileName in orderedFiles) {
+            val path = fileName.trimStart('/').split('/').joinToString("/") {
+                URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+            }
+            val mediaUrl = resolveUrl(index.mediaDirectory, path) ?: continue
+            download(mediaUrl)?.let { return it }
         }
         return null
     }
@@ -283,8 +315,13 @@ class PronunciationAudioClient(
         ZipInputStream(ByteArrayInputStream(archive)).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: return@use null
-                if (!entry.isDirectory && entry.name.substringAfterLast('/') == "index.json") {
-                    return@use readBounded(zip, MAX_INDEX_JSON_BYTES).takeIf { it.isNotEmpty() }
+                if (!entry.isDirectory && entry.name.endsWith(".json", ignoreCase = true)) {
+                    val bytes = readBounded(zip, MAX_INDEX_JSON_BYTES)
+                    val isIndex = runCatching {
+                        val root = JSONObject(bytes.toString(Charsets.UTF_8))
+                        root.optJSONObject("headwords") != null && root.optJSONObject("files") != null
+                    }.getOrDefault(false)
+                    if (isIndex) return@use bytes.takeIf { it.isNotEmpty() }
                 }
             }
             @Suppress("UNREACHABLE_CODE")
@@ -361,6 +398,37 @@ class PronunciationAudioClient(
         bytes.size >= 2 && (bytes[0].toInt() and 0xff) == 0xff && (bytes[1].toInt() and 0xe0) == 0xe0 -> "audio/mpeg"
         bytes.size >= 12 && bytes.copyOfRange(4, 8).contentEquals("ftyp".toByteArray()) -> "audio/mp4"
         else -> null
+    }
+
+    private fun normalizeKana(value: String): String {
+        val compatible = Normalizer.normalize(value.trim(), Normalizer.Form.NFKC)
+        return buildString {
+            var index = 0
+            while (index < compatible.length) {
+                val codePoint = compatible.codePointAt(index)
+                val hiraganaCodePoint = when (codePoint) {
+                    in 0x30A1..0x30F6 -> codePoint - 0x60
+                    in 0x30FD..0x30FE -> codePoint - 0x60
+                    else -> codePoint
+                }
+                appendCodePoint(hiraganaCodePoint)
+                index += Character.charCount(codePoint)
+            }
+        }
+    }
+
+    private fun toKatakana(value: String): String = buildString {
+        var index = 0
+        while (index < value.length) {
+            val codePoint = value.codePointAt(index)
+            val katakanaCodePoint = when (codePoint) {
+                in 0x3041..0x3096 -> codePoint + 0x60
+                in 0x309D..0x309E -> codePoint + 0x60
+                else -> codePoint
+            }
+            appendCodePoint(katakanaCodePoint)
+            index += Character.charCount(codePoint)
+        }
     }
 
     private fun isKana(value: String): Boolean = value.isNotEmpty() && value.all { c ->

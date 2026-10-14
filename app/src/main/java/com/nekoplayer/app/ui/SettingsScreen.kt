@@ -112,6 +112,7 @@ private val ankiSourceFields = listOf(
     AnkiSourceField("definition", "Definition"),
     AnkiSourceField("glossary", "Glossary"),
     AnkiSourceField("sentence", "Sentence"),
+    AnkiSourceField("sentenceFurigana", "Sentence Furigana"),
     AnkiSourceField("sentenceAudio", "Sentence Audio"),
     AnkiSourceField("screenshot", "Picture"),
     AnkiSourceField("frequency", "Frequency (first rank)"),
@@ -1182,12 +1183,26 @@ private data class AudioSourceSetting(val name: String, val kind: String, val en
 
 private fun loadAudioSources(database: AppDatabase): List<AudioSourceSetting> {
     val saved = database.readSetting("audio.pronunciationSources") as? org.json.JSONArray
-    saved ?: return defaultAudioSources()
+        ?: return defaultAudioSources()
+    if (saved.length() == 0) return defaultAudioSources()
+
+    val defaultByKey = PronunciationAudioPresets.defaults.associateBy { it.id to it.kind }
     val sources = (0 until saved.length()).mapNotNull { index ->
         val item = saved.optJSONObject(index) ?: return@mapNotNull null
-        val id = item.optString("id")
-        val kind = item.optString("kind")
-        if (id.isBlank() || kind.isBlank()) null else AudioSourceSetting(id, kind, item.optBoolean("enabled"), item.optString("urlTemplate").takeIf { it.isNotBlank() })
+        val id = item.optString("id").trim()
+        val kind = item.optString("kind").trim()
+        if (id.isBlank() || kind.isBlank()) {
+            null
+        } else {
+            val preset = defaultByKey[id to kind]
+            AudioSourceSetting(
+                name = id,
+                kind = kind,
+                enabled = item.optBoolean("enabled", preset != null),
+                urlTemplate = item.optString("urlTemplate").takeIf(String::isNotBlank)
+                    ?: preset?.url,
+            )
+        }
     }
     val legacyDefault = sources.size == 3 &&
         sources.all { it.enabled && it.urlTemplate.isNullOrBlank() } &&
@@ -1196,7 +1211,11 @@ private fun loadAudioSources(database: AppDatabase): List<AudioSourceSetting> {
             "language-pod-101" to "language-pod-101",
             "jisho" to "jisho",
         )
-    return if (legacyDefault) defaultAudioSources() else sources
+    return when {
+        legacyDefault -> defaultAudioSources()
+        sources.isEmpty() -> defaultAudioSources()
+        else -> sources
+    }
 }
 
 private fun formatBytes(bytes: Long): String = when {

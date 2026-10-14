@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -84,6 +85,9 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -329,6 +333,8 @@ fun PlayerScreen(
     var lookupMessage by remember { mutableStateOf<String?>(null) }
     var lookupMetadata by remember { mutableStateOf(emptyList<com.nekoplayer.app.data.DictionaryTermMeta>()) }
     var miningInProgress by remember(player) { mutableStateOf(false) }
+    var miningSuccessVersion by remember(uri) { mutableIntStateOf(0) }
+    var showMiningSuccess by remember(uri) { mutableStateOf(false) }
     var lookupKeptOpenAfterMining by remember(player) { mutableStateOf(false) }
     var resumePlaybackAfterLookupDismiss by remember(player) { mutableStateOf(false) }
     var lastSavedAt by remember(uri) { mutableLongStateOf(0L) }
@@ -525,6 +531,15 @@ fun PlayerScreen(
     LaunchedEffect(database) {
         dictionaryPopupExpansion = withContext(Dispatchers.IO) {
             DictionaryPopupExpansion.load(database)
+        }
+    }
+
+    LaunchedEffect(miningSuccessVersion) {
+        val successVersion = miningSuccessVersion
+        if (successVersion > 0) {
+            showMiningSuccess = true
+            delay(1_800.milliseconds)
+            if (miningSuccessVersion == successVersion) showMiningSuccess = false
         }
     }
 
@@ -1481,7 +1496,7 @@ fun PlayerScreen(
                                 entry,
                                 destinationField = "Pronunciation Audio",
                             )
-                            AnkiDroidMiningWorkflow(context, database, anki).mine(
+                            AnkiDroidMiningWorkflow(context, database, anki, dictionaries = dictionaries).mine(
                                 uri = uri,
                                 sentence = sentence,
                                 cueStartMs = cueStart,
@@ -1510,6 +1525,7 @@ fun PlayerScreen(
                                 preferPlaybackCapture = sourceCapture,
                             )
 
+                            miningSuccessVersion++
                             if (mineRequestId == lookupRequestId) {
                                 lookupMessage = null
                                 if (keepLookupOpenAfterMining) {
@@ -1550,6 +1566,48 @@ fun PlayerScreen(
             },
             onDismiss = { showJimakuDialog = false },
         )
+    }
+
+    if (showMiningSuccess) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            Surface(
+                modifier = Modifier
+                    .padding(top = 28.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.inverseSurface,
+                contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                shadowElevation = 6.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Material3Text(
+                            text = "✓",
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    Material3Text(
+                        text = "Card added to AnkiDroid",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            }
+        }
     }
 }
 

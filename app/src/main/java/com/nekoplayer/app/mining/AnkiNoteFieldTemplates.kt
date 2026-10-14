@@ -21,6 +21,7 @@ object AnkiNoteFieldTemplates {
         AnkiTemplateValue("pitchAccent", "Pitch accent graph", listOf("pitchaccentgraph", "pitchaccent", "pitchgraph", "accentpattern", "pitch")),
         AnkiTemplateValue("glossary", "Full glossary", listOf("glossary", "definitions", "dictionary", "dictionaryentry", "yomitan", "termhtml")),
         AnkiTemplateValue("sentence", "Sentence", listOf("sentence", "context", "example", "examplesentence", "japanesesentence")),
+        AnkiTemplateValue("sentenceFurigana", "Sentence Furigana", listOf("sentencefurigana", "sentencewithfurigana", "furiganasentence")),
         AnkiTemplateValue("sentenceAudio", "Sentence audio", listOf("sentenceaudio", "sentencesound", "audiosentence")),
         AnkiTemplateValue("audio", "Pronunciation audio", listOf("expressionaudio", "audio")),
         AnkiTemplateValue("pronunciationAudio", "Pronunciation audio (camelCase alias)", listOf("pronunciationaudio", "wordaudio", "vocabularyaudio", "sound")),
@@ -34,6 +35,7 @@ object AnkiNoteFieldTemplates {
 
     private val tokenPattern = Regex("\\{([^{}]+)\\}")
     private val exactLegacyFrequencyPattern = Regex("^\\s*\\{\\s*frequency\\s*\\}\\s*$", RegexOption.IGNORE_CASE)
+    private val exactSentencePattern = Regex("^\\s*\\{\\s*sentence\\s*\\}\\s*$", RegexOption.IGNORE_CASE)
 
     fun load(database: AppDatabase): Map<String, Map<String, String>> = decode(database.readSetting(SETTING_KEY))
 
@@ -86,11 +88,30 @@ object AnkiNoteFieldTemplates {
         val result = linkedMapOf<String, String>()
 
         fields.forEach { field ->
-            val current = saved[field]
             val migrated = legacyTemplates[field]
+            val normalizedField = normalize(field)
+            val isSentenceFuriganaField = normalizedField in setOf(
+                "sentencefurigana",
+                "sentencewithfurigana",
+                "furiganasentence",
+            )
+            val isPronunciationAudioField = normalizedField in setOf(
+                "expressionaudio",
+                "pronunciationaudio",
+                "wordaudio",
+                "vocabularyaudio",
+                "sound",
+            )
+            val current = saved[field]?.takeUnless {
+                it.isBlank() && (isSentenceFuriganaField || isPronunciationAudioField)
+            }
             val template = when {
-                current != null -> current
-                migrated != null -> migrated
+                current != null -> if (isSentenceFuriganaField && exactSentencePattern.matches(current)) {
+                    "{sentenceFurigana}"
+                } else current
+                migrated != null -> if (isSentenceFuriganaField && exactSentencePattern.matches(migrated)) {
+                    "{sentenceFurigana}"
+                } else migrated
                 else -> suggestedTemplate(field)
             }
             result[field] = if (exactLegacyFrequencyPattern.matches(template)) {
