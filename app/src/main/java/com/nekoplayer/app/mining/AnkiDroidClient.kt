@@ -295,10 +295,12 @@ class AnkiDroidClient(
     }
 
     private fun fieldMatchesTerm(field: String, term: String): Boolean {
-        // Compare the expression itself; ruby text is only a reading annotation.
-        val withoutRubyReading = field.replace(Regex("(?is)<rt\\b[^>]*>.*?</rt>"), "")
+        // Compare the expression itself; ruby and inline Anki readings are annotations.
+        val withoutReading = field
+            .replace(Regex("(?is)<rt\\b[^>]*>.*?</rt>"), "")
+            .replace(Regex("(\\p{IsHan})\\[(.+?)\\]"), "\$1")
         @Suppress("DEPRECATION")
-        val plainText = Html.fromHtml(withoutRubyReading).toString()
+        val plainText = Html.fromHtml(withoutReading).toString()
         return normalizeTerm(plainText) == term
     }
 

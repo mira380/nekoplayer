@@ -371,7 +371,7 @@ private fun DictionaryTermCard(
             val displayMetadata = metadata.filterNot { it.mode.equals("pitch", ignoreCase = true) }
             if (displayMetadata.isNotEmpty()) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(displayMetadata.take(5)) { item ->
+                    items(displayMetadata) { item ->
                         DictionaryBadge(dictionaryMetaLabel(item))
                     }
                 }

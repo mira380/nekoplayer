@@ -71,6 +71,7 @@ class DictionaryRepository(
         private val META_BANK = Regex("^term_meta_bank_\\d+\\.json$")
         private val KANJI_BANK = Regex("^kanji_bank_\\d+\\.json$")
         private val META_MODES = setOf("freq", "pitch", "ipa")
+        private val FREQUENCY_NUMBER_PREFIX = Regex("""^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))""")
     }
 
     private data class MetaRow(
@@ -488,8 +489,19 @@ class DictionaryRepository(
             val payload = if (objectData.containsKey("reading")) objectData["frequency"] else data
             val payloadMap = payload as? Map<*, *>
             val rawValue = if (payloadMap != null) payloadMap["value"] else payload
-            val value = when (rawValue) { is Number -> rawValue.toDouble(); is String -> rawValue.toDoubleOrNull(); else -> null } ?: return null
-            return MetaRow(expression, reading, normalizedMode, value, payloadMap?.get("displayValue") as? String, null)
+            val rawText = rawValue as? String
+            if (rawText != null && rawText.isBlank()) return null
+            val value = when (rawValue) {
+                is Number -> rawValue.toDouble()
+                is String -> rawValue.toDoubleOrNull()
+                    ?: FREQUENCY_NUMBER_PREFIX.find(rawValue)?.groupValues?.get(1)?.toDoubleOrNull()
+                    ?: Double.MAX_VALUE
+                else -> return null
+            }
+            val display = (payloadMap?.get("displayValue") as? String)?.takeIf(String::isNotBlank)
+                ?: (objectData["displayValue"] as? String)?.takeIf(String::isNotBlank)
+                ?: rawText?.takeIf { it.toDoubleOrNull() == null }
+            return MetaRow(expression, reading, normalizedMode, value, display, null)
         }
         val reading = objectData["reading"] as? String ?: ""
         val arrayName = if (normalizedMode == "pitch") "pitches" else "transcriptions"

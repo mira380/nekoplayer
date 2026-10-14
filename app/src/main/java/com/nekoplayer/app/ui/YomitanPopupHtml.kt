@@ -180,17 +180,21 @@ internal object YomitanPopupHtml {
         }
         return matching.groupBy { it.dictionaryName.trim().lowercase(Locale.ROOT) to it.mode.trim().lowercase(Locale.ROOT) }
             .values.mapNotNull { rows ->
-                val bestScore = rows.maxOfOrNull { metadataMatchScore(it, primary) } ?: return@mapNotNull null
-                val preferred = rows.filter { metadataMatchScore(it, primary) == bestScore }
-                val first = preferred.first()
+                val matchedRows = rows.filter { metadataMatchScore(it, primary) >= 0 }
+                if (matchedRows.isEmpty()) return@mapNotNull null
+                val bestScore = matchedRows.maxOf { metadataMatchScore(it, primary) }
+                val first = matchedRows.first()
                 val mode = first.mode.trim().lowercase(Locale.ROOT)
+                val preferred = if (mode == "freq") matchedRows else {
+                    matchedRows.filter { metadataMatchScore(it, primary) == bestScore }
+                }
                 val pitchAccents = if (mode == "pitch") {
                     preferred.flatMap { row ->
                         PitchAccentGraph.parse(row.detailJson, row.reading.ifBlank { primary?.reading.orEmpty() })
                     }.distinctBy { it.reading to (it.position to it.tags) }.take(6)
                 } else emptyList()
                 val values = when (mode) {
-                    "freq" -> preferred.asSequence().mapNotNull(::frequencyLabel).distinct().take(1).toList()
+                    "freq" -> preferred.asSequence().mapNotNull(::frequencyLabel).distinct().toList()
                     "pitch" -> emptyList()
                     "ipa" -> preferred.asSequence().mapNotNull { row ->
                         row.display?.takeIf(String::isNotBlank) ?: row.detailJson?.takeIf(String::isNotBlank)
@@ -211,10 +215,9 @@ internal object YomitanPopupHtml {
         return when {
             row.expression == primary.expression && row.reading == primary.reading -> 5
             row.expression == primary.expression && row.reading.isBlank() -> 4
-            row.reading.isNotBlank() && row.reading == primary.reading -> 3
-            row.expression == primary.expression -> 2
-            row.expression == primary.reading || row.reading == primary.expression -> 1
-            else -> 0
+            row.expression == primary.reading && row.reading == primary.reading -> 3
+            row.expression == primary.reading && row.reading.isBlank() -> 2
+            else -> -1
         }
     }
 
@@ -228,14 +231,14 @@ internal object YomitanPopupHtml {
         language: String,
     ) {
         if (metadata.isEmpty()) return
-        val badges = metadata.filter { it.mode != "pitch" }.take(18)
+        val badges = metadata.filter { it.mode != "pitch" }
         if (badges.isNotEmpty()) out.append("<div class=\"metadata\">")
         badges.forEach { row ->
             when (row.mode) {
                 "freq" -> {
                     out.append("<span class=\"badge frequency\"><b>")
                         .append(escape(row.dictionaryName)).append("</b><span>")
-                        .append(escape(row.values.first())).append("</span></span>")
+                        .append(escape(row.values.joinToString(" · "))).append("</span></span>")
                 }
                 "ipa" -> {
                     val value = row.values.joinToString(" · ")
