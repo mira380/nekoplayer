@@ -10,6 +10,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.PopupWindow
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -174,6 +175,9 @@ internal fun YomitanLookupPopup(
         if (linkedPages.isNotEmpty()) linkedPages = linkedPages.dropLast(1)
         else showFullPage = false
     }
+    BackHandler(enabled = !showFullPage && (result != null || message != null)) {
+        if (linkedPages.isNotEmpty()) goBack() else onDismiss()
+    }
     val density = LocalDensity.current.density
     val positionProvider = remember(anchorInPlayer, density) {
         object : PopupPositionProvider {
@@ -237,9 +241,9 @@ internal fun YomitanLookupPopup(
                 popupPositionProvider = positionProvider,
                 onDismissRequest = onDismiss,
                 properties = PopupProperties(
-                    focusable = true,
-                    dismissOnBackPress = true,
-                    dismissOnClickOutside = true,
+                    focusable = false,
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false,
                     clippingEnabled = true,
                 ),
             ) {
@@ -382,9 +386,9 @@ private fun AnchoredYomitanPopup(
         onMine = onMine,
     )
     val popupWindow = remember(webView) {
-        PopupWindow(webView, popupWidthPx.coerceAtLeast(1), popupHeightPx.coerceAtLeast(1), true).apply {
+        PopupWindow(webView, popupWidthPx.coerceAtLeast(1), popupHeightPx.coerceAtLeast(1), false).apply {
             isClippingEnabled = true
-            isOutsideTouchable = true
+            isOutsideTouchable = false
             setBackgroundDrawable(android.graphics.Color.TRANSPARENT.toDrawable())
             animationStyle = 0
         }
