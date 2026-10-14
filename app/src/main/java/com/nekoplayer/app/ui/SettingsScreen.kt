@@ -114,7 +114,9 @@ private val ankiSourceFields = listOf(
     AnkiSourceField("sentence", "Sentence"),
     AnkiSourceField("sentenceAudio", "Sentence Audio"),
     AnkiSourceField("screenshot", "Picture"),
-    AnkiSourceField("frequency", "Frequency"),
+    AnkiSourceField("frequency", "Frequency (first rank)"),
+    AnkiSourceField("frequencies", "Frequencies (all dictionaries)"),
+    AnkiSourceField("frequencySort", "Frequency sort (harmonic rank)"),
     AnkiSourceField("pitchAccent", "Pitch Accent"),
 )
 

@@ -6,8 +6,10 @@ import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.data.DictionaryEntry
 import com.nekoplayer.app.data.DictionaryTermMeta
 import com.nekoplayer.app.ui.PitchAccentGraph
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.floor
 
 class AnkiDroidMiningWorkflow(
     private val context: Context,
@@ -76,21 +78,29 @@ class AnkiDroidMiningWorkflow(
         val glossaryData = AnkiGlossaryHtml.buildFields(orderedEntries, mainEntry, separateGlossary)
         val allGlossary = glossaryData.glossary ?: glossaryData.mainDefinition
         val singleGlossary = AnkiGlossaryHtml.renderMainDefinition(mainEntry)
-        val frequency = metadata.firstOrNull {
-            it.mode == "freq" && (it.expression == mainEntry.expression || it.reading == mainEntry.reading)
-        }?.display.orEmpty()
+        val matchingFrequencyRows = matchingFrequencyRows(metadata, mainEntry)
+        val frequency = matchingFrequencyRows.asSequence()
+            .flatMap { it.rows.asSequence() }
+            .mapNotNull(::frequencyValue)
+            .firstOrNull()
+            .orEmpty()
+        val frequencies = renderFrequenciesField(matchingFrequencyRows)
+        val frequencySort = frequencySortValue(matchingFrequencyRows)
+        val expressionWithFurigana = furiganaPlain(expression, mainEntry.reading)
         val templateValues = buildMap {
             putAll(
                 mapOf(
                     "expression" to expression,
                     "reading" to mainEntry.reading.trim(),
-                    "furiganaPlain" to furiganaPlain(expression, mainEntry.reading),
+                    "furiganaPlain" to expressionWithFurigana,
                     "definition" to if (separateGlossary) glossaryData.mainDefinition else allGlossary,
                     "singleGlossary" to singleGlossary,
                     "pitchAccent" to PitchAccentGraph.renderAnkiField(metadata, expression, mainEntry.reading),
                     "glossary" to if (separateGlossary || definitionFields.isEmpty()) allGlossary else "",
                     "sentence" to boldMinedWord(cleanSentence, expression, surfaceText),
                     "frequency" to frequency,
+                    "frequencies" to frequencies,
+                    "frequencySort" to frequencySort,
                     "selectionText" to surfaceText,
                     "sentenceAudio" to "",
                     "pronunciationAudio" to "",
@@ -190,6 +200,71 @@ class AnkiDroidMiningWorkflow(
     }
 }
 
+
+private data class MatchingFrequencyRows(
+    val dictionaryName: String,
+    val rows: List<DictionaryTermMeta>,
+)
+
+private fun matchingFrequencyRows(
+    metadata: List<DictionaryTermMeta>,
+    mainEntry: DictionaryEntry,
+): List<MatchingFrequencyRows> {
+    val expression = mainEntry.expression.trim()
+    val reading = mainEntry.reading.trim()
+    val rowsByDictionary = metadata.asSequence()
+        .filter { it.mode.trim().equals("freq", ignoreCase = true) }
+        .mapNotNull { row ->
+            if (frequencyMatchScore(row, expression, reading) < 0 || row.dictionaryName.isBlank()) null
+            else row
+        }
+        .groupBy { it.dictionaryName.trim().lowercase(Locale.ROOT) }
+
+    return rowsByDictionary.values.map { rows ->
+        MatchingFrequencyRows(
+            dictionaryName = rows.first().dictionaryName.trim(),
+            rows = rows,
+        )
+    }
+}
+
+private fun renderFrequenciesField(groups: List<MatchingFrequencyRows>): String {
+    val items = groups.flatMap { group ->
+        group.rows.mapNotNull { row ->
+            frequencyValue(row)?.let { value ->
+                "<li><b>${escapeHtml(group.dictionaryName)}</b>: ${escapeHtml(value)}</li>"
+            }
+        }.distinct()
+    }
+    return if (items.isEmpty()) "" else items.joinToString(separator = "", prefix = "<ul>", postfix = "</ul>")
+}
+
+private fun frequencySortValue(groups: List<MatchingFrequencyRows>): String {
+    val ranks = groups.mapNotNull { group ->
+        group.rows.firstNotNullOfOrNull { row ->
+            row.sortValue.takeIf { it.isFinite() && it > 0.0 && it < Double.MAX_VALUE }
+        }
+    }
+    if (ranks.isEmpty()) return "9999999"
+    val harmonicMean = ranks.size / ranks.sumOf { 1.0 / it }
+    return floor(harmonicMean).toLong().toString()
+}
+
+private fun frequencyValue(row: DictionaryTermMeta): String? =
+    row.display?.trim()?.takeIf(String::isNotEmpty)
+        ?: row.sortValue.toString().removeSuffix(".0").takeIf(String::isNotEmpty)
+
+private fun frequencyMatchScore(row: DictionaryTermMeta, expression: String, reading: String): Int {
+    val rowExpression = row.expression.trim()
+    val rowReading = row.reading.trim()
+    return when {
+        rowExpression == expression && rowReading == reading -> 5
+        rowExpression == expression && rowReading.isEmpty() -> 4
+        rowExpression == reading && rowReading == reading -> 3
+        rowExpression == reading && rowReading.isEmpty() -> 2
+        else -> -1
+    }
+}
 
 private fun boldMinedWord(sentence: String, expression: String, surface: String): String {
     if (sentence.isEmpty()) return sentence

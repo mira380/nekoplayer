@@ -25,12 +25,15 @@ object AnkiNoteFieldTemplates {
         AnkiTemplateValue("audio", "Pronunciation audio", listOf("expressionaudio", "audio")),
         AnkiTemplateValue("pronunciationAudio", "Pronunciation audio (camelCase alias)", listOf("pronunciationaudio", "wordaudio", "vocabularyaudio", "sound")),
         AnkiTemplateValue("screenshot", "Screenshot", listOf("definitionpicture", "screenshot", "image", "picture", "capture")),
-        AnkiTemplateValue("frequency", "Frequency", listOf("frequency", "freq", "rank", "wordfrequency")),
+        AnkiTemplateValue("frequencies", "All frequency values", listOf("frequency", "frequencies", "allfrequencies")),
+        AnkiTemplateValue("frequency", "First frequency rank", listOf("freq", "rank", "wordfrequency")),
+        AnkiTemplateValue("frequencySort", "Frequency sort / harmonic rank", listOf("freqsort", "frequencysort")),
         AnkiTemplateValue("popup-selection-text", "Selected subtitle text", listOf("selectiontext", "selectedtext", "popupselectiontext")),
         AnkiTemplateValue("selectionText", "Selected subtitle text (camelCase alias)", emptyList()),
     )
 
     private val tokenPattern = Regex("\\{([^{}]+)\\}")
+    private val exactLegacyFrequencyPattern = Regex("^\\s*\\{\\s*frequency\\s*\\}\\s*$", RegexOption.IGNORE_CASE)
 
     fun load(database: AppDatabase): Map<String, Map<String, String>> = decode(database.readSetting(SETTING_KEY))
 
@@ -90,7 +93,15 @@ object AnkiNoteFieldTemplates {
                 migrated != null -> migrated
                 else -> suggestedTemplate(field)
             }
-            result[field] = template
+            result[field] = if (exactLegacyFrequencyPattern.matches(template)) {
+                when (normalize(field)) {
+                    "freqsort" -> "{frequencySort}"
+                    "frequency" -> "{frequencies}"
+                    else -> template
+                }
+            } else {
+                template
+            }
         }
 
         // Keep a manually assigned template even if Anki temporarily hides that field.

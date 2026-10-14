@@ -77,8 +77,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -318,6 +320,7 @@ fun PlayerScreen(
     var seekDrag by remember(uri) { mutableFloatStateOf(-1f) }
     var subtitleLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var subtitleCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var playerRootCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var lookupAnchor by remember { mutableStateOf(Offset.Zero) }
     var lookup by remember { mutableStateOf<SubtitleScanResult?>(null) }
     var lookupSourceText by remember { mutableStateOf<String?>(null) }
@@ -846,7 +849,37 @@ fun PlayerScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { showControls = !showControls },
+            .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { showControls = !showControls }
+            .pointerInput(lookup != null || lookupMessage != null, playerRootCoordinates, subtitleCoordinates) {
+                if (lookup != null || lookupMessage != null) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val down = event.changes.firstOrNull { it.pressed && !it.previousPressed }
+                                ?: continue
+                            var movedBeyondSlop = false
+                            while (true) {
+                                val change = awaitPointerEvent(PointerEventPass.Initial)
+                                    .changes.firstOrNull { it.id == down.id }
+                                    ?: break
+                                if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                                    movedBeyondSlop = true
+                                }
+                                if (!change.pressed) {
+                                    if (!movedBeyondSlop) {
+                                        val rootPosition = playerRootCoordinates?.localToRoot(change.position)
+                                        val tappedSubtitle = rootPosition != null &&
+                                            subtitleCoordinates?.boundsInRoot()?.contains(rootPosition) == true
+                                        if (!tappedSubtitle) dismissLookup()
+                                    }
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .onGloballyPositioned { playerRootCoordinates = it },
     ) {
         val pictureHeight = minOf(maxHeight, maxWidth / videoAspect.coerceAtLeast(0.1f))
         val pictureBottomInset = (maxHeight - pictureHeight) / 2
