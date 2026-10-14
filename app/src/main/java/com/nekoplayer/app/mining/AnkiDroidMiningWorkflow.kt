@@ -374,18 +374,35 @@ private fun sentenceFurigana(
 }
 
 private fun isJapaneseWordCodePoint(codePoint: Int): Boolean =
-    when (Character.UnicodeScript.of(codePoint)) {
-        Character.UnicodeScript.HAN,
-        Character.UnicodeScript.HIRAGANA,
-        Character.UnicodeScript.KATAKANA -> true
-        else -> codePoint == 0x30FC
-    }
+    isHanCodePoint(codePoint) || isKanaCodePoint(codePoint)
+
+private fun isHanCodePoint(codePoint: Int): Boolean =
+    codePoint in 0x3400..0x4DBF ||
+        codePoint in 0x4E00..0x9FFF ||
+        codePoint in 0xF900..0xFAFF ||
+        codePoint in 0x20000..0x2A6DF ||
+        codePoint in 0x2A700..0x2B73F ||
+        codePoint in 0x2B740..0x2B81F ||
+        codePoint in 0x2B820..0x2CEAF ||
+        codePoint in 0x2CEB0..0x2EBEF ||
+        codePoint in 0x2EBF0..0x2EE5F ||
+        codePoint in 0x2F800..0x2FA1F ||
+        codePoint in 0x30000..0x323AF
+
+private fun isKanaCodePoint(codePoint: Int): Boolean =
+    codePoint in 0x3041..0x3096 ||
+        codePoint in 0x309D..0x309F ||
+        codePoint in 0x30A1..0x30FA ||
+        codePoint == 0x30FC ||
+        codePoint in 0x30FD..0x30FF ||
+        codePoint in 0x31F0..0x31FF ||
+        codePoint in 0xFF66..0xFF9D
 
 private fun containsKanji(value: String): Boolean {
     var index = 0
     while (index < value.length) {
         val codePoint = value.codePointAt(index)
-        if (Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN) return true
+        if (isHanCodePoint(codePoint)) return true
         index += Character.charCount(codePoint)
     }
     return false
@@ -550,10 +567,10 @@ private fun japaneseTextRuns(value: String): List<JapaneseTextRun> {
     var index = 0
     while (index < value.length) {
         val codePoint = value.codePointAt(index)
-        val kind = when (Character.UnicodeScript.of(codePoint)) {
-            Character.UnicodeScript.HAN -> JapaneseTextKind.KANJI
-            Character.UnicodeScript.HIRAGANA, Character.UnicodeScript.KATAKANA -> JapaneseTextKind.KANA
-            else -> if (codePoint == 0x30FC) JapaneseTextKind.KANA else JapaneseTextKind.OTHER
+        val kind = when {
+            isHanCodePoint(codePoint) -> JapaneseTextKind.KANJI
+            isKanaCodePoint(codePoint) -> JapaneseTextKind.KANA
+            else -> JapaneseTextKind.OTHER
         }
         if (currentKind != kind) {
             if (currentKind != null) result += JapaneseTextRun(value.substring(runStart, index), currentKind)
