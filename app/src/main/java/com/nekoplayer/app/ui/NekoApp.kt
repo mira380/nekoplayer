@@ -404,6 +404,7 @@ fun NekoApp(
                             ExtensionsScreen(
                                 manager = extensionManager,
                                 database = database,
+                                aniList = aniList,
                                 sourceEntryToOpen = pendingSourceEntry,
                                 onSourceEntryOpened = { pendingSourceEntry = null },
                                 onReturnToLibrary = {

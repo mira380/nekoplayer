@@ -5,7 +5,9 @@ import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.JimakuEntry
 import com.nekoplayer.app.library.JimakuSubtitleClient
 import com.nekoplayer.app.library.JimakuFile
-import com.nekoplayer.app.library.parseJimakuEpisodeNumber
+import com.nekoplayer.app.library.isUsableJimakuSubtitleFile
+import com.nekoplayer.app.library.parseJimakuSingleEpisodeNumber
+import com.nekoplayer.app.library.rankJimakuEntriesByTitle
 import com.nekoplayer.app.media.SubtitleParser
 import com.nekoplayer.app.media.SubtitleTrack
 import com.nekoplayer.app.media.SubtitleTrackSource
@@ -23,7 +25,7 @@ class AutomaticJimakuSubtitleStore(
     private val aniListClient: AniListClient,
     private val jimakuClient: JimakuSubtitleClient,
 ) {
-    private val root = File(context.filesDir, "auto-jimaku-subtitles")
+    private val root = File(context.filesDir, "auto-jimaku-subtitles-v2")
 
     suspend fun loadOrFetch(
         identity: String,
@@ -158,7 +160,7 @@ class AutomaticJimakuSubtitleStore(
     }
 }
 
-// Finds the best matching Jimaku subtitle for an episode.
+// Finds a subtitle only when the anime title and episode both have a strong match.
 suspend fun findAutomaticJimakuSubtitle(
     showName: String,
     episodeFileName: String,
@@ -172,99 +174,116 @@ suspend fun findAutomaticJimakuSubtitle(
         .asSequence()
         .map(String::trim)
         .filter(String::isNotBlank)
-        .distinctBy { normalizeTitle(it) }
+        .distinctBy(::normalizeTitle)
         .toList()
     if (showNames.isEmpty() || apiKey.isBlank()) return@withContext null
 
-    val episode = episodeNumber?.takeIf { (it >= 1) && (it <= 300) }
-        ?: parseJimakuEpisodeNumber(episodeFileName)
+    val episode = episodeNumber?.takeIf { it in 1..300 }
+        ?: parseJimakuSingleEpisodeNumber(episodeFileName)
         ?: return@withContext null
 
     try {
-        val candidates = linkedMapOf<Int, CandidateWithScore>()
-        for (title in showNames) {
-            val matches = try {
-                aniListClient.searchAnimeCandidates(
-                    title,
-                    listOf(episodeFileName),
-                    minimumMatchScore = MINIMUM_ANI_LIST_SCORE,
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                emptyList()
-            }
-            for ((id, title, candidateScore) in matches) {
-                val score = maxOf(candidateScore, showNames.maxOf { titleMatchScore(it, title) })
-                val current = candidates[id]
-                if ((current == null) || (score > current.score)) {
-                    candidates[id] = CandidateWithScore(id, title, score)
+        val matchedEntries = linkedMapOf<Int, ScoredJimakuEntry>()
+        val listedFiles = mutableMapOf<Int, List<JimakuFile>>()
+
+        fun addMatches(
+            entries: List<JimakuEntry>,
+            referenceTitles: List<String>,
+            linkedAniListId: Int? = null,
+        ) {
+            val ranked = rankJimakuEntriesByTitle(referenceTitles, entries)
+                .map { match ->
+                    if (linkedAniListId != null && match.entry.anilistId == linkedAniListId) {
+                        match.copy(score = 1.0)
+                    } else {
+                        match
+                    }
+                }
+                .filter { it.score >= MINIMUM_JIMAKU_ENTRY_SCORE }
+                .sortedByDescending { it.score }
+                .take(MAX_ENTRIES_PER_QUERY)
+            for (match in ranked) {
+                val previous = matchedEntries[match.entry.id]
+                if (previous == null || match.score > previous.score) {
+                    matchedEntries[match.entry.id] = ScoredJimakuEntry(match.entry, match.score)
                 }
             }
         }
 
-        for ((candidateId, candidateTitle, candidateScore) in candidates.values.asSequence()
-            .sortedByDescending(CandidateWithScore::score)
-            .take(MAX_ANI_LIST_CANDIDATES)
-        ) {
-            if (candidateScore < MINIMUM_ANI_LIST_SCORE) continue
-            val entries = try {
-                jimakuClient.searchEntries(apiKey, candidateId)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                continue
-            }
-            val referenceTitles = showNames + candidateTitle
-            val scoredEntries = entries
-                .map { entry -> entry to jimakuEntryTitleScore(referenceTitles, entry) }
-            val rankedEntries = scoredEntries.asSequence()
-                .filter { (_, score) -> score >= MINIMUM_JIMAKU_ENTRY_SCORE }
-                .sortedByDescending { (_, score) -> score }
-                .take(MAX_JIMAKU_ENTRY_CANDIDATES)
-                .toList()
-                .ifEmpty {
-                    if ((entries.size == 1) && (candidateScore >= STRONG_ANI_LIST_SCORE)) {
-                        scoredEntries
-                    } else {
-                        emptyList()
-                    }
-                }
-
-            val matchingFiles = mutableListOf<RankedJimakuFile>()
-            for ((entryRank, rankedEntry) in rankedEntries.withIndex()) {
-                val (entry, _) = rankedEntry
-                val files = try {
-                    jimakuClient.listFiles(apiKey, entry.id)
+        suspend fun tryDownloadBestMatch(): File? {
+            val availableEntries = mutableListOf<Pair<ScoredJimakuEntry, List<JimakuFile>>>()
+            for (scoredEntry in matchedEntries.values
+                .sortedByDescending(ScoredJimakuEntry::score)
+                .take(MAX_ENTRIES_TO_CHECK)
+            ) {
+                val files = listedFiles[scoredEntry.entry.id] ?: try {
+                    jimakuClient.listFiles(apiKey, scoredEntry.entry.id)
+                        .also { listedFiles[scoredEntry.entry.id] = it }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
                     continue
                 }
-                files.asSequence()
-                    .filter { isMatchingEpisodeFile(it, episode) }
-                    .forEach { file -> matchingFiles += RankedJimakuFile(file, entry.id, entryRank) }
+                val episodeFiles = files.filter { isMatchingEpisodeFile(it, episode) }
+                if (episodeFiles.isNotEmpty()) availableEntries += scoredEntry to episodeFiles
             }
-            val preference = Comparator<RankedJimakuFile> { first, second ->
-                val resolutionOrder = resolutionRank(first.file).compareTo(resolutionRank(second.file))
-                if (resolutionOrder != 0) {
-                    resolutionOrder
-                } else {
-                    val entryOrder = first.entryRank.compareTo(second.entryRank)
-                    if (entryOrder != 0) {
-                        entryOrder
-                    } else {
-                        val formatOrder = formatRank(second.file).compareTo(formatRank(first.file))
-                        if (formatOrder != 0) formatOrder
-                        else first.file.name.compareTo(second.file.name, ignoreCase = true)
-                    }
-                }
-            }
-            val selected = matchingFiles.minWithOrNull(preference) ?: continue
 
-            return@withContext jimakuClient.downloadToCache(selected.file, selected.entryId)
+            val best = availableEntries.firstOrNull() ?: return null
+            if (best.first.score < MINIMUM_JIMAKU_ENTRY_SCORE) return null
+            val runnerUp = availableEntries.getOrNull(1)
+            if (runnerUp != null && best.first.score - runnerUp.first.score < MINIMUM_MATCH_SCORE_GAP) {
+                return null
+            }
+
+            val preferredFile = best.second.minWithOrNull(JIMAKU_FILE_PREFERENCE_ORDER) ?: return null
+            return jimakuClient.downloadToCache(preferredFile, best.first.entry.id)
         }
-        null
+
+        for (title in showNames) {
+            val entries = try {
+                jimakuClient.searchEntriesByTitle(apiKey, title)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                emptyList()
+            }
+            addMatches(entries, showNames)
+        }
+
+        tryDownloadBestMatch()?.let { return@withContext it }
+
+        val animeCandidates = try {
+            aniListClient.searchAnimeCandidates(
+                showNames.first(),
+                listOf(episodeFileName),
+                minimumMatchScore = MINIMUM_ANI_LIST_SCORE,
+                alternateTitles = showNames.drop(1),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        for (candidate in animeCandidates.asSequence()
+            .filter { it.score >= MINIMUM_ANI_LIST_SCORE }
+            .take(MAX_ANI_LIST_CANDIDATES)
+        ) {
+            val entries = try {
+                jimakuClient.searchEntries(apiKey, candidate.id)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                continue
+            }
+            addMatches(
+                entries = entries,
+                referenceTitles = showNames + candidate.title + candidate.aliases,
+                linkedAniListId = candidate.id,
+            )
+        }
+
+        tryDownloadBestMatch()
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {
@@ -272,68 +291,24 @@ suspend fun findAutomaticJimakuSubtitle(
     }
 }
 
-private data class CandidateWithScore(
-    val id: Int,
-    val title: String,
+private data class ScoredJimakuEntry(
+    val entry: JimakuEntry,
     val score: Double,
 )
-
-private data class RankedJimakuFile(
-    val file: JimakuFile,
-    val entryId: Int,
-    val entryRank: Int,
-)
-
-private fun jimakuEntryTitleScore(
-    referenceTitles: List<String>,
-    entry: JimakuEntry,
-): Double = referenceTitles.asSequence()
-    .filter(String::isNotBlank)
-    .flatMap { reference ->
-        listOf(entry.englishName, entry.japaneseName).asSequence().map { title -> titleMatchScore(reference, title) }
-    }
-    .maxOrNull() ?: 0.0
-
-private fun titleMatchScore(left: String, right: String): Double {
-    val first = normalizeTitle(left)
-    val second = normalizeTitle(right)
-    if (first.isEmpty() || second.isEmpty()) return 0.0
-    if (first == second) return 1.0
-
-    val firstWords = first.split(' ').asSequence()
-        .filter { (it.length > 1) && (it !in COMMON_TITLE_WORDS) }
-        .toSet()
-    val secondWords = second.split(' ').asSequence()
-        .filter { (it.length > 1) && (it !in COMMON_TITLE_WORDS) }
-        .toSet()
-    val sharedWords = firstWords.intersect(secondWords).size
-    val wordScore = if (firstWords.isEmpty() || secondWords.isEmpty()) 0.0
-        else (2.0 * sharedWords) / (firstWords.size + secondWords.size)
-    val containsScore = if (first.contains(second) || second.contains(first)) {
-        minOf(first.length, second.length).toDouble() / maxOf(first.length, second.length)
-    } else {
-        0.0
-    }
-    return maxOf(wordScore, containsScore)
-}
 
 private fun normalizeTitle(title: String): String = title.lowercase(Locale.ROOT)
     .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
     .replace(Regex("\\s+"), " ")
     .trim()
 
-private fun isMatchingEpisodeFile(file: JimakuFile, episode: Int): Boolean {
-    val extension = file.name.substringAfterLast('.', "").lowercase(Locale.ROOT)
-    val validSize = file.size?.let { size ->
-        (size >= 1L) && (size <= SubtitleParser.MAX_FILE_BYTES.toLong())
-    } ?: true
-    return (extension in SubtitleParser.SUPPORTED_EXTENSIONS) &&
-        validSize &&
-        (parseJimakuEpisodeNumber(file.name) == episode)
-}
+private fun isMatchingEpisodeFile(file: JimakuFile, episode: Int): Boolean =
+    isUsableJimakuSubtitleFile(file) && parseJimakuSingleEpisodeNumber(file.name) == episode
 
-private val UNPREFERRED_SUBTITLE_RESOLUTION =
-    Regex("""1440\s*[x×]\s*1080""", RegexOption.IGNORE_CASE)
+private fun chsSubtitleRank(file: JimakuFile): Int =
+    if (file.name.contains("CHS", ignoreCase = true)) 1 else 0
+
+private fun preferredSourceRank(file: JimakuFile): Int =
+    if (PREFERRED_SUBTITLE_SOURCE_PATTERNS.any { it.containsMatchIn(file.name) }) 0 else 1
 
 private fun resolutionRank(file: JimakuFile): Int =
     if (UNPREFERRED_SUBTITLE_RESOLUTION.containsMatchIn(file.name)) 1 else 0
@@ -347,9 +322,30 @@ private fun formatRank(file: JimakuFile): Int =
         else -> 0
     }
 
-private val COMMON_TITLE_WORDS = setOf("a", "an", "and", "for", "of", "the", "to", "with")
-private const val MINIMUM_ANI_LIST_SCORE = 0.55
-private const val STRONG_ANI_LIST_SCORE = 0.72
-private const val MINIMUM_JIMAKU_ENTRY_SCORE = 0.35
+internal val JIMAKU_FILE_PRIORITY_ORDER: Comparator<JimakuFile> =
+    compareBy<JimakuFile>(::chsSubtitleRank)
+        .thenBy(::preferredSourceRank)
+        .thenBy(::resolutionRank)
+        .thenByDescending(::formatRank)
+
+internal val JIMAKU_FILE_PREFERENCE_ORDER: Comparator<JimakuFile> =
+    JIMAKU_FILE_PRIORITY_ORDER.thenBy { it.name.lowercase(Locale.ROOT) }
+
+private val PREFERRED_SUBTITLE_SOURCE_PATTERNS = listOf(
+    Regex("""(?i)NETFLIX"""),
+    Regex("""(?i)DMM[\s._-]*TV"""),
+    Regex("""(?i)ABEMA"""),
+    Regex("""(?i)U[\s._-]*NEXT"""),
+    Regex("""(?i)WEB[\s._-]*DL"""),
+    Regex("""(?i)WEB[\s._-]*RIP"""),
+)
+
+private val UNPREFERRED_SUBTITLE_RESOLUTION =
+    Regex("""1440\s*[x×]\s*1080""", RegexOption.IGNORE_CASE)
+
+private const val MINIMUM_ANI_LIST_SCORE = 0.72
+private const val MINIMUM_JIMAKU_ENTRY_SCORE = 0.82
+private const val MINIMUM_MATCH_SCORE_GAP = 0.10
 private const val MAX_ANI_LIST_CANDIDATES = 5
-private const val MAX_JIMAKU_ENTRY_CANDIDATES = 3
+private const val MAX_ENTRIES_PER_QUERY = 8
+private const val MAX_ENTRIES_TO_CHECK = 6

@@ -67,20 +67,38 @@ class ExtensionManager(context: Context, private val database: AppDatabase) {
         _loading.value = true
         _error.value = null
         try {
-            val loadResults = withContext(Dispatchers.IO) {
-                // Extension constructors resolve NetworkHelper, Application, and Json from Injekt.
-                // Register the host graph before any extension class is initialized.
-                network
-                ExtensionLoader.loadExtensions(appContext)
+            // Extension constructors resolve NetworkHelper, Application, and Json from Injekt.
+            // Register the host graph before any extension class is initialized.
+            withContext(Dispatchers.IO) { network }
+
+            val (loadResults, availableResults) = coroutineScope {
+                val loadResultsDeferred = async(Dispatchers.IO) {
+                    ExtensionLoader.loadExtensions(appContext)
+                }
+                val availableResultsDeferred = async {
+                    _repoUrls.value.map { url ->
+                        async { url to repoApi.fetchIndex(url) }
+                    }.awaitAll()
+                }
+
+                val loadResults = loadResultsDeferred.await()
+                val loaded = loadResults.filterIsInstance<LoadResult.Success>().map { it.extension }
+                _loadErrors.value = loadResults.filterIsInstance<LoadResult.Error>()
+                    .map { it.pkgName to it.reason }
+
+                // Publish local sources as soon as they are ready instead of waiting for remote indexes.
+                val cachedAvailableByPackage = _available.value.associateBy { it.pkgName }
+                _installed.value = loaded.map { installed ->
+                    val remote = cachedAvailableByPackage[installed.pkgName]
+                    installed.copy(
+                        hasUpdate = remote != null &&
+                            (remote.versionCode > installed.versionCode || remote.libVersion > installed.libVersion),
+                    )
+                }.sortedBy { it.name.lowercase() }
+
+                loadResults to availableResultsDeferred.await()
             }
             val loaded = loadResults.filterIsInstance<LoadResult.Success>().map { it.extension }
-            _loadErrors.value = loadResults.filterIsInstance<LoadResult.Error>()
-                .map { it.pkgName to it.reason }
-            val availableResults = coroutineScope {
-                _repoUrls.value.map { url ->
-                    async { url to repoApi.fetchIndex(url) }
-                }.awaitAll()
-            }
 
             val successes = availableResults.mapNotNull { (url, result) ->
                 result.getOrNull()?.map { it.copy(repoUrl = url) }

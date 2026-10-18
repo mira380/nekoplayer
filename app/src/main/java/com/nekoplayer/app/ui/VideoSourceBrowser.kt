@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -21,6 +22,9 @@ import okhttp3.Request
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +48,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -78,6 +83,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.extensions.ExtensionManager
+import com.nekoplayer.app.library.AniListAiringEpisode
+import com.nekoplayer.app.library.AniListClient
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.FetchType
@@ -137,6 +144,11 @@ private fun SEpisode.sortingNumber(): Float? {
         ?.takeIf { it.isFinite() && it >= 0f }
 }
 
+@android.annotation.SuppressLint("DirectDateInstantiation")
+private fun formatAiringDate(airingAtEpochSeconds: Long): String =
+    SimpleDateFormat("EEE, MMM d · h:mm a", Locale.getDefault())
+        .format(Date(airingAtEpochSeconds * 1_000L))
+
 private fun formatProgressTime(milliseconds: Long): String {
     val seconds = milliseconds.coerceAtLeast(0L) / 1_000L
     return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
@@ -154,6 +166,7 @@ private fun LinkageError.toExtensionRuntimeMessage(apiVersion: Double): String {
 internal fun VideoSourceBrowser(
     item: ExtensionManager.InstalledVideoSource,
     database: AppDatabase,
+    aniList: AniListClient,
     initialAnime: SAnime?,
     onBack: () -> Unit,
     onPlayVideo: (
@@ -172,6 +185,7 @@ internal fun VideoSourceBrowser(
 ) {
     val source = item.source
     val scope = rememberCoroutineScope()
+    val catalogueGridState = rememberLazyGridState()
     var query by remember(source.id) { mutableStateOf("") }
     var filterList by remember(source.id) { mutableStateOf(source.getFilterList()) }
     var showFilters by remember { mutableStateOf(value = false) }
@@ -195,6 +209,9 @@ internal fun VideoSourceBrowser(
         mutableStateOf<AppDatabase.SourceEpisodeProgress?>(null)
     }
     var details by remember(source.id) { mutableStateOf<SAnime?>(null) }
+    var nextAiringEpisode by remember(source.id) {
+        mutableStateOf<AniListAiringEpisode?>(null)
+    }
     var seasons by remember(source.id) { mutableStateOf<List<SAnime>>(emptyList()) }
     var episodes by remember(source.id) { mutableStateOf<List<SEpisode>>(emptyList()) }
     var episodeQuery by remember(source.id) { mutableStateOf("") }
@@ -222,6 +239,17 @@ internal fun VideoSourceBrowser(
                 compareBy<SEpisode> { it.sortingNumber() == null }
                     .thenByDescending { it.sortingNumber() ?: Float.MIN_VALUE },
             )
+        }
+    }
+
+    LaunchedEffect(aniList, details?.url, details?.title) {
+        val title = details?.title?.takeIf(String::isNotBlank)
+        nextAiringEpisode = if (title == null) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                aniList.findNextAiringEpisode(title, episodes.take(2).map(SEpisode::name))
+            }
         }
     }
 
@@ -676,6 +704,7 @@ internal fun VideoSourceBrowser(
         if (selectedAnime == null) {
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 108.dp),
+                state = catalogueGridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -876,11 +905,36 @@ internal fun VideoSourceBrowser(
                                 Modifier.fillMaxWidth().padding(top = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(
-                                    "Episodes",
-                                    modifier = Modifier.weight(1f),
-                                    style = MaterialTheme.typography.titleSmall,
-                                )
+                                Column(
+                                    Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        "Episodes",
+                                        style = MaterialTheme.typography.titleSmall,
+                                    )
+                                    nextAiringEpisode?.let { airing ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Schedule,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            Text(
+                                                "Next ep. ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                softWrap = false,
+                                            )
+                                        }
+                                    }
+                                }
                                 IconButton(
                                     enabled = episodes.isNotEmpty(),
                                     onClick = {

@@ -5,6 +5,7 @@ import androidx.core.net.toUri
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import com.nekoplayer.app.media.SubtitleParser
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -25,16 +26,42 @@ data class AnimeLibraryEpisode(
 )
 
 data class AniListMatch(val id: Int, val title: String)
-data class AniListCandidate(val id: Int, val title: String, val score: Double)
+data class AniListAiringEpisode(
+    val episode: Int,
+    val airingAtEpochSeconds: Long,
+)
+
+data class AniListAiringLookup(
+    val key: String,
+    val showName: String,
+    val episodeFileNames: List<String> = emptyList(),
+)
+
+data class AniListCandidate(
+    val id: Int,
+    val title: String,
+    val score: Double,
+    val aliases: List<String> = emptyList(),
+    val episodeCount: Int? = null,
+    val nextAiringEpisode: AniListAiringEpisode? = null,
+)
 
 data class JimakuEntry(
     val id: Int,
     val englishName: String,
     val japaneseName: String,
+    val name: String = "",
+    val anilistId: Int? = null,
 ) {
+    val titleNames: List<String>
+        get() = listOf(englishName, japaneseName, name)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+
     val displayName: String
         get() {
-            val english = englishName.trim()
+            val english = englishName.trim().ifBlank { name.trim() }
             val japanese = japaneseName.trim()
             return when {
                 english.isEmpty() -> japanese
@@ -45,6 +72,55 @@ data class JimakuEntry(
 }
 
 data class JimakuFile(val name: String, val url: String, val size: Long?)
+
+internal data class JimakuEntryTitleMatch(
+    val entry: JimakuEntry,
+    val score: Double,
+)
+
+internal fun rankJimakuEntriesByTitle(
+    referenceTitles: Iterable<String>,
+    entries: Iterable<JimakuEntry>,
+): List<JimakuEntryTitleMatch> {
+    val references = referenceTitles.map(String::trim).filter(String::isNotBlank)
+    return entries.map { entry ->
+        val score = references.asSequence()
+            .flatMap { reference ->
+                entry.titleNames.asSequence().map { title -> jimakuTitleSimilarity(reference, title) }
+            }
+            .maxOrNull() ?: 0.0
+        JimakuEntryTitleMatch(entry, score)
+    }.sortedWith(
+        compareByDescending<JimakuEntryTitleMatch>(JimakuEntryTitleMatch::score)
+            .thenBy { it.entry.displayName.lowercase(Locale.ROOT) },
+    )
+}
+
+private fun jimakuTitleSimilarity(left: String, right: String): Double {
+    val first = normalizeJimakuTitle(left)
+    val second = normalizeJimakuTitle(right)
+    if (first.isEmpty() || second.isEmpty()) return 0.0
+    if (first == second) return 1.0
+
+    val firstWords = first.split(' ').filter { it.length > 1 && it !in JIMAKU_COMMON_TITLE_WORDS }.toSet()
+    val secondWords = second.split(' ').filter { it.length > 1 && it !in JIMAKU_COMMON_TITLE_WORDS }.toSet()
+    val sharedWords = firstWords.intersect(secondWords).size
+    val wordScore = if (firstWords.isEmpty() || secondWords.isEmpty()) 0.0
+        else 2.0 * sharedWords / (firstWords.size + secondWords.size)
+    val containsScore = if (first.contains(second) || second.contains(first)) {
+        minOf(first.length, second.length).toDouble() / maxOf(first.length, second.length)
+    } else {
+        0.0
+    }
+    return maxOf(wordScore, containsScore)
+}
+
+private fun normalizeJimakuTitle(title: String): String = title.lowercase(Locale.ROOT)
+    .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+    .replace(Regex("\\s+"), " ")
+    .trim()
+
+private val JIMAKU_COMMON_TITLE_WORDS = setOf("a", "an", "and", "for", "of", "the", "to", "with")
 
 class LibraryNetworkException(
     message: String,
@@ -110,6 +186,7 @@ class AnimeLibraryScanner {
 class AniListClient(context: Context) {
     private val cacheRoot = File(context.cacheDir, "anilist-covers-v2")
     private val apiLock = Any()
+    private val airingScheduleCache = mutableMapOf<String, Pair<Long, AniListAiringEpisode?>>()
     @Volatile private var lastApiRequestAt = 0L
 
     @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
@@ -168,29 +245,208 @@ class AniListClient(context: Context) {
         showName: String,
         episodeFileNames: Iterable<String> = emptyList(),
         minimumMatchScore: Double = MINIMUM_MATCH_SCORE,
+        alternateTitles: Iterable<String> = emptyList(),
     ): List<AniListCandidate> {
-        val queries = searchQueries(showName, episodeFileNames)
+        val queries = searchQueries(showName, episodeFileNames, alternateTitles)
         if (queries.isEmpty()) return emptyList()
         val candidates = linkedMapOf<Int, AniListCandidate>()
         for (query in queries) {
             val media = try { lookupAnime(query) } catch (_: Exception) { continue }
-            for (index in 0 until media.length()) {
-                val item = media.optJSONObject(index) ?: continue
-                val id = item.optInt("id", -1)
-                val titles = item.optJSONObject("title") ?: continue
-                val names = listOf("english", "romaji", "native")
-                    .map { titles.optString(it) }
-                    .filter { it.isNotBlank() }
-                if (id <= 0 || names.isEmpty()) continue
-                val score = names.maxOf { aniListSearchTitleScore(query, it) }
-                if (score < minimumMatchScore.coerceIn(0.0, 1.0)) continue
-                val current = candidates[id]
-                if (current == null || score > current.score) {
-                    candidates[id] = AniListCandidate(id, names.first(), score)
+            parseAnimeCandidates(query, media, minimumMatchScore).forEach { candidate ->
+                mergeAnimeCandidate(candidates, candidate)
+            }
+            if (candidates.values.any {
+                    it.score >= STRONG_MATCH_SCORE && it.nextAiringEpisode != null
+                }
+            ) {
+                break
+            }
+        }
+        return candidates.values.sortedByDescending(AniListCandidate::score).take(MAX_CANDIDATES)
+    }
+
+    private fun parseAnimeCandidates(
+        search: String,
+        media: JSONArray,
+        minimumMatchScore: Double,
+    ): List<AniListCandidate> {
+        val candidates = linkedMapOf<Int, AniListCandidate>()
+        for (index in 0 until media.length()) {
+            val item = media.optJSONObject(index) ?: continue
+            val id = item.optInt("id", -1)
+            val titles = item.optJSONObject("title") ?: continue
+            val aliases = buildList {
+                addAll(
+                    listOf("english", "romaji", "native")
+                        .map { titles.optString(it) }
+                        .filter(String::isNotBlank),
+                )
+                val synonyms = item.optJSONArray("synonyms")
+                if (synonyms != null) {
+                    for (synonymIndex in 0 until synonyms.length()) {
+                        synonyms.optString(synonymIndex)
+                            .takeIf(String::isNotBlank)
+                            ?.let(::add)
+                    }
+                }
+            }.distinct()
+            if (id <= 0 || aliases.isEmpty()) continue
+            val score = aliases.maxOf { aniListSearchTitleScore(search, it) }
+            if (score < minimumMatchScore.coerceIn(0.0, 1.0)) continue
+            val nextAiringEpisode = item.optJSONObject("nextAiringEpisode")?.let { airing ->
+                val episode = airing.optInt("episode", -1)
+                val airingAt = airing.optLong("airingAt", 0L)
+                if (episode > 0 && airingAt > 0L) AniListAiringEpisode(episode, airingAt) else null
+            }
+            candidates[id] = AniListCandidate(
+                id = id,
+                title = aliases.first(),
+                score = score,
+                aliases = aliases,
+                episodeCount = item.optInt("episodes").takeIf { it > 0 },
+                nextAiringEpisode = nextAiringEpisode,
+            )
+        }
+        return candidates.values.sortedByDescending(AniListCandidate::score).take(MAX_CANDIDATES)
+    }
+
+    private fun mergeAnimeCandidate(
+        target: MutableMap<Int, AniListCandidate>,
+        incoming: AniListCandidate,
+    ) {
+        val current = target[incoming.id]
+        val aliases = (current?.aliases.orEmpty() + incoming.aliases).distinct()
+        target[incoming.id] = if (current == null || incoming.score > current.score) {
+            incoming.copy(
+                aliases = aliases,
+                nextAiringEpisode = incoming.nextAiringEpisode ?: current?.nextAiringEpisode,
+            )
+        } else {
+            current.copy(
+                aliases = aliases,
+                nextAiringEpisode = current.nextAiringEpisode ?: incoming.nextAiringEpisode,
+            )
+        }
+    }
+
+    @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
+    fun findNextAiringEpisode(
+        showName: String,
+        episodeFileNames: Iterable<String> = emptyList(),
+    ): AniListAiringEpisode? {
+        val normalizedShowName = normalize(showName)
+        if (normalizedShowName.isBlank()) return null
+        val searchFileNames = episodeFileNames
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .take(2)
+        val cacheKey = buildString {
+            append(normalizedShowName)
+            searchFileNames.forEach { append('|').append(normalize(it)) }
+        }
+        val now = System.currentTimeMillis()
+        val cached = synchronized(airingScheduleCache) { airingScheduleCache[cacheKey] }
+        val cachedEpisode = cached?.second
+        if (
+            cached != null &&
+            now - cached.first < AIRING_CACHE_LIFETIME_MS &&
+            (cachedEpisode == null || cachedEpisode.airingAtEpochSeconds * 1_000L > now)
+        ) {
+            return cachedEpisode
+        }
+
+        val result = searchAnimeCandidates(
+            showName = showName,
+            episodeFileNames = searchFileNames,
+            minimumMatchScore = STRONG_MATCH_SCORE,
+        ).firstOrNull()?.nextAiringEpisode
+        synchronized(airingScheduleCache) {
+            airingScheduleCache[cacheKey] = now to result
+        }
+        return result
+    }
+
+    @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
+    fun findNextAiringEpisodes(
+        lookups: Iterable<AniListAiringLookup>,
+    ): Map<String, AniListAiringEpisode> {
+        val now = System.currentTimeMillis()
+
+        data class PendingLookup(
+            val cacheKey: String,
+            val queries: List<String>,
+            val itemKeys: MutableList<String> = mutableListOf(),
+            val candidates: MutableMap<Int, AniListCandidate> = linkedMapOf(),
+        )
+
+        val results = linkedMapOf<String, AniListAiringEpisode>()
+        val pendingByCacheKey = linkedMapOf<String, PendingLookup>()
+        for (lookup in lookups) {
+            val normalizedShowName = normalize(lookup.showName)
+            if (lookup.key.isBlank() || normalizedShowName.isBlank()) continue
+            val episodeFileNames = lookup.episodeFileNames
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .take(2)
+            val cacheKey = buildString {
+                append(normalizedShowName)
+                episodeFileNames.forEach { append('|').append(normalize(it)) }
+            }
+            val cached = synchronized(airingScheduleCache) { airingScheduleCache[cacheKey] }
+            val cachedEpisode = cached?.second
+            if (
+                cached != null &&
+                now - cached.first < AIRING_CACHE_LIFETIME_MS &&
+                (cachedEpisode == null || cachedEpisode.airingAtEpochSeconds * 1_000L > now)
+            ) {
+                cachedEpisode?.let { results[lookup.key] = it }
+                continue
+            }
+
+            val queries = searchQueries(lookup.showName, episodeFileNames)
+            if (queries.isEmpty()) continue
+            val pending = pendingByCacheKey.getOrPut(cacheKey) {
+                PendingLookup(cacheKey = cacheKey, queries = queries)
+            }
+            pending.itemKeys += lookup.key
+        }
+        if (pendingByCacheKey.isEmpty()) return results
+
+        val queryTexts = linkedMapOf<String, String>()
+        val queryOwners = linkedMapOf<String, MutableSet<String>>()
+        pendingByCacheKey.values.forEach { pending ->
+            pending.queries.forEach { query ->
+                val normalizedQuery = normalize(query)
+                if (normalizedQuery !in queryTexts) queryTexts[normalizedQuery] = query
+                queryOwners.getOrPut(normalizedQuery) { linkedSetOf() } += pending.cacheKey
+            }
+        }
+
+        queryTexts.values.toList().chunked(MAX_AIRING_BATCH_QUERIES).forEach { batch ->
+            val mediaByQuery = lookupAnimeBatch(batch)
+            batch.forEach queryLoop@{ query ->
+                val normalizedQuery = normalize(query)
+                val media = mediaByQuery[normalizedQuery] ?: return@queryLoop
+                val matches = parseAnimeCandidates(query, media, STRONG_MATCH_SCORE)
+                queryOwners[normalizedQuery].orEmpty().forEach ownerLoop@{ cacheKey ->
+                    val pending = pendingByCacheKey[cacheKey] ?: return@ownerLoop
+                    matches.forEach { mergeAnimeCandidate(pending.candidates, it) }
                 }
             }
         }
-        return candidates.values.sortedByDescending { it.score }.take(MAX_CANDIDATES)
+
+        pendingByCacheKey.values.forEach { pending ->
+            val airingEpisode = pending.candidates.values
+                .maxByOrNull(AniListCandidate::score)
+                ?.nextAiringEpisode
+            synchronized(airingScheduleCache) {
+                airingScheduleCache[pending.cacheKey] = now to airingEpisode
+            }
+            airingEpisode?.let { episode ->
+                pending.itemKeys.forEach { key -> results[key] = episode }
+            }
+        }
+        return results
     }
 
     private fun contextCacheParent(): File = cacheRoot.parentFile ?: cacheRoot
@@ -223,12 +479,44 @@ class AniListClient(context: Context) {
     }
 
     private fun lookupAnime(search: String): JSONArray = apiRequest {
-        val query = "query LibraryShowId(${'$'}search: String!) { Page(page: 1, perPage: 10) { media(search: ${'$'}search, type: ANIME, isAdult: false, sort: SEARCH_MATCH) { id title { romaji english native } } } }"
+        val query = "query LibraryShowId(${'$'}search: String!) { Page(page: 1, perPage: 25) { media(search: ${'$'}search, type: ANIME, isAdult: false, sort: SEARCH_MATCH) { id title { romaji english native } synonyms episodes nextAiringEpisode { episode airingAt } } } }"
         val response = postGraphQl(query, search) ?: return@apiRequest JSONArray()
         response.optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media") ?: JSONArray()
     }
 
-    private fun postGraphQl(query: String, search: String): JSONObject? {
+    private fun lookupAnimeBatch(searches: List<String>): Map<String, JSONArray> = apiRequest {
+        if (searches.isEmpty()) return@apiRequest emptyMap()
+        val declarations = searches.indices.joinToString(", ") { index ->
+            "\$search$index: String!"
+        }
+        val query = buildString {
+            append("query LibraryAiringBatch(").append(declarations).append(") {")
+            searches.indices.forEach { index ->
+                append(" result$index: Page(page: 1, perPage: 25) { ")
+                append("media(search: \$search$index, type: ANIME, isAdult: false, sort: SEARCH_MATCH) { ")
+                append("id title { romaji english native } synonyms episodes ")
+                append("nextAiringEpisode { episode airingAt } } }")
+            }
+            append(" }")
+        }
+        val variables = JSONObject().apply {
+            searches.forEachIndexed { index, search -> put("search$index", search) }
+        }
+        val response = postGraphQl(query, variables) ?: return@apiRequest emptyMap()
+        val data = response.optJSONObject("data") ?: return@apiRequest emptyMap()
+        buildMap {
+            searches.forEachIndexed { index, search ->
+                data.optJSONObject("result$index")
+                    ?.optJSONArray("media")
+                    ?.let { put(normalize(search), it) }
+            }
+        }
+    }
+
+    private fun postGraphQl(query: String, search: String): JSONObject? =
+        postGraphQl(query, JSONObject().put("search", search))
+
+    private fun postGraphQl(query: String, variables: JSONObject): JSONObject? {
         val connection = URL(ANILIST_ENDPOINT).openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"
@@ -238,7 +526,7 @@ class AniListClient(context: Context) {
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("User-Agent", "nekoplayer/1.0")
-            val body = JSONObject().put("query", query).put("variables", JSONObject().put("search", search)).toString().toByteArray(Charsets.UTF_8)
+            val body = JSONObject().put("query", query).put("variables", variables).toString().toByteArray(Charsets.UTF_8)
             connection.setFixedLengthStreamingMode(body.size)
             connection.outputStream.use { it.write(body) }
             val status = connection.responseCode
@@ -292,7 +580,11 @@ class AniListClient(context: Context) {
         return output.toByteArray()
     }
 
-    private fun searchQueries(showName: String, episodeFileNames: Iterable<String>): List<String> {
+    private fun searchQueries(
+        showName: String,
+        episodeFileNames: Iterable<String>,
+        alternateTitles: Iterable<String> = emptyList(),
+    ): List<String> {
         val result = mutableListOf<String>()
         val seen = mutableSetOf<String>()
         fun add(value: String) {
@@ -301,10 +593,8 @@ class AniListClient(context: Context) {
             if (key.length >= 3 && seen.add(key) && result.size < MAX_SEARCH_QUERIES) result += query
         }
         add(showName)
-        for (filename in episodeFileNames) {
-            if (result.size >= MAX_SEARCH_QUERIES) break
-            episodeSeriesTitle(filename)?.let(::add)
-        }
+        alternateTitles.forEach(::add)
+        episodeFileNames.forEach { filename -> episodeSeriesTitle(filename)?.let(::add) }
         return result
     }
 
@@ -371,14 +661,16 @@ class AniListClient(context: Context) {
 
     companion object {
         private const val ANILIST_ENDPOINT = "https://graphql.anilist.co"
-        private const val MAX_SEARCH_QUERIES = 4
-        private const val MAX_CANDIDATES = 10
+        private const val MAX_SEARCH_QUERIES = 6
+        private const val MAX_AIRING_BATCH_QUERIES = 20
+        private const val MAX_CANDIDATES = 15
         private const val MINIMUM_MATCH_SCORE = 0.42
         private const val PREFIX_TITLE_SCORE = 0.75
         private const val STRONG_MATCH_SCORE = 0.88
         private const val MAX_RESPONSE_BYTES = 12 * 1024 * 1024
         private const val IMAGE_LIFETIME_MS = 30L * 24 * 60 * 60 * 1000
         private const val MISS_LIFETIME_MS = 7L * 24 * 60 * 60 * 1000
+        private const val AIRING_CACHE_LIFETIME_MS = 30L * 60 * 1000
         private const val MINIMUM_REQUEST_INTERVAL_MS = 2100L
         private val COMMON_WORDS = setOf("a", "an", "and", "are", "at", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with")
     }
@@ -394,12 +686,36 @@ class JimakuSubtitleClient(
     fun searchEntries(apiKey: String, anilistId: Int): List<JimakuEntry> {
         requireKey(apiKey)
         val body = getJson("$baseUrl/api/entries/search?anilist_id=$anilistId", apiKey, "Searching Jimaku")
+        return parseEntries(body)
+    }
+
+    @Throws(LibraryNetworkException::class)
+    fun searchEntriesByTitle(apiKey: String, title: String): List<JimakuEntry> {
+        requireKey(apiKey)
+        val query = title.trim()
+        if (query.isBlank()) return emptyList()
+        val encodedQuery = Uri.encode(query)
+        val body = getJson(
+            "$baseUrl/api/entries/search?query=$encodedQuery&anime=true",
+            apiKey,
+            "Searching Jimaku by title",
+        )
+        return parseEntries(body)
+    }
+
+    private fun parseEntries(body: Any): List<JimakuEntry> {
         if (body !is JSONArray) throw LibraryNetworkException("Jimaku answered in an unexpected format.")
         return (0 until body.length()).mapNotNull { index ->
             val item = body.optJSONObject(index) ?: return@mapNotNull null
             val id = item.optLong("id", -1L)
             if (id < 0 || id > Int.MAX_VALUE) return@mapNotNull null
-            JimakuEntry(id.toInt(), item.optString("english_name"), item.optString("japanese_name"))
+            JimakuEntry(
+                id = id.toInt(),
+                englishName = item.optString("english_name"),
+                japaneseName = item.optString("japanese_name"),
+                name = item.optString("name"),
+                anilistId = item.optInt("anilist_id", 0).takeIf { it > 0 },
+            )
         }
     }
 
@@ -573,14 +889,32 @@ fun parseJimakuEpisodeNumber(fileName: String): Int? {
     return null
 }
 
-fun filterJimakuFilesByEpisode(files: List<JimakuFile>, episode: Int): List<JimakuFile> {
-    val twoDigitEpisode = episode.toString().padStart(2, '0')
-    val paddedEpisodePattern = if (episode < 100) "0?$twoDigitEpisode" else twoDigitEpisode
-    val exactPattern = Regex("(?:^|[^0-9])(?:E$episode\\b|EP?$twoDigitEpisode\\b|$paddedEpisodePattern(?![0-9])|第${episode}話|#${episode}\\b)", RegexOption.IGNORE_CASE)
-    val exact = files.filter { exactPattern.containsMatchIn(it.name) }
-    if (exact.isNotEmpty()) return exact
-    val loose = files.filter { it.name.contains(episode.toString()) }
-    return loose.ifEmpty { files }
+fun filterJimakuFilesByEpisode(files: List<JimakuFile>, episode: Int): List<JimakuFile> =
+    files.filter { isUsableJimakuSubtitleFile(it) && parseJimakuSingleEpisodeNumber(it.name) == episode }
+
+internal fun isUsableJimakuSubtitleFile(file: JimakuFile): Boolean {
+    val extension = file.name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+    val validSize = file.size?.let { it in 1L..SubtitleParser.MAX_FILE_BYTES.toLong() } ?: true
+    return extension in SubtitleParser.SUPPORTED_EXTENSIONS && validSize
+}
+
+fun parseJimakuSingleEpisodeNumber(fileName: String): Int? {
+    if (isMultiEpisodeRange(fileName)) return null
+    return parseJimakuEpisodeNumber(fileName)
+}
+
+private fun isMultiEpisodeRange(fileName: String): Boolean {
+    val datePattern = Regex("""(?<!\d)(?:19|20)\d{2}[-._]\d{1,2}[-._]\d{1,2}(?!\d)""")
+    val withoutDates = datePattern.replace(fileName, " ")
+        .replace(Regex("""(?i)\bE(?=\d)"""), " ")
+
+    val rangePattern =
+        Regex("""(?i)(?<![\p{L}\p{N}])0*(\d{1,3})\s*(?:[-~–—]|\bto\b|\bthrough\b|[&,+])\s*0*(\d{1,3})(?!\d)""")
+    return rangePattern.findAll(withoutDates).any { range ->
+        val first = range.groupValues[1].toIntOrNull()
+        val last = range.groupValues[2].toIntOrNull()
+        first != null && last != null && first in 1..300 && last in 1..300 && first < last
+    }
 }
 
 @Suppress("unused")

@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.extensions.ExtensionManager
+import com.nekoplayer.app.library.AniListClient
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.SAnime
@@ -91,6 +92,7 @@ private val extensionIconCache = object : LruCache<String, Bitmap>(4 * 1024 * 10
 fun ExtensionsScreen(
     manager: ExtensionManager,
     database: AppDatabase,
+    aniList: AniListClient,
     sourceEntryToOpen: AppDatabase.SourceLibraryEntry?,
     onSourceEntryOpened: () -> Unit,
     onReturnToLibrary: () -> Unit,
@@ -188,6 +190,7 @@ fun ExtensionsScreen(
         VideoSourceBrowser(
             item = source,
             database = database,
+            aniList = aniList,
             initialAnime = selectedAnimeToOpen,
             onBack = {
                 val openedFromLibrary = selectedAnimeToOpen != null
