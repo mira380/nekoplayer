@@ -9,6 +9,8 @@ import android.util.LruCache
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -29,7 +31,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
@@ -40,8 +41,10 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -75,10 +78,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nekoplayer.app.data.AppDatabase
+import com.nekoplayer.app.library.AniListAiringEpisode
+import com.nekoplayer.app.library.AniListAiringLookup
 import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.AnimeLibraryEpisode
 import kotlinx.coroutines.CancellationException
@@ -88,6 +94,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private enum class LibraryShowSort(val title: String) {
     TITLE("Title A–Z"),
@@ -130,6 +139,18 @@ private data class LibraryShelf(
     val title: String,
     val entries: List<LibraryShelfItem>,
 )
+
+private fun LibraryShelfItem.toAiringLookup(): AniListAiringLookup = when (this) {
+    is LibraryShelfItem.LocalShow -> AniListAiringLookup(
+        key = key,
+        showName = showName,
+        episodeFileNames = episodes.take(2).map(AnimeLibraryEpisode::displayName),
+    )
+    is LibraryShelfItem.SourceTitle -> AniListAiringLookup(
+        key = key,
+        showName = entry.title,
+    )
+}
 
 private fun sourceTitleSortKey(entry: AppDatabase.SourceLibraryEntry): String =
     entry.title.lowercase()
@@ -175,9 +196,8 @@ fun LibraryScreen(
     var showGroupManager by remember { mutableStateOf(value = false) }
     var groupNameDraft by remember { mutableStateOf("") }
     var groupToDelete by remember { mutableStateOf<String?>(null) }
-    var groupAssignmentTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
-    var assignmentDraft by remember { mutableStateOf(emptySet<String>()) }
     var search by remember { mutableStateOf("") }
+    var libraryActionMenuExpanded by remember { mutableStateOf(false) }
     var sortMenuExpanded by remember { mutableStateOf(value = false) }
     var librarySort by remember(database) {
         mutableStateOf(LibraryShowSort.fromStored(database.readString("library.sortOrder", "TITLE")))
@@ -185,12 +205,23 @@ fun LibraryScreen(
     var expandedShow by remember { mutableStateOf<String?>(null) }
     var coverUrlTarget by remember { mutableStateOf<String?>(null) }
     var coverUrl by remember { mutableStateOf("") }
-    var selectingSources by remember { mutableStateOf(value = false) }
-    var selectedSourceKeys by remember { mutableStateOf(emptySet<String>()) }
+    var selectingLibraryItems by remember { mutableStateOf(false) }
+    var selectedLibraryItemKeys by remember { mutableStateOf(emptySet<String>()) }
+    val selectedSourceKeys = remember(selectedLibraryItemKeys) {
+        selectedLibraryItemKeys.asSequence()
+            .filter { it.startsWith("source:") }
+            .map { it.removePrefix("source:") }
+            .toSet()
+    }
+    var showBatchGroupDialog by remember { mutableStateOf(false) }
+    var batchGroupDraft by remember { mutableStateOf(emptySet<String>()) }
     var removingSelected by remember { mutableStateOf(value = false) }
     var confirmRemoveSources by remember { mutableStateOf(value = false) }
     var selectionError by remember { mutableStateOf<String?>(null) }
     val expandedMenus = remember { mutableStateMapOf<String, Boolean>() }
+    var airingEpisodesByItemKey by remember(aniList) {
+        mutableStateOf<Map<String, AniListAiringEpisode>>(emptyMap())
+    }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(database, progressRefreshKey) {
@@ -314,6 +345,20 @@ fun LibraryScreen(
             }
         }
     }
+    LaunchedEffect(aniList, libraryShelves, collapsedGroups) {
+        val expandedShelves = libraryShelves.filterNot { it.key in collapsedGroups }
+        expandedShelves.forEach { shelf ->
+            val lookups = shelf.entries.map(LibraryShelfItem::toAiringLookup)
+            if (lookups.isEmpty()) return@forEach
+            val itemKeys = lookups.map(AniListAiringLookup::key).toSet()
+            val schedules = withContext(Dispatchers.IO) {
+                aniList.findNextAiringEpisodes(lookups)
+            }
+            airingEpisodesByItemKey =
+                airingEpisodesByItemKey.filterKeys { it !in itemKeys } + schedules
+        }
+    }
+
     val selectedEpisodes = remember(expandedShow, groups) {
         expandedShow?.let { name -> groups[name] }.orEmpty()
     }
@@ -343,15 +388,51 @@ fun LibraryScreen(
         collapsedGroups -= "group:$groupName"
     }
 
-    fun openGroupAssignment(itemKey: String, title: String) {
-        assignmentDraft = groupAssignments[itemKey].orEmpty()
-        groupAssignmentTarget = itemKey to title
+    fun clearLibrarySelection() {
+        selectingLibraryItems = false
+        selectedLibraryItemKeys = emptySet()
+        selectionError = null
     }
 
-    fun clearSourceSelection() {
-        selectingSources = false
-        selectedSourceKeys = emptySet()
+    fun startLibrarySelection(itemKey: String) {
+        selectingLibraryItems = true
+        selectedLibraryItemKeys = selectedLibraryItemKeys + itemKey
         selectionError = null
+    }
+
+    fun toggleLibraryItemSelection(itemKey: String) {
+        val next = if (itemKey in selectedLibraryItemKeys) {
+            selectedLibraryItemKeys - itemKey
+        } else {
+            selectedLibraryItemKeys + itemKey
+        }
+        selectedLibraryItemKeys = next
+        if (next.isEmpty()) selectingLibraryItems = false
+        selectionError = null
+    }
+
+    fun addSelectedItemsToGroups() {
+        if (selectedLibraryItemKeys.isEmpty() || batchGroupDraft.isEmpty()) return
+        val updated = groupAssignments.toMutableMap()
+        selectedLibraryItemKeys.forEach { itemKey ->
+            updated[itemKey] = updated[itemKey].orEmpty() + batchGroupDraft
+        }
+        saveGroupAssignments(updated)
+        showBatchGroupDialog = false
+        clearLibrarySelection()
+    }
+
+    fun toggleGroupAssignment(itemKey: String, groupName: String) {
+        val updated = groupAssignments.toMutableMap()
+        val current = updated[itemKey].orEmpty()
+        val alreadyAssigned = current.any { it.equals(groupName, ignoreCase = true) }
+        val next = if (alreadyAssigned) {
+            current.filterNot { it.equals(groupName, ignoreCase = true) }.toSet()
+        } else {
+            current + groupName
+        }
+        if (next.isEmpty()) updated.remove(itemKey) else updated[itemKey] = next
+        saveGroupAssignments(updated)
     }
 
     fun removeSelectedSourceEntries() {
@@ -366,7 +447,7 @@ fun LibraryScreen(
                     database.listSourceLibraryEntries()
                 }
                 sourceEntries = updatedEntries
-                clearSourceSelection()
+                clearLibrarySelection()
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
@@ -377,17 +458,24 @@ fun LibraryScreen(
         }
     }
 
-    BackHandler(enabled = (expandedShow != null) || selectingSources) {
+    BackHandler(enabled = (expandedShow != null) || selectingLibraryItems) {
         when {
             expandedShow != null -> expandedShow = null
+            showBatchGroupDialog -> showBatchGroupDialog = false
             confirmRemoveSources -> confirmRemoveSources = false
-            else -> clearSourceSelection()
+            groupToDelete != null -> {
+                groupToDelete = null
+                showGroupManager = true
+            }
+            showGroupManager -> showGroupManager = false
+            else -> clearLibrarySelection()
         }
     }
     LaunchedEffect(expandedShow) { onDetailScreenChanged(expandedShow != null) }
 
     if ((expandedShow != null) && selectedEpisodes.isNotEmpty()) {
         ShowDetailScreen(
+            aniList = aniList,
             showName = expandedShow.orEmpty(),
             episodes = selectedEpisodes,
             recent = recent,
@@ -422,40 +510,44 @@ fun LibraryScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                if (selectingSources) {
+                if (selectingLibraryItems) {
                     Text(
-                        "${selectedSourceKeys.size} selected",
+                        "${selectedLibraryItemKeys.size} selected",
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
                     TextButton(
-                        onClick = { confirmRemoveSources = true },
-                        enabled = selectedSourceKeys.isNotEmpty() && !removingSelected,
+                        onClick = {
+                            batchGroupDraft = emptySet()
+                            showBatchGroupDialog = true
+                        },
+                        enabled = selectedLibraryItemKeys.isNotEmpty() &&
+                            libraryGroups.isNotEmpty() && !removingSelected,
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (removingSelected) "Removing…" else "Remove")
+                        Text("Add to group")
+                    }
+                    if (selectedSourceKeys.isNotEmpty()) {
+                        IconButton(
+                            onClick = { confirmRemoveSources = true },
+                            enabled = !removingSelected,
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = localizeUiText("Remove saved titles"),
+                            )
+                        }
                     }
                     IconButton(
-                        onClick = ::clearSourceSelection,
+                        onClick = ::clearLibrarySelection,
                         enabled = !removingSelected,
                         modifier = Modifier.size(48.dp),
                     ) {
                         Icon(Icons.Default.Close, contentDescription = localizeUiText("Cancel selection"))
                     }
                 } else {
-                    TextButton(onClick = onPickFolder, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Choose folder", style = MaterialTheme.typography.labelLarge)
-                    }
-                    TextButton(onClick = onPickVideo, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Open video", style = MaterialTheme.typography.labelLarge)
-                    }
                     Box {
                         IconButton(
                             onClick = { sortMenuExpanded = true },
@@ -486,23 +578,57 @@ fun LibraryScreen(
                         }
                     }
                     Spacer(Modifier.weight(1f))
-                    if (sourceEntries.isNotEmpty()) {
+                    IconButton(
+                        onClick = { showGroupManager = true },
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.FolderOpen,
+                            contentDescription = localizeUiText(
+                                if (libraryGroups.isEmpty()) "Create group" else "Manage groups",
+                            ),
+                        )
+                    }
+                    Box {
                         IconButton(
-                            onClick = {
-                                selectingSources = true
-                                selectedSourceKeys = emptySet()
-                                selectionError = null
-                            },
-                            modifier = Modifier.size(48.dp)
-                                .background(
-                                    MaterialTheme.colorScheme.primaryContainer,
-                                    RoundedCornerShape(14.dp),
-                                ),
+                            onClick = { libraryActionMenuExpanded = true },
+                            modifier = Modifier.size(48.dp),
                         ) {
                             Icon(
-                                Icons.AutoMirrored.Filled.PlaylistAddCheck,
-                                contentDescription = localizeUiText("Select saved titles"),
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                Icons.Default.Add,
+                                contentDescription = localizeUiText("Add to library"),
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = libraryActionMenuExpanded,
+                            onDismissRequest = { libraryActionMenuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.FolderOpen, contentDescription = null)
+                                        Spacer(Modifier.width(12.dp))
+                                        Text("Choose folder")
+                                    }
+                                },
+                                onClick = {
+                                    libraryActionMenuExpanded = false
+                                    onPickFolder()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.VideoLibrary, contentDescription = null)
+                                        Spacer(Modifier.width(12.dp))
+                                        Text("Open video")
+                                    }
+                                },
+                                onClick = {
+                                    libraryActionMenuExpanded = false
+                                    onPickVideo()
+                                },
                             )
                         }
                     }
@@ -518,27 +644,7 @@ fun LibraryScreen(
             }
         }
 
-        if (!selectingSources && (episodes.isNotEmpty() || sourceEntries.isNotEmpty())) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 2.dp, bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Collections",
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                TextButton(
-                    onClick = { showGroupManager = true },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (libraryGroups.isEmpty()) "Create group" else "Manage groups")
-                }
-            }
-        }
+
 
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
 
@@ -660,20 +766,23 @@ fun LibraryScreen(
                                                     client = aniList,
                                                     artworkCache = artworkCache,
                                                     entry = entry,
-                                                    selectionMode = selectingSources,
-                                                    selected = entry.key in selectedSourceKeys,
+                                                    nextAiringEpisode = airingEpisodesByItemKey[shelfItem.key],
+                                                    selectionMode = selectingLibraryItems,
+                                                    selected = sourceLibraryGroupKey(entry) in selectedLibraryItemKeys,
                                                     menuExpanded = expandedMenus["source:${entry.key}"] == true,
                                                     onOpen = { onOpenSourceEntry(entry) },
                                                     onMenu = { expandedMenus["source:${entry.key}"] = true },
                                                     onDismissMenu = { expandedMenus["source:${entry.key}"] = false },
-                                                    onManageGroups = {
-                                                        openGroupAssignment(sourceLibraryGroupKey(entry), entry.title)
+                                                    availableGroups = libraryGroups,
+                                                    assignedGroups = groupAssignments[sourceLibraryGroupKey(entry)].orEmpty(),
+                                                    onToggleGroup = {
+                                                        toggleGroupAssignment(sourceLibraryGroupKey(entry), it)
+                                                    },
+                                                    onLongPress = {
+                                                        startLibrarySelection(sourceLibraryGroupKey(entry))
                                                     },
                                                     onToggleSelected = {
-                                                        selectionError = null
-                                                        selectedSourceKeys =
-                                                            if (entry.key in selectedSourceKeys) selectedSourceKeys - entry.key
-                                                            else selectedSourceKeys + entry.key
+                                                        toggleLibraryItemSelection(sourceLibraryGroupKey(entry))
                                                     },
                                                     modifier = Modifier.width(cardWidth),
                                                 )
@@ -689,17 +798,28 @@ fun LibraryScreen(
                                                     artworkCache = artworkCache,
                                                     showName = showName,
                                                     episodeCount = showEpisodes.size,
+                                                    nextAiringEpisode = airingEpisodesByItemKey[shelfItem.key],
                                                     episodeNames = showEpisodes.asSequence()
                                                         .take(8)
                                                         .map { it.displayName }
                                                         .toList(),
                                                     coverSource = customCover,
                                                     menuExpanded = expandedMenus[showName] == true,
+                                                    selectionMode = selectingLibraryItems,
+                                                    selected = localLibraryGroupKey(showName) in selectedLibraryItemKeys,
+                                                    onLongPress = {
+                                                        startLibrarySelection(localLibraryGroupKey(showName))
+                                                    },
+                                                    onToggleSelected = {
+                                                        toggleLibraryItemSelection(localLibraryGroupKey(showName))
+                                                    },
                                                     onToggle = { expandedShow = showName },
                                                     onMenu = { expandedMenus[showName] = true },
                                                     onDismissMenu = { expandedMenus[showName] = false },
-                                                    onManageGroups = {
-                                                        openGroupAssignment(localLibraryGroupKey(showName), showName)
+                                                    availableGroups = libraryGroups,
+                                                    assignedGroups = groupAssignments[localLibraryGroupKey(showName)].orEmpty(),
+                                                    onToggleGroup = {
+                                                        toggleGroupAssignment(localLibraryGroupKey(showName), it)
                                                     },
                                                     onSetUrl = {
                                                         coverUrlTarget = showName
@@ -728,6 +848,55 @@ fun LibraryScreen(
     }
 
 
+    if (showBatchGroupDialog) {
+        val selectedCount = selectedLibraryItemKeys.size
+        AlertDialog(
+            onDismissRequest = { showBatchGroupDialog = false },
+            title = { Text("Add selected to groups") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Choose groups for $selectedCount selected items.")
+                    LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                        items(libraryGroups, key = { "batch-group:$it" }) { groupName ->
+                            val checked = groupName in batchGroupDraft
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .toggleable(
+                                        value = checked,
+                                        role = Role.Checkbox,
+                                        onValueChange = { isChecked ->
+                                            batchGroupDraft = if (isChecked) {
+                                                batchGroupDraft + groupName
+                                            } else {
+                                                batchGroupDraft - groupName
+                                            }
+                                        },
+                                    ),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(checked = checked, onCheckedChange = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text(groupName)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = ::addSelectedItemsToGroups,
+                    enabled = batchGroupDraft.isNotEmpty(),
+                ) {
+                    Text(if (batchGroupDraft.size == 1) "Add to group" else "Add to groups")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchGroupDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
     if (showGroupManager) {
         AlertDialog(
             onDismissRequest = { showGroupManager = false },
@@ -741,19 +910,8 @@ fun LibraryScreen(
                         label = { Text("New group name") },
                         singleLine = true,
                     )
-                    TextButton(
-                        onClick = {
-                            val name = groupNameDraft.trim()
-                            if (name.isNotEmpty() && libraryGroups.none { it.equals(name, ignoreCase = true) }) {
-                                saveLibraryGroups((libraryGroups + name).sortedBy { it.lowercase() })
-                                groupNameDraft = ""
-                            }
-                        },
-                        enabled = groupNameDraft.isNotBlank() &&
-                            libraryGroups.none { it.equals(groupNameDraft.trim(), ignoreCase = true) },
-                    ) { Text("Create group") }
                     if (libraryGroups.isEmpty()) {
-                        Text("Create a group, then assign it from a title’s menu.")
+                        Text("Add titles to a group from their options menus.")
                     } else {
                         LazyColumn(Modifier.heightIn(max = 260.dp)) {
                             items(libraryGroups, key = { "library-group:$it" }) { groupName ->
@@ -777,6 +935,21 @@ fun LibraryScreen(
                             }
                         }
                     }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        val name = groupNameDraft.trim()
+                        if (name.isNotEmpty() && libraryGroups.none { it.equals(name, ignoreCase = true) }) {
+                            saveLibraryGroups((libraryGroups + name).sortedBy { it.lowercase() })
+                            groupNameDraft = ""
+                        }
+                    },
+                    enabled = groupNameDraft.isNotBlank() &&
+                        libraryGroups.none { it.equals(groupNameDraft.trim(), ignoreCase = true) },
+                ) {
+                    Text("Create group")
                 }
             },
             confirmButton = {
@@ -814,59 +987,6 @@ fun LibraryScreen(
                 ) {
                     Text("Cancel")
                 }
-            },
-        )
-    }
-
-    if (groupAssignmentTarget != null) {
-        val target = groupAssignmentTarget!!
-        AlertDialog(
-            onDismissRequest = { groupAssignmentTarget = null },
-            title = { Text("Organize ${target.second}") },
-            text = {
-                if (libraryGroups.isEmpty()) {
-                    Text("Create a library group first, then assign titles to it.")
-                } else {
-                    LazyColumn(Modifier.heightIn(max = 260.dp)) {
-                        items(libraryGroups, key = { "assign-group:$it" }) { groupName ->
-                            Row(
-                                Modifier.fillMaxWidth().clickable {
-                                    assignmentDraft = if (groupName in assignmentDraft) {
-                                        assignmentDraft - groupName
-                                    } else {
-                                        assignmentDraft + groupName
-                                    }
-                                },
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Checkbox(
-                                    checked = groupName in assignmentDraft,
-                                    onCheckedChange = { checked ->
-                                        assignmentDraft = if (checked) assignmentDraft + groupName
-                                        else assignmentDraft - groupName
-                                    },
-                                )
-                                Text(groupName)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val updated = groupAssignments.toMutableMap()
-                        if (assignmentDraft.isEmpty()) updated.remove(target.first)
-                        else updated[target.first] = assignmentDraft
-                        saveGroupAssignments(updated)
-                        groupAssignmentTarget = null
-                    },
-                ) {
-                    Text("Done")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { groupAssignmentTarget = null }) { Text("Cancel") }
             },
         )
     }
@@ -964,8 +1084,14 @@ private fun EmptyLibraryCard(
     }
 }
 
+@android.annotation.SuppressLint("DirectDateInstantiation")
+private fun formatAiringDate(airingAtEpochSeconds: Long): String =
+    SimpleDateFormat("EEE, MMM d · h:mm a", Locale.getDefault())
+        .format(Date(airingAtEpochSeconds * 1_000L))
+
 @Composable
 private fun ShowDetailScreen(
+    aniList: AniListClient,
     showName: String,
     episodes: List<AnimeLibraryEpisode>,
     recent: List<AppDatabase.RecentMedia>,
@@ -973,6 +1099,15 @@ private fun ShowDetailScreen(
     onOpenVideo: (AnimeLibraryEpisode, NextEpisodeAction?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var nextAiringEpisode by remember(showName) {
+        mutableStateOf<AniListAiringEpisode?>(null)
+    }
+    LaunchedEffect(aniList, showName, episodes) {
+        nextAiringEpisode = withContext(Dispatchers.IO) {
+            aniList.findNextAiringEpisode(showName, episodes.map(AnimeLibraryEpisode::displayName))
+        }
+    }
+
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Box(Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
@@ -988,12 +1123,41 @@ private fun ShowDetailScreen(
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
         }
-        Text(
-            "${episodes.size} episodes",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
-        )
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "${episodes.size} episodes",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            nextAiringEpisode?.let { airing ->
+                Row(
+                    Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "Next ep. ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        softWrap = false,
+                    )
+                }
+            }
+        }
         fun openEpisodeAt(index: Int) {
             val episode = episodes.getOrNull(index) ?: return
             val nextEpisode = if (index < episodes.lastIndex) {
@@ -1019,22 +1183,78 @@ private fun ShowDetailScreen(
 }
 
 @Composable
+private fun GroupAssignmentMenuItems(
+    availableGroups: List<String>,
+    assignedGroups: Set<String>,
+    onToggleGroup: (String) -> Unit,
+    onDismissMenu: () -> Unit,
+) {
+    if (availableGroups.isEmpty()) {
+        DropdownMenuItem(
+            text = { Text("No groups yet") },
+            enabled = false,
+            onClick = {},
+        )
+    } else {
+        availableGroups.forEach { groupName ->
+            val assigned = assignedGroups.any { it.equals(groupName, ignoreCase = true) }
+            DropdownMenuItem(
+                text = {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            groupName,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Icon(
+                            if (assigned) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
+                            contentDescription = localizeUiText(
+                                if (assigned) "Remove $groupName from this title"
+                                else "Add this title to $groupName",
+                            ),
+                            tint = if (assigned) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                },
+                onClick = {
+                    onDismissMenu()
+                    onToggleGroup(groupName)
+                },
+            )
+        }
+    }
+}
+
+@Composable
 private fun ShowCard(
     context: Context,
     client: AniListClient,
     artworkCache: LruCache<String, Bitmap>,
     showName: String,
     episodeCount: Int,
+    nextAiringEpisode: AniListAiringEpisode?,
     episodeNames: List<String>,
     coverSource: String?,
     menuExpanded: Boolean,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onLongPress: () -> Unit,
+    onToggleSelected: () -> Unit,
+    availableGroups: List<String>,
+    assignedGroups: Set<String>,
+    onToggleGroup: (String) -> Unit,
     onToggle: () -> Unit,
     onMenu: () -> Unit,
     onDismissMenu: () -> Unit,
     onSetUrl: () -> Unit,
     onPickLocal: () -> Unit,
     onRemoveCover: () -> Unit,
-    onManageGroups: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val coverKey = remember(showName, coverSource, episodeNames) {
@@ -1049,8 +1269,30 @@ private fun ShowCard(
         }
     }
     val imageBitmap = remember(loadedBitmap) { loadedBitmap?.asImageBitmap() }
-    Column(modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClick = onToggle)) {
+    val cardShape = RoundedCornerShape(16.dp)
+    Column(
+        modifier.fillMaxWidth()
+            .clip(cardShape)
+            .then(
+                if (selected) Modifier.background(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                    cardShape,
+                ) else Modifier,
+            )
+            .then(
+                if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
+                else Modifier,
+            )
+            .combinedClickable(
+                onClick = if (selectionMode) onToggleSelected else onToggle,
+                onLongClick = onLongPress,
+            ),
+    ) {
+        Box(
+            Modifier.fillMaxWidth()
+                .clip(cardShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
             if (imageBitmap != null) {
                 Image(imageBitmap, contentDescription = localizeUiText("$showName artwork"), modifier = Modifier.fillMaxWidth().aspectRatio(0.78f), contentScale = ContentScale.Crop)
             } else {
@@ -1058,20 +1300,66 @@ private fun ShowCard(
                     Icon(Icons.Default.VideoLibrary, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp))
                 }
             }
-            Box(Modifier.align(Alignment.TopEnd)) {
-                IconButton(onClick = onMenu) {
+            nextAiringEpisode?.let { airing ->
+                Box(
+                    Modifier.align(Alignment.TopStart)
+                        .padding(8.dp)
+                        .size(30.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Icon(
-                        Icons.Default.MoreVert,
-                        contentDescription = localizeUiText("Show options"),
-                        modifier = Modifier.size(18.dp),
-                        tint = androidx.compose.ui.graphics.Color.White,
+                        Icons.Default.NotificationsActive,
+                        contentDescription = localizeUiText(
+                            "Upcoming episode ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
+                        ),
+                        modifier = Modifier.size(17.dp),
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = onDismissMenu) {
-                    DropdownMenuItem(text = { Text("Organize groups") }, onClick = { onDismissMenu(); onManageGroups() })
-                    DropdownMenuItem(text = { Text("Set image URL") }, onClick = { onDismissMenu(); onSetUrl() })
-                    DropdownMenuItem(text = { Text("Choose local image") }, onClick = { onDismissMenu(); onPickLocal() })
-                    if (coverSource != null) DropdownMenuItem(text = { Text("Use AniList artwork") }, onClick = { onDismissMenu(); onRemoveCover() })
+            }
+            if (selectionMode) {
+                IconButton(
+                    onClick = onToggleSelected,
+                    modifier = Modifier.align(Alignment.TopEnd),
+                ) {
+                    Box(
+                        Modifier.size(32.dp)
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (selected) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
+                            contentDescription = localizeUiText(
+                                if (selected) "Deselect $showName" else "Select $showName",
+                            ),
+                            modifier = Modifier.size(18.dp),
+                            tint = if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            } else {
+                Box(Modifier.align(Alignment.TopEnd)) {
+                    IconButton(onClick = onMenu) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = localizeUiText("Show options"),
+                            modifier = Modifier.size(18.dp),
+                            tint = androidx.compose.ui.graphics.Color.White,
+                        )
+                    }
+                    DropdownMenu(expanded = menuExpanded, onDismissRequest = onDismissMenu) {
+                        GroupAssignmentMenuItems(
+                            availableGroups = availableGroups,
+                            assignedGroups = assignedGroups,
+                            onToggleGroup = onToggleGroup,
+                            onDismissMenu = onDismissMenu,
+                        )
+                        DropdownMenuItem(text = { Text("Set image URL") }, onClick = { onDismissMenu(); onSetUrl() })
+                        DropdownMenuItem(text = { Text("Choose local image") }, onClick = { onDismissMenu(); onPickLocal() })
+                        if (coverSource != null) DropdownMenuItem(text = { Text("Use AniList artwork") }, onClick = { onDismissMenu(); onRemoveCover() })
+                    }
                 }
             }
         }
@@ -1086,13 +1374,17 @@ private fun SourceLibraryCard(
     client: AniListClient,
     artworkCache: LruCache<String, Bitmap>,
     entry: AppDatabase.SourceLibraryEntry,
+    nextAiringEpisode: AniListAiringEpisode?,
     selectionMode: Boolean,
     selected: Boolean,
     menuExpanded: Boolean,
+    availableGroups: List<String>,
+    assignedGroups: Set<String>,
+    onToggleGroup: (String) -> Unit,
     onOpen: () -> Unit,
     onMenu: () -> Unit,
     onDismissMenu: () -> Unit,
-    onManageGroups: () -> Unit,
+    onLongPress: () -> Unit,
     onToggleSelected: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1123,7 +1415,10 @@ private fun SourceLibraryCard(
                 if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
                 else Modifier,
             )
-            .clickable(onClick = if (selectionMode) onToggleSelected else onOpen),
+            .combinedClickable(
+                onClick = if (selectionMode) onToggleSelected else onOpen,
+                onLongClick = onLongPress,
+            ),
     ) {
         Box(
             Modifier.fillMaxWidth()
@@ -1146,6 +1441,24 @@ private fun SourceLibraryCard(
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(38.dp),
                 )
+            }
+            nextAiringEpisode?.let { airing ->
+                Box(
+                    Modifier.align(Alignment.TopStart)
+                        .padding(8.dp)
+                        .size(30.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.NotificationsActive,
+                        contentDescription = localizeUiText(
+                            "Upcoming episode ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
+                        ),
+                        modifier = Modifier.size(17.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
             if (selectionMode) {
                 IconButton(
@@ -1183,9 +1496,11 @@ private fun SourceLibraryCard(
                         }
                     }
                     DropdownMenu(expanded = menuExpanded, onDismissRequest = onDismissMenu) {
-                        DropdownMenuItem(
-                            text = { Text("Organize groups") },
-                            onClick = { onDismissMenu(); onManageGroups() },
+                        GroupAssignmentMenuItems(
+                            availableGroups = availableGroups,
+                            assignedGroups = assignedGroups,
+                            onToggleGroup = onToggleGroup,
+                            onDismissMenu = onDismissMenu,
                         )
                     }
                 }

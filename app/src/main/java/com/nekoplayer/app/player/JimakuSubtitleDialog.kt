@@ -51,6 +51,9 @@ import com.nekoplayer.app.library.JimakuEntry
 import com.nekoplayer.app.library.JimakuFile
 import com.nekoplayer.app.library.JimakuSubtitleClient
 import com.nekoplayer.app.library.filterJimakuFilesByEpisode
+import com.nekoplayer.app.library.JimakuEntryTitleMatch
+import com.nekoplayer.app.library.isUsableJimakuSubtitleFile
+import com.nekoplayer.app.library.rankJimakuEntriesByTitle
 import com.nekoplayer.app.library.parseJimakuEpisodeNumber
 import com.nekoplayer.app.ui.Text
 import com.nekoplayer.app.ui.localizeUiText
@@ -64,6 +67,9 @@ private enum class SubtitleDialogPage { Sources, Working, AnimeChoices, Collecti
 
 private const val MANUAL_ANI_LIST_MINIMUM_MATCH_SCORE = 0.22
 private const val AUTOMATIC_ANI_LIST_MINIMUM_MATCH_SCORE = 0.42
+private const val AUTOMATIC_ANI_LIST_STRONG_MATCH_SCORE = 0.72
+private const val AUTOMATIC_JIMAKU_MINIMUM_TITLE_SCORE = 0.86
+private const val AUTOMATIC_JIMAKU_SCORE_GAP = 0.10
 
 @Composable
 fun JimakuSubtitleDialog(
@@ -136,37 +142,102 @@ fun JimakuSubtitleDialog(
             onError = { showFailure(it.message ?: "Jimaku files could not be listed. Check the connection and try again.") },
         ) {
             val allFiles = withContext(Dispatchers.IO) { jimakuSubtitleClient.listFiles(apiKey, entry.id) }
-            if (allFiles.isEmpty()) {
-                showFailure("That collection has no downloadable files.")
+            val subtitleFiles = allFiles.filter(::isUsableJimakuSubtitleFile)
+            if (subtitleFiles.isEmpty()) {
+                showFailure("That collection has no supported subtitle files.")
                 return@launchIo
             }
-            val matching = episode?.let { filterJimakuFilesByEpisode(allFiles, it) } ?: allFiles
-            if (automatic && matching.size == 1) {
-                download(matching.single(), entry.id)
+            val matching = episode?.let { filterJimakuFilesByEpisode(subtitleFiles, it) }.orEmpty()
+            val rankedMatching = matching.sortedWith(JIMAKU_FILE_PREFERENCE_ORDER)
+            val clearlyPreferred = rankedMatching.size == 1 ||
+                (rankedMatching.size > 1 &&
+                    JIMAKU_FILE_PRIORITY_ORDER.compare(rankedMatching[0], rankedMatching[1]) < 0)
+            if (automatic && episode != null && clearlyPreferred) {
+                download(rankedMatching.first(), entry.id)
             } else {
-                files = matching
-                status = episode?.let { "Episode $it: pick a subtitle file." } ?: "Pick a subtitle file."
+                files = matching.ifEmpty { subtitleFiles }.sortedWith(JIMAKU_FILE_PREFERENCE_ORDER)
+                status = when {
+                    episode == null -> "Episode number is unclear. Choose a subtitle file."
+                    matching.isEmpty() -> "No exact filename match for episode $episode. Review the files before choosing."
+                    else -> "Episode $episode: pick a subtitle file."
+                }
                 page = SubtitleDialogPage.SubtitleFiles
             }
         }
     }
 
+    fun showEntryChoices(
+        title: String,
+        found: List<JimakuEntry>,
+        referenceTitles: List<String>,
+        automatic: Boolean,
+        linkedAniListId: Int? = null,
+    ) {
+        val ranked = rankJimakuEntriesByTitle(referenceTitles, found).map { match ->
+            if (linkedAniListId != null && match.entry.anilistId == linkedAniListId) {
+                match.copy(score = 1.0)
+            } else {
+                match
+            }
+        }
+        val best = ranked.firstOrNull()
+        val runnerUp = ranked.getOrNull(1)
+        val confidentSingleMatch = best != null &&
+            best.score >= AUTOMATIC_JIMAKU_MINIMUM_TITLE_SCORE &&
+            (runnerUp == null || best.score - runnerUp.score >= AUTOMATIC_JIMAKU_SCORE_GAP)
+        if (automatic && confidentSingleMatch) {
+            openCollection(best.entry, true)
+        } else {
+            entries = ranked.map(JimakuEntryTitleMatch::entry)
+            status = when {
+                automatic && ranked.size > 1 -> "Several Jimaku collections could match “$title”. Choose the right one."
+                automatic -> "Choose the Jimaku collection for “$title”."
+                ranked.size > 1 -> "Choose the matching Jimaku collection for “$title”."
+                else -> "Choose the Jimaku collection for “$title”."
+            }
+            page = SubtitleDialogPage.Collections
+        }
+    }
+
     loadCollections = { candidate, automatic ->
         page = SubtitleDialogPage.Working
-        status = "Searching Jimaku for ${candidate.title}…"
+        status = "Searching Jimaku for " + candidate.title + "…"
         error = null
         launchIo(
             onError = { showFailure(it.message ?: "Jimaku search failed. Check the connection and try again.") },
         ) {
-            val found = withContext(Dispatchers.IO) { jimakuSubtitleClient.searchEntries(apiKey, candidate.id) }
+            val referenceTitles = (listOf(showName, alternateShowName.orEmpty(), candidate.title) + candidate.aliases)
+                .filter(String::isNotBlank)
+                .distinct()
+            val found = withContext(Dispatchers.IO) {
+                val byId = jimakuSubtitleClient.searchEntries(apiKey, candidate.id)
+                if (byId.isNotEmpty()) {
+                    byId
+                } else {
+                    val titleResults = linkedMapOf<Int, JimakuEntry>()
+                    for (searchTitle in (candidate.aliases + candidate.title).distinct()) {
+                        try {
+                            jimakuSubtitleClient.searchEntriesByTitle(apiKey, searchTitle)
+                                .forEach { if (it.id !in titleResults) titleResults[it.id] = it }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // Try the candidate's other known titles.
+                        }
+                    }
+                    titleResults.values.toList()
+                }
+            }
             if (found.isEmpty()) {
-                showFailure("Jimaku has no subtitles for “${candidate.title}”.")
-            } else if (automatic && found.size == 1) {
-                openCollection(found.single(), true)
+                showFailure("Jimaku has no subtitle collection for " + candidate.title + ".")
             } else {
-                entries = found
-                status = if (found.size > 1) "Several collections match “${candidate.title}”. Pick one." else "“${candidate.title}”: pick a collection."
-                page = SubtitleDialogPage.Collections
+                showEntryChoices(
+                    title = candidate.title,
+                    found = found,
+                    referenceTitles = referenceTitles,
+                    automatic = automatic,
+                    linkedAniListId = candidate.id,
+                )
             }
         }
     }
@@ -182,44 +253,76 @@ fun JimakuSubtitleDialog(
             onError = { showFailure(it.message ?: "AniList search failed. Check the connection and try again.") },
         ) {
             val found = withContext(Dispatchers.IO) {
-                val episodeNames = if (automatic && episodeFileName.isNotBlank()) {
-                    listOf(episodeFileName)
-                } else {
-                    emptyList()
-                }
+                val episodeNames = if (automatic && episodeFileName.isNotBlank()) listOf(episodeFileName) else emptyList()
                 val minimumScore = if (automatic) {
                     AUTOMATIC_ANI_LIST_MINIMUM_MATCH_SCORE
                 } else {
                     MANUAL_ANI_LIST_MINIMUM_MATCH_SCORE
                 }
-                val primary = aniListClient.searchAnimeCandidates(
+                val alternateTitles = if (automatic) {
+                    listOfNotNull(alternateShowName?.takeIf(String::isNotBlank))
+                } else {
+                    emptyList()
+                }
+                aniListClient.searchAnimeCandidates(
                     title,
                     episodeNames,
                     minimumMatchScore = minimumScore,
+                    alternateTitles = alternateTitles,
                 )
-                if (
-                    primary.isNotEmpty() ||
-                    !automatic ||
-                    alternateShowName.isNullOrBlank() ||
-                    alternateShowName.equals(title, ignoreCase = true)
-                ) {
-                    primary
-                } else {
-                    aniListClient.searchAnimeCandidates(
-                        alternateShowName,
-                        episodeNames,
-                        minimumMatchScore = minimumScore,
-                    )
-                }
             }
             if (found.isEmpty()) {
-                showFailure(if (automatic) "No AniList match for “$title”. Search below instead." else "No AniList match for “$title”. Try another title.")
-            } else if (found.size == 1) {
+                showFailure(if (automatic) "No AniList match for “$title”. Try searching another title." else "No AniList match for “$title”. Try another title.")
+            } else if (found.size == 1 && (!automatic || found.single().score >= AUTOMATIC_ANI_LIST_STRONG_MATCH_SCORE)) {
                 loadCollections(found.single(), automatic)
             } else {
                 candidates = found
-                status = if (automatic) "Several titles match. Pick the right anime." else "Pick the matching anime title."
+                status = if (automatic) "Several titles may match. Pick the right anime." else "Pick the matching anime title."
                 page = SubtitleDialogPage.AnimeChoices
+            }
+        }
+    }
+
+    fun searchJimakuByTitle(query: String, automatic: Boolean) {
+        val title = query.trim()
+        if (apiKey.isBlank() || title.isEmpty()) return
+        page = SubtitleDialogPage.Working
+        status = "Searching Jimaku for “$title”…"
+        error = null
+        automaticFetch = automatic
+        launchIo(
+            onError = { searchAniList(title, automatic) },
+        ) {
+            val searchTitles = if (automatic) {
+                listOf(showName, alternateShowName.orEmpty()).filter(String::isNotBlank).distinct()
+            } else {
+                listOf(title)
+            }
+            val found = withContext(Dispatchers.IO) {
+                val titleResults = linkedMapOf<Int, JimakuEntry>()
+                var requestFailure: Exception? = null
+                for (searchTitle in searchTitles) {
+                    try {
+                        jimakuSubtitleClient.searchEntriesByTitle(apiKey, searchTitle)
+                            .forEach { if (it.id !in titleResults) titleResults[it.id] = it }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        requestFailure = failure
+                    }
+                }
+                if (titleResults.isEmpty() && requestFailure != null) throw requestFailure
+                titleResults.values.toList()
+            }
+            if (found.isEmpty()) {
+                searchAniList(title, automatic)
+            } else {
+                showEntryChoices(
+                    title = title,
+                    found = found,
+                    referenceTitles = searchTitles,
+                    automatic = automatic,
+                )
             }
         }
     }
@@ -269,7 +372,7 @@ fun JimakuSubtitleDialog(
                             }.joinToString(" · ")
                             if (detected.isNotBlank()) Text(detected, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             OutlinedButton(
-                                onClick = { searchAniList(showName, automatic = true) },
+                                onClick = { searchJimakuByTitle(showName, automatic = true) },
                                 enabled = showName.isNotBlank(),
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
@@ -285,13 +388,13 @@ fun JimakuSubtitleDialog(
                                 singleLine = true,
                                 label = { Text("Search another title") },
                                 trailingIcon = {
-                                    IconButton(onClick = { searchAniList(searchText, automatic = false) }, enabled = searchText.isNotBlank()) {
+                                    IconButton(onClick = { searchJimakuByTitle(searchText, automatic = false) }, enabled = searchText.isNotBlank()) {
                                         Icon(Icons.Rounded.Search, contentDescription = localizeUiText("Search Jimaku"))
                                     }
                                 },
                             )
                             TextButton(
-                                onClick = { searchAniList(searchText, automatic = false) },
+                                onClick = { searchJimakuByTitle(searchText, automatic = false) },
                                 enabled = searchText.isNotBlank(),
                             ) { Text("Search") }
                         }

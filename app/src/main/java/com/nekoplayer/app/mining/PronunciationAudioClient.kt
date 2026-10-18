@@ -19,6 +19,8 @@ import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import java.util.zip.ZipInputStream
 
 internal data class PronunciationAudioPreset(
@@ -270,7 +272,14 @@ class PronunciationAudioClient(
             if (cachedIndexSourceId == source.id) return cachedIndex
             val cacheDirectory = File(cacheDirectory, "pronunciation-indices")
             if (!cacheDirectory.exists()) cacheDirectory.mkdirs()
-            val cacheFile = File(cacheDirectory, sha256(archiveUrl) + ".json")
+
+            val cacheName = sha256(archiveUrl)
+            val compressedCacheFile = File(cacheDirectory, "$cacheName.json.gz")
+            val legacyCacheFile = File(cacheDirectory, "$cacheName.json")
+            var cacheFile = listOf(compressedCacheFile, legacyCacheFile)
+                .filter(File::isFile)
+                .maxByOrNull { it.lastModified() }
+                ?: compressedCacheFile
             val cacheIsFresh = cacheFile.isFile &&
                 System.currentTimeMillis() - cacheFile.lastModified() < INDEX_CACHE_TTL_MS
             if (!cacheIsFresh) {
@@ -281,20 +290,51 @@ class PronunciationAudioClient(
                     null
                 }
                 if (indexBytes != null) {
-                    runCatching {
-                        val temporary = File(cacheDirectory, cacheFile.name + ".tmp")
-                        temporary.writeBytes(indexBytes)
-                        temporary.copyTo(cacheFile, overwrite = true)
-                        temporary.delete()
-                        cacheFile.setLastModified(System.currentTimeMillis())
+                    val fetchedAt = System.currentTimeMillis()
+                    if (storeCompressedIndexCache(compressedCacheFile, indexBytes, fetchedAt)) {
+                        legacyCacheFile.delete()
+                        cacheFile = compressedCacheFile
                     }
                 }
             }
-            if (!cacheFile.isFile) return null
-            val root = runCatching { JSONObject(cacheFile.readText(Charsets.UTF_8)) }.getOrNull() ?: return null
-            val meta = root.optJSONObject("meta") ?: JSONObject()
-            val headwords = root.optJSONObject("headwords") ?: return null
-            val files = root.optJSONObject("files") ?: return null
+
+            val cacheCandidates = listOf(cacheFile, compressedCacheFile, legacyCacheFile)
+                .distinct()
+                .filter(File::isFile)
+                .sortedWith(
+                    compareByDescending<File> { it.lastModified() }
+                        .thenBy { if (it == compressedCacheFile) 0 else 1 },
+                )
+            var root: JSONObject? = null
+            var rootBytes: ByteArray? = null
+            var loadedFrom: File? = null
+            for (candidate in cacheCandidates) {
+                val loaded = runCatching {
+                    val bytes = readCachedIndex(candidate)
+                    val parsed = JSONObject(bytes.toString(Charsets.UTF_8))
+                    if (parsed.optJSONObject("headwords") != null && parsed.optJSONObject("files") != null) {
+                        parsed to bytes.takeIf { candidate == legacyCacheFile }
+                    } else {
+                        null
+                    }
+                }.getOrNull() ?: continue
+                root = loaded.first
+                rootBytes = loaded.second
+                loadedFrom = candidate
+                break
+            }
+            val indexRoot = root ?: return null
+
+            if (loadedFrom == legacyCacheFile) {
+                val originalTimestamp = legacyCacheFile.lastModified()
+                if (storeCompressedIndexCache(compressedCacheFile, rootBytes ?: return null, originalTimestamp)) {
+                    legacyCacheFile.delete()
+                }
+            }
+
+            val meta = indexRoot.optJSONObject("meta") ?: JSONObject()
+            val headwords = indexRoot.optJSONObject("headwords") ?: return null
+            val files = indexRoot.optJSONObject("files") ?: return null
             val mediaDirectoryValue = meta.optString("media_dir_abs").ifBlank {
                 meta.optString("media_dir")
             }
@@ -308,6 +348,47 @@ class PronunciationAudioClient(
                 cachedIndexSourceId = source.id
                 cachedIndex = it
             }
+        }
+    }
+
+    private fun readCachedIndex(file: File): ByteArray =
+        file.inputStream().use { input ->
+            if (file.name.endsWith(".gz", ignoreCase = true)) {
+                GZIPInputStream(input).use { readBounded(it, MAX_INDEX_JSON_BYTES) }
+            } else {
+                readBounded(input, MAX_INDEX_JSON_BYTES)
+            }
+        }
+
+    private fun storeCompressedIndexCache(file: File, bytes: ByteArray, timestamp: Long): Boolean {
+        val directory = file.parentFile ?: return false
+        if (!directory.exists() && !directory.mkdirs()) return false
+        val temporary = runCatching { File.createTempFile("index-", ".tmp", directory) }.getOrNull()
+            ?: return false
+        val backup = File(directory, file.name + ".bak")
+        return try {
+            if (!file.exists() && backup.exists()) {
+                backup.renameTo(file)
+            } else if (backup.exists()) {
+                backup.delete()
+            }
+            GZIPOutputStream(temporary.outputStream().buffered()).use { gzip ->
+                gzip.write(bytes)
+            }
+            val hadPrevious = file.exists()
+            if (hadPrevious && !file.renameTo(backup)) return false
+            if (!temporary.renameTo(file)) {
+                if (hadPrevious) backup.renameTo(file)
+                return false
+            }
+            file.setLastModified(timestamp)
+            backup.delete()
+            true
+        } catch (_: Exception) {
+            if (!file.exists() && backup.exists()) backup.renameTo(file)
+            false
+        } finally {
+            temporary.delete()
         }
     }
 

@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.core.net.toUri
 import android.os.Build
+import android.os.Process
+import android.util.Log
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -61,6 +63,7 @@ import com.nekoplayer.app.library.AnimeLibraryEpisode
 import com.nekoplayer.app.library.AnimeLibraryScanner
 import com.nekoplayer.app.mining.AnkiDroidClient
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -106,6 +109,30 @@ fun NekoApp(
     val aniList = remember(context) { AniListClient(context) }
     val snackbar = remember { SnackbarHostState() }
     val extensionManager = remember(context, database) { ExtensionManager(context, database) }
+
+    LaunchedEffect(database, dictionaryRepository) {
+        withContext(Dispatchers.IO) {
+            val threadId = Process.myTid()
+            val previousPriority = Process.getThreadPriority(threadId)
+            try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                if (!database.readBoolean(AppDatabase.DICTIONARY_PAYLOAD_COMPACTED_KEY)) {
+                    dictionaryRepository.compactExistingTermPayloads()
+                    database.writeSetting(AppDatabase.DICTIONARY_PAYLOAD_COMPACTED_KEY, true)
+                }
+                if (!database.readBoolean(AppDatabase.DICTIONARY_PAYLOAD_VACUUMED_KEY)) {
+                    database.vacuumDictionaryStorage()
+                    database.writeSetting(AppDatabase.DICTIONARY_PAYLOAD_VACUUMED_KEY, true)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w("NekoPlayer", "Dictionary storage compaction will resume on the next launch", error)
+            } finally {
+                Process.setThreadPriority(previousPriority)
+            }
+        }
+    }
 
     var page by remember { mutableStateOf(AppPage.Library) }
     var pendingSourceEntry by remember { mutableStateOf<AppDatabase.SourceLibraryEntry?>(null) }
@@ -404,6 +431,7 @@ fun NekoApp(
                             ExtensionsScreen(
                                 manager = extensionManager,
                                 database = database,
+                                aniList = aniList,
                                 sourceEntryToOpen = pendingSourceEntry,
                                 onSourceEntryOpened = { pendingSourceEntry = null },
                                 onReturnToLibrary = {
