@@ -18,6 +18,9 @@ import java.util.Locale
 import java.text.SimpleDateFormat
 import java.util.TimeZone
 import java.util.zip.ZipFile
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.yield
 
 data class ImportedDictionary(
     val id: Long,
@@ -41,8 +44,6 @@ data class DictionaryEntry(
     val sequence: Int,
     val termTags: List<String>?,
     val glossary: List<Any?>,
-    // Keep the normalized source row so renderers can use fields we don't map yet.
-    val entryJson: String,
 )
 
 data class DictionaryTermMeta(
@@ -63,6 +64,7 @@ class DictionaryRepository(
 ) {
     companion object {
         private const val BATCH_SIZE = 256
+        private const val COMPACT_PAYLOAD_VERSION = 1
         private const val EXACT_CHUNK_SIZE = 400
         private const val MAX_SEARCH_LIMIT = 100
         private const val MAX_EXACT_LIMIT = 1_000
@@ -147,7 +149,7 @@ class DictionaryRepository(
         val safeLimit = limit.coerceIn(1, MAX_SEARCH_LIMIT)
         val prefix = escapeLike(term) + "%"
         val rows = queryEntries(
-            """SELECT e.id,e.dictionary_id,e.entry_json,d.name
+            """SELECT e.id,e.dictionary_id,e.expression,e.reading,e.score,e.entry_json,e.payload_version,d.name
                FROM dictionary_entries e JOIN dictionary_catalog d ON d.id=e.dictionary_id
                WHERE d.is_ready=1 AND (e.expression=? OR e.reading=? OR
                  e.expression LIKE ? ESCAPE '\' OR e.reading LIKE ? ESCAPE '\')
@@ -169,7 +171,7 @@ class DictionaryRepository(
             val marks = List(chunk.size) { "?" }.joinToString(",")
             val args = chunk + chunk + safeLimit.toString()
             database.rawQuery(
-                """SELECT e.id,e.dictionary_id,e.entry_json,d.name,d.sort_order
+                """SELECT e.id,e.dictionary_id,e.expression,e.reading,e.score,e.entry_json,e.payload_version,d.name,d.sort_order
                    FROM dictionary_entries e JOIN dictionary_catalog d ON d.id=e.dictionary_id
                    WHERE d.is_ready=1 AND (e.expression IN ($marks) OR e.reading IN ($marks))
                    ORDER BY d.sort_order ASC,e.score DESC,e.id ASC LIMIT ?""",
@@ -177,7 +179,7 @@ class DictionaryRepository(
             ).use { cursor -> while (cursor.moveToNext()) {
                 val entry = cursorEntry(cursor)
                 val key = "${entry.dictionaryId}:${entry.id}"
-                if (!found.containsKey(key)) found[key] = entry to cursor.getInt(4)
+                if (!found.containsKey(key)) found[key] = entry to cursor.getInt(8)
             } }
         }
         return found.values.sortedWith(
@@ -224,19 +226,104 @@ class DictionaryRepository(
     }
 
     private fun cursorEntry(cursor: android.database.Cursor): DictionaryEntry {
-        val id = cursor.getLong(0); val dictionaryId = cursor.getLong(1); val raw = cursor.getString(2)
-        val row = JSONArray(raw)
-        val versionThree = row.length() >= 8 && row.opt(6) is Number
-        val glossary = if (versionThree) row.optJSONArray(5) else JSONArray().apply {
-            for (i in 5 until row.length()) put(row.opt(i))
+        val id = cursor.getLong(0)
+        val dictionaryId = cursor.getLong(1)
+        val expression = cursor.getString(2)
+        val reading = cursor.getString(3)
+        val score = cursor.getInt(4)
+        val payload = JSONArray(cursor.getString(5))
+        val dictionaryName = cursor.getString(7)
+        if (cursor.getInt(6) >= COMPACT_PAYLOAD_VERSION) {
+            val glossary = payload.optJSONArray(4) ?: JSONArray()
+            return DictionaryEntry(
+                id = id,
+                dictionaryId = dictionaryId,
+                dictionaryName = dictionaryName,
+                expression = expression,
+                reading = reading,
+                definitionTags = parseTags(payload.opt(0)),
+                rules = parseTags(payload.opt(1)),
+                score = score,
+                sequence = payload.optInt(2),
+                termTags = parseTags(payload.opt(3)),
+                glossary = (0 until glossary.length()).map(glossary::opt),
+            )
+        }
+
+        val versionThree = payload.length() >= 8 && payload.opt(6) is Number
+        val glossary = if (versionThree) payload.optJSONArray(5) else JSONArray().apply {
+            for (index in 5 until payload.length()) put(payload.opt(index))
         }
         return DictionaryEntry(
-            id, dictionaryId, cursor.getString(3), row.optString(0), row.optString(1),
-            parseTags(row.opt(2)), parseTags(row.opt(3)), row.optInt(4),
-            if (versionThree) row.optInt(6) else 0,
-            if (versionThree) parseTags(row.opt(7)) else null,
-            (0 until (glossary?.length() ?: 0)).map { glossary!!.opt(it) }, raw,
+            id = id,
+            dictionaryId = dictionaryId,
+            dictionaryName = dictionaryName,
+            expression = payload.optString(0),
+            reading = payload.optString(1),
+            definitionTags = parseTags(payload.opt(2)),
+            rules = parseTags(payload.opt(3)),
+            score = payload.optInt(4),
+            sequence = if (versionThree) payload.optInt(6) else 0,
+            termTags = if (versionThree) parseTags(payload.opt(7)) else null,
+            glossary = (0 until (glossary?.length() ?: 0)).map { glossary!!.opt(it) },
         )
+    }
+
+    suspend fun compactExistingTermPayloads(): Int {
+        var compactedCount = 0
+        var lastId = 0L
+        val update = database.compileStatement(
+            "UPDATE dictionary_entries SET entry_json=?,payload_version=? WHERE id=? AND payload_version=0",
+        )
+        try {
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val batch = mutableListOf<Pair<Long, String>>()
+                database.rawQuery(
+                    "SELECT id,entry_json FROM dictionary_entries " +
+                        "WHERE id>? AND payload_version=0 ORDER BY id LIMIT ?",
+                    arrayOf(lastId.toString(), BATCH_SIZE.toString()),
+                ).use { cursor ->
+                    while (cursor.moveToNext()) batch += cursor.getLong(0) to cursor.getString(1)
+                }
+                if (batch.isEmpty()) break
+
+                database.transaction {
+                    batch.forEach { (id, rawPayload) ->
+                        update.clearBindings()
+                        update.bindString(1, compactTermPayload(rawPayload))
+                        update.bindLong(2, COMPACT_PAYLOAD_VERSION.toLong())
+                        update.bindLong(3, id)
+                        update.executeUpdateDelete()
+                    }
+                }
+                compactedCount += batch.size
+                lastId = batch.last().first
+                yield()
+            }
+        } finally {
+            update.close()
+        }
+        return compactedCount
+    }
+
+    private fun compactTermPayload(raw: String): String {
+        val source = JSONArray(raw)
+        val versionThree = source.length() >= 8 && source.opt(6) is Number
+        val glossary = if (versionThree) {
+            source.optJSONArray(5) ?: JSONArray()
+        } else {
+            JSONArray().apply {
+                for (index in 5 until source.length()) put(source.opt(index))
+            }
+        }
+        return JSONArray().apply {
+            put(source.opt(2))
+            put(source.opt(3))
+            put(if (versionThree) source.opt(6) else 0)
+            put(if (versionThree) source.opt(7) else JSONObject.NULL)
+            put(glossary)
+        }.toString()
     }
 
     private fun searchEmbedded(query: String, limit: Int): List<DictionaryEntry> {
@@ -263,7 +350,7 @@ class DictionaryRepository(
         val values = candidates.toList()
         val marks = List(values.size) { "?" }.joinToString(",")
         return queryEntries(
-            """SELECT e.id,e.dictionary_id,e.entry_json,d.name
+            """SELECT e.id,e.dictionary_id,e.expression,e.reading,e.score,e.entry_json,e.payload_version,d.name
                FROM dictionary_entries e JOIN dictionary_catalog d ON d.id=e.dictionary_id
                WHERE d.is_ready=1 AND (e.expression IN ($marks) OR e.reading IN ($marks))
                ORDER BY length(e.expression) DESC,e.score DESC,e.id ASC LIMIT ?""",
@@ -319,7 +406,10 @@ class DictionaryRepository(
     }
 
     private fun readTermBank(input: InputStream, dictionaryId: Long): Int {
-        val statement = database.compileStatement("INSERT INTO dictionary_entries(dictionary_id,expression,reading,score,entry_json) VALUES(?,?,?,?,?)")
+        val statement = database.compileStatement(
+            "INSERT INTO dictionary_entries(dictionary_id,expression,reading,score,entry_json,payload_version) " +
+                "VALUES(?,?,?,?,?,1)",
+        )
         val consumer = NativeTermBankBatchConsumer { expressions, readings, scores, rawRows ->
             require(expressions.size == readings.size && expressions.size == scores.size && expressions.size == rawRows.size) {
                 "The native dictionary importer returned an incomplete batch"
@@ -538,8 +628,13 @@ class DictionaryRepository(
     }
 
     private fun bindEntry(statement: SQLiteStatement, id: Long, expression: String, reading: String, score: Int, raw: String) {
-        statement.clearBindings(); statement.bindLong(1, id); statement.bindString(2, expression); statement.bindString(3, reading)
-        statement.bindLong(4, score.toLong()); statement.bindString(5, raw); statement.executeInsert()
+        statement.clearBindings()
+        statement.bindLong(1, id)
+        statement.bindString(2, expression)
+        statement.bindString(3, reading)
+        statement.bindLong(4, score.toLong())
+        statement.bindString(5, compactTermPayload(raw))
+        statement.executeInsert()
     }
     private fun insertMeta(statement: SQLiteStatement, id: Long, meta: MetaRow) {
         statement.clearBindings(); statement.bindLong(1, id); statement.bindString(2, meta.expression); statement.bindString(3, meta.reading)

@@ -16,8 +16,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.util.Locale
 import java.util.UUID
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 
 // Stores and reuses Jimaku subtitles for local and source videos.
 class AutomaticJimakuSubtitleStore(
@@ -41,7 +44,9 @@ class AutomaticJimakuSubtitleStore(
             ?.firstOrNull(::isUsableSubtitle)
         if (saved != null) {
             try {
-                return@withContext parseTrack(saved)
+                val track = parseTrack(saved)
+                if (!isCompressedSubtitle(saved)) persist(identity, saved)
+                return@withContext track
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -76,7 +81,13 @@ class AutomaticJimakuSubtitleStore(
 
     private fun parseTrack(file: File): SubtitleTrack {
         require(isUsableSubtitle(file)) { "Jimaku returned an invalid subtitle file." }
-        val parsed = SubtitleParser.parse(file.readBytes(), file.name)
+        val originalName = if (isCompressedSubtitle(file)) file.name.dropLast(".gz".length) else file.name
+        val bytes = if (isCompressedSubtitle(file)) {
+            GZIPInputStream(file.inputStream()).use { readBounded(it) }
+        } else {
+            file.readBytes()
+        }
+        val parsed = SubtitleParser.parse(bytes, originalName)
         val sourcePrefix = "jimaku-"
         return parsed.copy(
             id = sourcePrefix + parsed.id,
@@ -90,16 +101,21 @@ class AutomaticJimakuSubtitleStore(
     private fun persist(identity: String, source: File) {
         val directory = episodeDirectory(identity)
         if (!directory.exists() && !directory.mkdirs()) return
-        val destination = File(directory, source.name)
-        val temporary = File(directory, ".${source.name}.tmp")
+        if (!isUsableSubtitle(source) || isCompressedSubtitle(source)) return
+
+        val compressedName = "${source.name}.gz"
+        val destination = File(directory, compressedName)
+        val temporary = File(directory, ".${compressedName}.tmp")
         try {
-            source.inputStream().use { input ->
-                FileOutputStream(temporary).use { output ->
-                    input.copyTo(output)
+            FileOutputStream(temporary).use { output ->
+                GZIPOutputStream(output).use { gzip ->
+                    source.inputStream().use { input -> input.copyTo(gzip) }
+                    gzip.finish()
                     output.fd.sync()
                 }
             }
-            if (!isUsableSubtitle(temporary)) {
+            val uncompressedSize = gzipUncompressedSize(temporary)
+            if (uncompressedSize == null || uncompressedSize !in 1..SubtitleParser.MAX_FILE_BYTES.toLong()) {
                 temporary.delete()
                 return
             }
@@ -120,6 +136,43 @@ class AutomaticJimakuSubtitleStore(
         }
     }
 
+    private fun isCompressedSubtitle(file: File): Boolean =
+        file.name.endsWith(".gz", ignoreCase = true)
+
+    private fun logicalSubtitleName(file: File): String =
+        if (isCompressedSubtitle(file)) file.name.dropLast(".gz".length) else file.name
+
+    private fun gzipUncompressedSize(file: File): Long? {
+        if (file.length() < 18L) return null
+        return try {
+            RandomAccessFile(file, "r").use { input ->
+                input.seek(input.length() - 4L)
+                val byte0 = input.readUnsignedByte().toLong()
+                val byte1 = input.readUnsignedByte().toLong()
+                val byte2 = input.readUnsignedByte().toLong()
+                val byte3 = input.readUnsignedByte().toLong()
+                byte0 or (byte1 shl 8) or (byte2 shl 16) or (byte3 shl 24)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun readBounded(input: java.io.InputStream): ByteArray {
+        val limit = SubtitleParser.MAX_FILE_BYTES
+        val output = java.io.ByteArrayOutputStream(minOf(limit, 32 * 1024))
+        val buffer = ByteArray(16 * 1024)
+        var total = 0
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            if (total > limit) throw IllegalStateException("Cached subtitle exceeded the size limit.")
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
+    }
+
     private fun episodeDirectory(identity: String): File {
         val folderName = UUID.nameUUIDFromBytes(identity.toByteArray(Charsets.UTF_8)).toString()
         return File(root, folderName)
@@ -133,9 +186,11 @@ class AutomaticJimakuSubtitleStore(
             ?.toList()
             .orEmpty()
         var keptEpisodes = 1
-        var keptBytes = newestDirectory.listFiles()?.asSequence()?.filter(File::isFile)?.sumOf(File::length) ?: 0L
+        var keptBytes = newestDirectory.listFiles()?.asSequence()?.filter(File::isFile)
+            ?.sumOf(::logicalStorageSize) ?: 0L
         for (directory in olderDirectories) {
-            val bytes = directory.listFiles()?.asSequence()?.filter(File::isFile)?.sumOf(File::length) ?: 0L
+            val bytes = directory.listFiles()?.asSequence()?.filter(File::isFile)
+                ?.sumOf(::logicalStorageSize) ?: 0L
             if ((keptEpisodes < MAX_SAVED_EPISODES) && ((keptBytes + bytes) <= MAX_SAVED_BYTES)) {
                 keptEpisodes++
                 keptBytes += bytes
@@ -145,10 +200,13 @@ class AutomaticJimakuSubtitleStore(
         }
     }
 
+    private fun logicalStorageSize(file: File): Long =
+        if (isCompressedSubtitle(file)) gzipUncompressedSize(file) ?: file.length() else file.length()
+
     private fun isUsableSubtitle(file: File): Boolean {
         if (!file.isFile) return false
-        val size = file.length()
-        val extension = file.extension.lowercase(Locale.ROOT)
+        val size = if (isCompressedSubtitle(file)) gzipUncompressedSize(file) ?: return false else file.length()
+        val extension = logicalSubtitleName(file).substringAfterLast('.', "").lowercase(Locale.ROOT)
         return (size >= 1L) &&
             (size <= SubtitleParser.MAX_FILE_BYTES.toLong()) &&
             (extension in SubtitleParser.SUPPORTED_EXTENSIONS)

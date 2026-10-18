@@ -186,6 +186,8 @@ class AnimeLibraryScanner {
 class AniListClient(context: Context) {
     private val cacheRoot = File(context.cacheDir, "anilist-covers-v2")
     private val apiLock = Any()
+    private val cachePruneLock = Any()
+    private var expiredCoverCachePruned = false
     private val airingScheduleCache = mutableMapOf<String, Pair<Long, AniListAiringEpisode?>>()
     @Volatile private var lastApiRequestAt = 0L
 
@@ -194,6 +196,7 @@ class AniListClient(context: Context) {
         val queries = searchQueries(showName, episodeFileNames)
         if (queries.isEmpty()) return null
         cacheRoot.mkdirs()
+        pruneExpiredCoverCache()
         val key = stableHash(queries.joinToString("|") { normalize(it) })
         val imageFile = File(cacheRoot, "$key.image")
         if (imageFile.isFile && imageFile.length() > 0L) {
@@ -450,6 +453,31 @@ class AniListClient(context: Context) {
     }
 
     private fun contextCacheParent(): File = cacheRoot.parentFile ?: cacheRoot
+
+    @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
+    private fun pruneExpiredCoverCache() {
+        synchronized(cachePruneLock) {
+            if (expiredCoverCachePruned) return
+            val now = System.currentTimeMillis()
+            val roots = listOf(cacheRoot, File(contextCacheParent(), "anilist-covers"))
+            roots.forEach { directory ->
+                directory.listFiles()?.forEach { file ->
+                    if (!file.isFile) return@forEach
+                    when {
+                        file.name.endsWith(".image", ignoreCase = true) &&
+                            (file.length() == 0L || now - file.lastModified() >= IMAGE_LIFETIME_MS) -> {
+                            file.delete()
+                        }
+                        file.name.endsWith(".miss", ignoreCase = true) -> {
+                            val cachedAt = runCatching { file.readText().trim().toLongOrNull() }.getOrNull()
+                            if (cachedAt == null || now - cachedAt >= MISS_LIFETIME_MS) file.delete()
+                        }
+                    }
+                }
+            }
+            expiredCoverCachePruned = true
+        }
+    }
 
     private data class CoverLookup(val succeeded: Boolean, val score: Double, val url: String?)
 

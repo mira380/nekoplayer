@@ -80,9 +80,15 @@ class AppDatabase(context: Context) : Closeable {
                     "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, " +
                     "dictionary_id INTEGER NOT NULL, expression TEXT NOT NULL, " +
                     "reading TEXT NOT NULL DEFAULT '', score INTEGER NOT NULL DEFAULT 0, " +
-                    "entry_json TEXT NOT NULL, FOREIGN KEY(dictionary_id) " +
+                    "entry_json TEXT NOT NULL, payload_version INTEGER NOT NULL DEFAULT 0, " +
+                    "FOREIGN KEY(dictionary_id) " +
                     "REFERENCES dictionary_catalog(id) ON DELETE CASCADE)",
             )
+            if (!hasColumn("dictionary_entries", "payload_version")) {
+                sql.execSQL(
+                    "ALTER TABLE dictionary_entries ADD COLUMN payload_version INTEGER NOT NULL DEFAULT 0",
+                )
+            }
             sql.execSQL(
                 "CREATE INDEX IF NOT EXISTS dictionary_entries_expression_idx " +
                     "ON dictionary_entries(expression)",
@@ -137,6 +143,7 @@ class AppDatabase(context: Context) : Closeable {
                 "mining_drafts",
                 "dictionary_priority",
                 "dictionary_term_meta",
+                "compact_dictionary_term_payloads",
             )
             migrationNames.forEachIndexed { index, name ->
                 val values = ContentValues().apply {
@@ -168,6 +175,16 @@ class AppDatabase(context: Context) : Closeable {
     private fun ensureColumn(column: String, declaration: String) {
         if (!hasColumn("dictionary_catalog", column)) {
             sql.execSQL("ALTER TABLE dictionary_catalog ADD COLUMN $column $declaration")
+        }
+    }
+
+    fun vacuumDictionaryStorage() {
+        check(!sql.inTransaction()) { "Cannot vacuum while a transaction is active" }
+        sql.execSQL("VACUUM")
+        sql.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { cursor ->
+            if (cursor.moveToFirst()) {
+                check(cursor.getInt(0) == 0) { "Could not finish the dictionary storage checkpoint" }
+            }
         }
     }
 
@@ -489,7 +506,9 @@ class AppDatabase(context: Context) : Closeable {
 
     companion object {
         const val DATABASE_NAME = "app.db"
-        const val SCHEMA_VERSION = 5
+        const val SCHEMA_VERSION = 6
+        const val DICTIONARY_PAYLOAD_COMPACTED_KEY = "storage.dictionaryPayloadCompactV1"
+        const val DICTIONARY_PAYLOAD_VACUUMED_KEY = "storage.dictionaryPayloadVacuumedV1"
         const val RECENT_KEY = "recent_media"
         const val SOURCE_LIBRARY_KEY = "library.videoSourceEntries"
         const val SOURCE_PROGRESS_KEY = "playback.sourceEpisodes"
