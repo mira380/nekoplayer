@@ -120,10 +120,6 @@ fun NekoApp(
                     dictionaryRepository.compactExistingTermPayloads()
                     database.writeSetting(AppDatabase.DICTIONARY_PAYLOAD_COMPACTED_KEY, true)
                 }
-                if (!database.readBoolean(AppDatabase.DICTIONARY_PAYLOAD_VACUUMED_KEY)) {
-                    database.vacuumDictionaryStorage()
-                    database.writeSetting(AppDatabase.DICTIONARY_PAYLOAD_VACUUMED_KEY, true)
-                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

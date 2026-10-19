@@ -33,6 +33,69 @@ class AppDatabase(context: Context) : Closeable {
         )
         sql.setForeignKeyConstraintsEnabled(true)
         ensureSchema()
+        repairLibraryGroupSettings()
+    }
+
+    private fun repairLibraryGroupSettings() {
+        val storedGroups = readSetting("library.groups") as? JSONArray
+        val canonicalGroups = linkedMapOf<String, String>()
+        var groupsChanged = false
+        if (storedGroups != null) {
+            for (index in 0 until storedGroups.length()) {
+                val original = storedGroups.optString(index)
+                val name = original.trim()
+                if (name.isEmpty()) {
+                    groupsChanged = true
+                    continue
+                }
+                val key = name.lowercase(Locale.ROOT)
+                if (canonicalGroups.containsKey(key)) {
+                    groupsChanged = true
+                    continue
+                }
+                canonicalGroups[key] = name
+                if (name != original) groupsChanged = true
+            }
+            if (groupsChanged) {
+                writeSetting("library.groups", JSONArray(canonicalGroups.values.toList()))
+            }
+        }
+
+        val storedAssignments = (readSetting("library.groupAssignments") as? JSONObject) ?: return
+        val repairedAssignments = JSONObject()
+        var assignmentsChanged = false
+        val keys = storedAssignments.keys()
+        while (keys.hasNext()) {
+            val itemKey = keys.next()
+            val storedNames = storedAssignments.optJSONArray(itemKey)
+            if (storedNames == null) {
+                assignmentsChanged = true
+                continue
+            }
+
+            val namesByKey = linkedMapOf<String, String>()
+            for (index in 0 until storedNames.length()) {
+                val original = storedNames.optString(index)
+                val name = original.trim()
+                if (name.isEmpty()) {
+                    assignmentsChanged = true
+                    continue
+                }
+                val key = name.lowercase(Locale.ROOT)
+                val canonicalName = canonicalGroups[key] ?: name
+                if (canonicalName != original || namesByKey.containsKey(key)) {
+                    assignmentsChanged = true
+                }
+                if (!namesByKey.containsKey(key)) namesByKey[key] = canonicalName
+            }
+            if (namesByKey.size != storedNames.length()) assignmentsChanged = true
+            if (namesByKey.isNotEmpty()) {
+                repairedAssignments.put(itemKey, JSONArray(namesByKey.values.sorted()))
+            }
+        }
+        if (assignmentsChanged) {
+            writeSetting("library.groupAssignments", repairedAssignments)
+        }
     }
 
     @android.annotation.SuppressLint("DirectDateInstantiation")
@@ -178,16 +241,6 @@ class AppDatabase(context: Context) : Closeable {
         }
     }
 
-    fun vacuumDictionaryStorage() {
-        check(!sql.inTransaction()) { "Cannot vacuum while a transaction is active" }
-        sql.execSQL("VACUUM")
-        sql.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { cursor ->
-            if (cursor.moveToFirst()) {
-                check(cursor.getInt(0) == 0) { "Could not finish the dictionary storage checkpoint" }
-            }
-        }
-    }
-
     fun readSetting(key: String): Any? {
         require(key.isNotBlank())
         sql.rawQuery(
@@ -265,7 +318,7 @@ class AppDatabase(context: Context) : Closeable {
                     ),
                 )
             }
-        }
+        }.distinctBy(SourceLibraryEntry::key)
     }
 
     @Synchronized
@@ -508,8 +561,7 @@ class AppDatabase(context: Context) : Closeable {
         const val DATABASE_NAME = "app.db"
         const val SCHEMA_VERSION = 6
         const val DICTIONARY_PAYLOAD_COMPACTED_KEY = "storage.dictionaryPayloadCompactV1"
-        const val DICTIONARY_PAYLOAD_VACUUMED_KEY = "storage.dictionaryPayloadVacuumedV1"
-        const val RECENT_KEY = "recent_media"
+            const val RECENT_KEY = "recent_media"
         const val SOURCE_LIBRARY_KEY = "library.videoSourceEntries"
         const val SOURCE_PROGRESS_KEY = "playback.sourceEpisodes"
         const val SOURCE_PROGRESS_LIMIT = 500

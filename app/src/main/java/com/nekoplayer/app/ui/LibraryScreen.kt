@@ -329,7 +329,7 @@ fun LibraryScreen(
                 LibraryShowSort.EPISODES -> compareByDescending<LibraryShelfItem> { it.episodeCount }
                     .thenBy { it.title.lowercase() }
             }
-            return entries.sortedWith(comparator)
+            return entries.distinctBy(LibraryShelfItem::key).sortedWith(comparator)
         }
 
         buildList {
@@ -369,12 +369,24 @@ fun LibraryScreen(
     }
 
     fun saveGroupAssignments(updatedAssignments: Map<String, Set<String>>) {
-        groupAssignments = updatedAssignments
-        val encoded = org.json.JSONObject()
-        updatedAssignments.forEach { (itemKey, assignedGroups) ->
-            if (assignedGroups.isNotEmpty()) {
-                encoded.put(itemKey, org.json.JSONArray(assignedGroups.sorted()))
+        val canonicalGroups = libraryGroups.associateBy { it.lowercase(java.util.Locale.ROOT) }
+        val normalizedAssignments = buildMap {
+            updatedAssignments.forEach { (itemKey, assignedGroups) ->
+                val normalizedGroups = assignedGroups.asSequence()
+                    .mapNotNull { name ->
+                        name.trim().takeIf(String::isNotEmpty)?.let { trimmed ->
+                            canonicalGroups[trimmed.lowercase(java.util.Locale.ROOT)] ?: trimmed
+                        }
+                    }
+                    .distinctBy { it.lowercase(java.util.Locale.ROOT) }
+                    .toSet()
+                if (normalizedGroups.isNotEmpty()) put(itemKey, normalizedGroups)
             }
+        }
+        groupAssignments = normalizedAssignments
+        val encoded = org.json.JSONObject()
+        normalizedAssignments.forEach { (itemKey, assignedGroups) ->
+            encoded.put(itemKey, org.json.JSONArray(assignedGroups.sorted()))
         }
         database.writeSetting("library.groupAssignments", encoded)
     }
@@ -415,7 +427,11 @@ fun LibraryScreen(
         if (selectedLibraryItemKeys.isEmpty() || batchGroupDraft.isEmpty()) return
         val updated = groupAssignments.toMutableMap()
         selectedLibraryItemKeys.forEach { itemKey ->
-            updated[itemKey] = updated[itemKey].orEmpty() + batchGroupDraft
+            val current = updated[itemKey].orEmpty()
+            val newGroups = batchGroupDraft.filterNot { candidate ->
+                current.any { it.equals(candidate, ignoreCase = true) }
+            }
+            if (newGroups.isNotEmpty()) updated[itemKey] = current + newGroups
         }
         saveGroupAssignments(updated)
         showBatchGroupDialog = false
@@ -423,13 +439,15 @@ fun LibraryScreen(
     }
 
     fun toggleGroupAssignment(itemKey: String, groupName: String) {
+        val canonicalGroupName = libraryGroups.firstOrNull { it.equals(groupName, ignoreCase = true) }
+            ?: return
         val updated = groupAssignments.toMutableMap()
         val current = updated[itemKey].orEmpty()
-        val alreadyAssigned = current.any { it.equals(groupName, ignoreCase = true) }
+        val alreadyAssigned = current.any { it.equals(canonicalGroupName, ignoreCase = true) }
         val next = if (alreadyAssigned) {
-            current.filterNot { it.equals(groupName, ignoreCase = true) }.toSet()
+            current.filterNot { it.equals(canonicalGroupName, ignoreCase = true) }.toSet()
         } else {
-            current + groupName
+            current + canonicalGroupName
         }
         if (next.isEmpty()) updated.remove(itemKey) else updated[itemKey] = next
         saveGroupAssignments(updated)
@@ -1548,6 +1566,7 @@ private fun readLibraryGroups(database: AppDatabase): List<String> {
 
 private fun readLibraryGroupAssignments(database: AppDatabase): Map<String, Set<String>> {
     val stored = (database.readSetting("library.groupAssignments") as? org.json.JSONObject) ?: return emptyMap()
+    val canonicalGroups = readLibraryGroups(database).associateBy { it.lowercase(java.util.Locale.ROOT) }
     return buildMap {
         val keys = stored.keys()
         while (keys.hasNext()) {
@@ -1555,8 +1574,11 @@ private fun readLibraryGroupAssignments(database: AppDatabase): Map<String, Set<
             val assigned = stored.optJSONArray(itemKey) ?: continue
             val names = (0 until assigned.length()).asSequence()
                 .mapNotNull { index ->
-                    assigned.optString(index).trim().takeIf(String::isNotEmpty)
+                    assigned.optString(index).trim().takeIf(String::isNotEmpty)?.let { name ->
+                        canonicalGroups[name.lowercase(java.util.Locale.ROOT)] ?: name
+                    }
                 }
+                .distinctBy { it.lowercase(java.util.Locale.ROOT) }
                 .toSet()
             if (names.isNotEmpty()) put(itemKey, names)
         }
