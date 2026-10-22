@@ -80,7 +80,7 @@ fun JimakuSubtitleDialog(
     apiKey: String,
     aniListClient: AniListClient,
     jimakuSubtitleClient: JimakuSubtitleClient,
-    onSubtitleFile: (File) -> Unit,
+    onSubtitleFile: (File, Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -128,7 +128,7 @@ fun JimakuSubtitleDialog(
             onError = { showFailure(it.message ?: "The subtitle could not be downloaded. Check the connection and try again.") },
         ) {
             val cached = withContext(Dispatchers.IO) { jimakuSubtitleClient.downloadToCache(file, entryId) }
-            onSubtitleFile(cached)
+            onSubtitleFile(cached, entryId)
             onDismiss()
         }
     }

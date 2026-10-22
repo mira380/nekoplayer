@@ -178,16 +178,6 @@ class AppDatabase(context: Context) : Closeable {
         }
     }
 
-    fun vacuumDictionaryStorage() {
-        check(!sql.inTransaction()) { "Cannot vacuum while a transaction is active" }
-        sql.execSQL("VACUUM")
-        sql.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { cursor ->
-            if (cursor.moveToFirst()) {
-                check(cursor.getInt(0) == 0) { "Could not finish the dictionary storage checkpoint" }
-            }
-        }
-    }
-
     fun readSetting(key: String): Any? {
         require(key.isNotBlank())
         sql.rawQuery(
@@ -508,7 +498,6 @@ class AppDatabase(context: Context) : Closeable {
         const val DATABASE_NAME = "app.db"
         const val SCHEMA_VERSION = 6
         const val DICTIONARY_PAYLOAD_COMPACTED_KEY = "storage.dictionaryPayloadCompactV1"
-        const val DICTIONARY_PAYLOAD_VACUUMED_KEY = "storage.dictionaryPayloadVacuumedV1"
         const val RECENT_KEY = "recent_media"
         const val SOURCE_LIBRARY_KEY = "library.videoSourceEntries"
         const val SOURCE_PROGRESS_KEY = "playback.sourceEpisodes"

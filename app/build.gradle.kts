@@ -1,7 +1,23 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val releaseSigningPropertiesFile = rootProject.file("keystore.properties")
+val releaseSigningProperties = Properties().apply {
+    if (releaseSigningPropertiesFile.isFile) {
+        releaseSigningPropertiesFile.inputStream().use { load(it) }
+    }
+}
+val releaseKeystorePath = releaseSigningProperties.getProperty("storeFile")?.takeIf(String::isNotBlank)
+val releaseKeystoreFile = releaseKeystorePath?.let(rootProject::file)
+val releaseStorePassword = releaseSigningProperties.getProperty("storePassword")?.takeIf(String::isNotBlank)
+val releaseKeyAlias = releaseSigningProperties.getProperty("keyAlias")?.takeIf(String::isNotBlank)
+val releaseKeyPassword = releaseSigningProperties.getProperty("keyPassword")?.takeIf(String::isNotBlank)
+val releaseSigningReady = releaseKeystoreFile?.isFile == true &&
+    releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
 
 android {
     namespace = "com.nekoplayer.app"
@@ -12,8 +28,8 @@ android {
         applicationId = "com.nekoplayer.app"
         minSdk = 23
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.5.0"
+        versionCode = 12
+        versionName = "0.5.2"
 
         externalNativeBuild {
             cmake {
@@ -33,6 +49,25 @@ android {
         compose = true
     }
 
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -40,6 +75,31 @@ android {
 
     packaging {
         resources.excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1")
+    }
+}
+
+val validateReleaseSigning = tasks.register("validateReleaseSigning") {
+    group = "verification"
+    doLast {
+        if (!releaseSigningReady) {
+            val expectedKeystore = releaseKeystoreFile?.absolutePath ?: "<storeFile is missing>"
+            throw GradleException(
+                "Release signing is not ready (keystore not found or signing properties are incomplete: " +
+                    "$expectedKeystore). Fill in ${releaseSigningPropertiesFile.absolutePath} and make sure its keystore exists."
+            )
+        }
+    }
+}
+
+val copyReleaseApkToReleaseDirectory = tasks.register<Copy>("copyReleaseApkToReleaseDirectory") {
+    from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
+    into(rootProject.layout.projectDirectory.dir("app/release"))
+}
+
+tasks.configureEach {
+    when (name) {
+        "packageRelease" -> dependsOn(validateReleaseSigning)
+        "assembleRelease" -> finalizedBy(copyReleaseApkToReleaseDirectory)
     }
 }
 

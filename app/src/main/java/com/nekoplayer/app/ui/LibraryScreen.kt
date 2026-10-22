@@ -83,10 +83,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nekoplayer.app.data.AppDatabase
+import com.nekoplayer.app.extensions.ExtensionManager
 import com.nekoplayer.app.library.AniListAiringEpisode
 import com.nekoplayer.app.library.AniListAiringLookup
 import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.AnimeLibraryEpisode
+import com.nekoplayer.app.library.JimakuSubtitleClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -98,75 +100,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class LibraryShowSort(val title: String) {
-    TITLE("Title A–Z"),
-    RECENT("Recently watched"),
-    EPISODES("Most episodes");
-
-    companion object {
-        fun fromStored(value: String): LibraryShowSort = entries.firstOrNull { it.name == value } ?: TITLE
-    }
-}
-
-private sealed interface LibraryShelfItem {
-    val key: String
-    val title: String
-    val episodeCount: Int
-    val lastWatchedAtMs: Long
-
-    data class LocalShow(
-        val showName: String,
-        val episodes: List<AnimeLibraryEpisode>,
-        override val lastWatchedAtMs: Long,
-    ) : LibraryShelfItem {
-        override val key: String get() = "show:$showName"
-        override val title: String get() = showName
-        override val episodeCount: Int get() = episodes.size
-    }
-
-    data class SourceTitle(
-        val entry: AppDatabase.SourceLibraryEntry,
-        override val lastWatchedAtMs: Long,
-    ) : LibraryShelfItem {
-        override val key: String get() = "source:${entry.key}"
-        override val title: String get() = entry.title
-        override val episodeCount: Int get() = entry.episodeCount ?: 0
-    }
-}
-
-private data class LibraryShelf(
-    val key: String,
-    val title: String,
-    val entries: List<LibraryShelfItem>,
-)
-
-private fun LibraryShelfItem.toAiringLookup(): AniListAiringLookup = when (this) {
-    is LibraryShelfItem.LocalShow -> AniListAiringLookup(
-        key = key,
-        showName = showName,
-        episodeFileNames = episodes.take(2).map(AnimeLibraryEpisode::displayName),
-    )
-    is LibraryShelfItem.SourceTitle -> AniListAiringLookup(
-        key = key,
-        showName = entry.title,
-    )
-}
-
-private fun sourceTitleSortKey(entry: AppDatabase.SourceLibraryEntry): String =
-    entry.title.lowercase()
-
-private fun sourceEpisodeCount(entry: AppDatabase.SourceLibraryEntry): Int =
-    entry.episodeCount ?: 0
-
-private fun String.toLibraryTimestampMs(): Long = runCatching {
-    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US)
-        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
-        .parse(this)?.time ?: 0L
-}.getOrDefault(0L)
+private const val LIBRARY_EPISODE_BADGE_BASELINE_RESET_KEY = "library.episodeBadgeBaselineReset.v1"
 
 @Composable
 fun LibraryScreen(
     database: AppDatabase,
+    extensionManager: ExtensionManager,
     aniList: AniListClient,
     folderUri: String?,
     episodes: List<AnimeLibraryEpisode>,
@@ -184,6 +123,7 @@ fun LibraryScreen(
 ) {
     val context = LocalContext.current
     val artworkCache = remember { createLibraryArtworkCache() }
+    val jimakuSubtitleClient = remember(context) { JimakuSubtitleClient(context.cacheDir) }
     var recent by remember { mutableStateOf(emptyList<AppDatabase.RecentMedia>()) }
     var sourceEntries by remember(database) { mutableStateOf(database.listSourceLibraryEntries()) }
     var sourceRecency by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
@@ -192,7 +132,9 @@ fun LibraryScreen(
     }
     var libraryGroups by remember(database) { mutableStateOf(readLibraryGroups(database)) }
     var groupAssignments by remember(database) { mutableStateOf(readLibraryGroupAssignments(database)) }
-    var collapsedGroups by remember { mutableStateOf(emptySet<String>()) }
+    var collapsedGroups by remember(database) {
+        mutableStateOf(readCollapsedLibraryGroups(database))
+    }
     var showGroupManager by remember { mutableStateOf(value = false) }
     var groupNameDraft by remember { mutableStateOf("") }
     var groupToDelete by remember { mutableStateOf<String?>(null) }
@@ -207,6 +149,18 @@ fun LibraryScreen(
     var coverUrl by remember { mutableStateOf("") }
     var selectingLibraryItems by remember { mutableStateOf(false) }
     var selectedLibraryItemKeys by remember { mutableStateOf(emptySet<String>()) }
+    var seenEpisodeCounts by remember(database) {
+        mutableStateOf(readLibrarySeenEpisodeCounts(database))
+    }
+    var jimakuApiKey by remember(database) { mutableStateOf(database.readString("jimaku.apiKey")) }
+    var subtitleStatuses by remember(database) { mutableStateOf(emptyMap<String, LibrarySubtitleStatus>()) }
+    var aniListSubtitleMatches by remember(database) {
+        mutableStateOf(emptyMap<String, CachedAniListLibraryMatch>())
+    }
+    var manualJimakuMatches by remember(database) { mutableStateOf(emptyMap<String, Int>()) }
+    var subtitleCacheLoaded by remember(database) { mutableStateOf(false) }
+    var subtitleRefreshStarted by remember(database) { mutableStateOf(false) }
+    var subtitleRefreshing by remember(database) { mutableStateOf(false) }
     val selectedSourceKeys = remember(selectedLibraryItemKeys) {
         selectedLibraryItemKeys.asSequence()
             .filter { it.startsWith("source:") }
@@ -237,6 +191,35 @@ fun LibraryScreen(
         recent = loadedRecent
         sourceEntries = loadedSourceEntries
         sourceRecency = loadedSourceRecency
+        jimakuApiKey = withContext(Dispatchers.IO) { database.readString("jimaku.apiKey") }
+    }
+    LaunchedEffect(database) {
+        val (loadedStatuses, loadedMatches, loadedManualMatches) = withContext(Dispatchers.IO) {
+            Triple(
+                readLibrarySubtitleStatusCache(database),
+                readAniListMatchCache(database),
+                readManualJimakuMatchCache(database),
+            )
+        }
+        subtitleStatuses = loadedStatuses
+        aniListSubtitleMatches = loadedMatches
+        manualJimakuMatches = loadedManualMatches
+        subtitleCacheLoaded = true
+    }
+    LaunchedEffect(database, extensionManager) {
+        sourceEntries = refreshLibrarySourceEpisodeCounts(database, extensionManager)
+    }
+    LaunchedEffect(database) {
+        val resetBaseline = withContext(Dispatchers.IO) {
+            if (database.readBoolean(LIBRARY_EPISODE_BADGE_BASELINE_RESET_KEY)) {
+                false
+            } else {
+                writeLibrarySeenEpisodeCounts(database, emptyMap())
+                database.writeSetting(LIBRARY_EPISODE_BADGE_BASELINE_RESET_KEY, true)
+                true
+            }
+        }
+        if (resetBaseline) seenEpisodeCounts = emptyMap()
     }
     LaunchedEffect(coverVersion) {
         covers = withContext(Dispatchers.IO) {
@@ -345,6 +328,84 @@ fun LibraryScreen(
             }
         }
     }
+
+    LaunchedEffect(database, subtitleCacheLoaded, jimakuApiKey, libraryShelves) {
+        if (
+            !subtitleCacheLoaded ||
+            subtitleRefreshStarted ||
+            jimakuApiKey.isBlank() ||
+            libraryShelves.isEmpty()
+        ) return@LaunchedEffect
+        subtitleRefreshStarted = true
+        subtitleRefreshing = true
+        try {
+            val result = withContext(Dispatchers.IO) {
+                refreshLibrarySubtitleAvailability(
+                    aniList = aniList,
+                    jimaku = jimakuSubtitleClient,
+                    apiKey = jimakuApiKey,
+                    items = libraryShelves.flatMap(LibraryShelf::entries),
+                    cachedStatuses = subtitleStatuses,
+                    cachedAniListMatches = aniListSubtitleMatches,
+                    manualEntryIds = manualJimakuMatches,
+                    lastBatchCheckMs = database.readNumber(LIBRARY_JIMAKU_BATCH_CHECK_KEY).toLong(),
+                ).also { refreshed ->
+                    writeLibrarySubtitleStatusCache(database, refreshed.statuses)
+                    writeAniListMatchCache(database, refreshed.aniListMatches)
+                    refreshed.batchCheckedAtMs?.let { database.writeSetting(LIBRARY_JIMAKU_BATCH_CHECK_KEY, it) }
+                }
+            }
+            subtitleStatuses = result.statuses
+            aniListSubtitleMatches = result.aniListMatches
+            val airingUpdates = result.aniListMatches.mapNotNull { (key, value) ->
+                value.match.nextAiringEpisode?.let { key to it }
+            }.toMap()
+            if (airingUpdates.isNotEmpty()) airingEpisodesByItemKey = airingEpisodesByItemKey + airingUpdates
+        } finally {
+            subtitleRefreshing = false
+        }
+    }
+
+    fun subtitleStatusFor(item: LibraryShelfItem): LibrarySubtitleStatus? {
+        val currentEpisode = item.episodeCount.takeIf { it in 1..300 } ?: return null
+        val cached = subtitleStatuses[item.key]
+        if (cached == null) {
+            val state = when {
+                jimakuApiKey.isBlank() -> LibrarySubtitleState.KEY_REQUIRED
+                subtitleRefreshing -> LibrarySubtitleState.CHECKING
+                else -> LibrarySubtitleState.MATCHING
+            }
+            return LibrarySubtitleStatus(currentEpisode, state, checkedAtMs = 0L)
+        }
+        if (cached.state !in setOf(LibrarySubtitleState.AVAILABLE, LibrarySubtitleState.MISSING)) {
+            return cached.copy(episodeNumber = currentEpisode)
+        }
+        val latestAvailable = cached.latestAvailableEpisode
+            ?: cached.episodeNumber.takeIf { cached.state == LibrarySubtitleState.AVAILABLE }
+        return cached.copy(
+            episodeNumber = currentEpisode,
+            state = if (latestAvailable != null && latestAvailable >= currentEpisode) {
+                LibrarySubtitleState.AVAILABLE
+            } else {
+                LibrarySubtitleState.MISSING
+            },
+            latestAvailableEpisode = latestAvailable,
+        )
+    }
+    fun hasUnseenEpisode(item: LibraryShelfItem): Boolean {
+        val count = item.episodeCount
+        val seenCount = seenEpisodeCounts[item.key] ?: 0
+        return count > seenCount
+    }
+
+    fun markEpisodesSeen(item: LibraryShelfItem) {
+        val episodeCount = item.episodeCount
+        if (episodeCount <= 0 || episodeCount <= (seenEpisodeCounts[item.key] ?: 0)) return
+        val updated = seenEpisodeCounts + (item.key to episodeCount)
+        seenEpisodeCounts = updated
+        scope.launch(Dispatchers.IO) { writeLibrarySeenEpisodeCounts(database, updated) }
+    }
+
     LaunchedEffect(aniList, libraryShelves, collapsedGroups) {
         val expandedShelves = libraryShelves.filterNot { it.key in collapsedGroups }
         expandedShelves.forEach { shelf ->
@@ -379,13 +440,18 @@ fun LibraryScreen(
         database.writeSetting("library.groupAssignments", encoded)
     }
 
+    fun saveCollapsedGroups(updatedCollapsedGroups: Set<String>) {
+        collapsedGroups = updatedCollapsedGroups
+        writeCollapsedLibraryGroups(database, updatedCollapsedGroups)
+    }
+
     fun deleteLibraryGroup(groupName: String) {
         saveLibraryGroups(libraryGroups.filterNot { it.equals(groupName, ignoreCase = true) })
         saveGroupAssignments(
             groupAssignments.mapValues { (_, assigned) -> assigned - groupName }
                 .filterValues { it.isNotEmpty() },
         )
-        collapsedGroups -= "group:$groupName"
+        saveCollapsedGroups(collapsedGroups - "group:$groupName")
     }
 
     fun clearLibrarySelection() {
@@ -693,11 +759,12 @@ fun LibraryScreen(
                     Column(Modifier.fillMaxWidth()) {
                         TextButton(
                             onClick = {
-                                collapsedGroups = if (expanded) {
+                                val updatedCollapsedGroups = if (expanded) {
                                     collapsedGroups + shelfKey
                                 } else {
                                     collapsedGroups - shelfKey
                                 }
+                                saveCollapsedGroups(updatedCollapsedGroups)
                             },
                             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -739,9 +806,7 @@ fun LibraryScreen(
                                 val horizontalInset = 20.dp
                                 val cardSpacing = 8.dp
                                 val availableCardWidth = maxWidth - (horizontalInset * 2)
-                                val columnCount = ((availableCardWidth + cardSpacing) / (108.dp + cardSpacing))
-                                    .toInt()
-                                    .coerceIn(1, 5)
+                                val columnCount = 2
                                 val cardWidth =
                                     (availableCardWidth - cardSpacing * (columnCount - 1)) / columnCount - 1.dp
 
@@ -767,10 +832,15 @@ fun LibraryScreen(
                                                     artworkCache = artworkCache,
                                                     entry = entry,
                                                     nextAiringEpisode = airingEpisodesByItemKey[shelfItem.key],
+                                                    newEpisodeAvailable = hasUnseenEpisode(shelfItem),
+                                                    subtitleStatus = subtitleStatusFor(shelfItem),
                                                     selectionMode = selectingLibraryItems,
                                                     selected = sourceLibraryGroupKey(entry) in selectedLibraryItemKeys,
                                                     menuExpanded = expandedMenus["source:${entry.key}"] == true,
-                                                    onOpen = { onOpenSourceEntry(entry) },
+                                                    onOpen = {
+                                                        markEpisodesSeen(shelfItem)
+                                                        onOpenSourceEntry(entry)
+                                                    },
                                                     onMenu = { expandedMenus["source:${entry.key}"] = true },
                                                     onDismissMenu = { expandedMenus["source:${entry.key}"] = false },
                                                     availableGroups = libraryGroups,
@@ -799,6 +869,8 @@ fun LibraryScreen(
                                                     showName = showName,
                                                     episodeCount = showEpisodes.size,
                                                     nextAiringEpisode = airingEpisodesByItemKey[shelfItem.key],
+                                                    newEpisodeAvailable = hasUnseenEpisode(shelfItem),
+                                                    subtitleStatus = subtitleStatusFor(shelfItem),
                                                     episodeNames = showEpisodes.asSequence()
                                                         .take(8)
                                                         .map { it.displayName }
@@ -813,7 +885,10 @@ fun LibraryScreen(
                                                     onToggleSelected = {
                                                         toggleLibraryItemSelection(localLibraryGroupKey(showName))
                                                     },
-                                                    onToggle = { expandedShow = showName },
+                                                    onToggle = {
+                                                        markEpisodesSeen(shelfItem)
+                                                        expandedShow = showName
+                                                    },
                                                     onMenu = { expandedMenus[showName] = true },
                                                     onDismissMenu = { expandedMenus[showName] = false },
                                                     availableGroups = libraryGroups,
@@ -1050,626 +1125,4 @@ fun LibraryScreen(
             },
         )
     }
-}
-
-@Composable
-private fun EmptyLibraryCard(
-    onPickFolder: () -> Unit,
-    onPickVideo: () -> Unit,
-    title: String = "Build your library",
-    detail: String = "Scan a folder of local episodes or open one video directly.",
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(24.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Button(onClick = onPickFolder, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
-                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Choose folder")
-                }
-                TextButton(onClick = onPickVideo, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Open video")
-                }
-            }
-        }
-    }
-}
-
-@android.annotation.SuppressLint("DirectDateInstantiation")
-private fun formatAiringDate(airingAtEpochSeconds: Long): String =
-    SimpleDateFormat("EEE, MMM d · h:mm a", Locale.getDefault())
-        .format(Date(airingAtEpochSeconds * 1_000L))
-
-@Composable
-private fun ShowDetailScreen(
-    aniList: AniListClient,
-    showName: String,
-    episodes: List<AnimeLibraryEpisode>,
-    recent: List<AppDatabase.RecentMedia>,
-    onBack: () -> Unit,
-    onOpenVideo: (AnimeLibraryEpisode, NextEpisodeAction?) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var nextAiringEpisode by remember(showName) {
-        mutableStateOf<AniListAiringEpisode?>(null)
-    }
-    LaunchedEffect(aniList, showName, episodes) {
-        nextAiringEpisode = withContext(Dispatchers.IO) {
-            aniList.findNextAiringEpisode(showName, episodes.map(AnimeLibraryEpisode::displayName))
-        }
-    }
-
-    Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-        Box(Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = localizeUiText("Back to library"))
-            }
-            Text(
-                showName,
-                modifier = Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = 56.dp),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                "${episodes.size} episodes",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-            nextAiringEpisode?.let { airing ->
-                Row(
-                    Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Icon(
-                        Icons.Default.Schedule,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "Next ep. ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        softWrap = false,
-                    )
-                }
-            }
-        }
-        fun openEpisodeAt(index: Int) {
-            val episode = episodes.getOrNull(index) ?: return
-            val nextEpisode = if (index < episodes.lastIndex) {
-                { onFinished: (Boolean) -> Unit ->
-                    openEpisodeAt(index + 1)
-                    onFinished(true)
-                }
-            } else {
-                null
-            }
-            onOpenVideo(episode, nextEpisode)
-        }
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
-        ) {
-            items(episodes, key = { it.uri.toString() }) { episode ->
-                val saved = recent.firstOrNull { it.uri == episode.uri.toString() }
-                EpisodeRow(episode, saved) { openEpisodeAt(episodes.indexOf(episode)) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun GroupAssignmentMenuItems(
-    availableGroups: List<String>,
-    assignedGroups: Set<String>,
-    onToggleGroup: (String) -> Unit,
-    onDismissMenu: () -> Unit,
-) {
-    if (availableGroups.isEmpty()) {
-        DropdownMenuItem(
-            text = { Text("No groups yet") },
-            enabled = false,
-            onClick = {},
-        )
-    } else {
-        availableGroups.forEach { groupName ->
-            val assigned = assignedGroups.any { it.equals(groupName, ignoreCase = true) }
-            DropdownMenuItem(
-                text = {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            groupName,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Icon(
-                            if (assigned) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
-                            contentDescription = localizeUiText(
-                                if (assigned) "Remove $groupName from this title"
-                                else "Add this title to $groupName",
-                            ),
-                            tint = if (assigned) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                },
-                onClick = {
-                    onDismissMenu()
-                    onToggleGroup(groupName)
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun ShowCard(
-    context: Context,
-    client: AniListClient,
-    artworkCache: LruCache<String, Bitmap>,
-    showName: String,
-    episodeCount: Int,
-    nextAiringEpisode: AniListAiringEpisode?,
-    episodeNames: List<String>,
-    coverSource: String?,
-    menuExpanded: Boolean,
-    selectionMode: Boolean,
-    selected: Boolean,
-    onLongPress: () -> Unit,
-    onToggleSelected: () -> Unit,
-    availableGroups: List<String>,
-    assignedGroups: Set<String>,
-    onToggleGroup: (String) -> Unit,
-    onToggle: () -> Unit,
-    onMenu: () -> Unit,
-    onDismissMenu: () -> Unit,
-    onSetUrl: () -> Unit,
-    onPickLocal: () -> Unit,
-    onRemoveCover: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val coverKey = remember(showName, coverSource, episodeNames) {
-        coverCacheKey(coverSource, showName, episodeNames)
-    }
-    var loadedBitmap by remember(coverKey) { mutableStateOf(artworkCache[coverKey]) }
-    LaunchedEffect(coverKey) {
-        if (loadedBitmap == null) {
-            loadedBitmap = withContext(Dispatchers.IO) {
-                loadCachedCover(context, coverSource, client, showName, episodeNames, artworkCache)
-            }
-        }
-    }
-    val imageBitmap = remember(loadedBitmap) { loadedBitmap?.asImageBitmap() }
-    val cardShape = RoundedCornerShape(16.dp)
-    Column(
-        modifier.fillMaxWidth()
-            .clip(cardShape)
-            .then(
-                if (selected) Modifier.background(
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                    cardShape,
-                ) else Modifier,
-            )
-            .then(
-                if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
-                else Modifier,
-            )
-            .combinedClickable(
-                onClick = if (selectionMode) onToggleSelected else onToggle,
-                onLongClick = onLongPress,
-            ),
-    ) {
-        Box(
-            Modifier.fillMaxWidth()
-                .clip(cardShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-        ) {
-            if (imageBitmap != null) {
-                Image(imageBitmap, contentDescription = localizeUiText("$showName artwork"), modifier = Modifier.fillMaxWidth().aspectRatio(0.78f), contentScale = ContentScale.Crop)
-            } else {
-                Box(Modifier.fillMaxWidth().aspectRatio(0.78f), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.VideoLibrary, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp))
-                }
-            }
-            nextAiringEpisode?.let { airing ->
-                Box(
-                    Modifier.align(Alignment.TopStart)
-                        .padding(8.dp)
-                        .size(30.dp)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Default.NotificationsActive,
-                        contentDescription = localizeUiText(
-                            "Upcoming episode ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
-                        ),
-                        modifier = Modifier.size(17.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-            if (selectionMode) {
-                IconButton(
-                    onClick = onToggleSelected,
-                    modifier = Modifier.align(Alignment.TopEnd),
-                ) {
-                    Box(
-                        Modifier.size(32.dp)
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            if (selected) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
-                            contentDescription = localizeUiText(
-                                if (selected) "Deselect $showName" else "Select $showName",
-                            ),
-                            modifier = Modifier.size(18.dp),
-                            tint = if (selected) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                }
-            } else {
-                Box(Modifier.align(Alignment.TopEnd)) {
-                    IconButton(onClick = onMenu) {
-                        Icon(
-                            Icons.Default.MoreVert,
-                            contentDescription = localizeUiText("Show options"),
-                            modifier = Modifier.size(18.dp),
-                            tint = androidx.compose.ui.graphics.Color.White,
-                        )
-                    }
-                    DropdownMenu(expanded = menuExpanded, onDismissRequest = onDismissMenu) {
-                        GroupAssignmentMenuItems(
-                            availableGroups = availableGroups,
-                            assignedGroups = assignedGroups,
-                            onToggleGroup = onToggleGroup,
-                            onDismissMenu = onDismissMenu,
-                        )
-                        DropdownMenuItem(text = { Text("Set image URL") }, onClick = { onDismissMenu(); onSetUrl() })
-                        DropdownMenuItem(text = { Text("Choose local image") }, onClick = { onDismissMenu(); onPickLocal() })
-                        if (coverSource != null) DropdownMenuItem(text = { Text("Use AniList artwork") }, onClick = { onDismissMenu(); onRemoveCover() })
-                    }
-                }
-            }
-        }
-        Material3Text(showName, Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text("$episodeCount episodes", Modifier.padding(start = 2.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-private fun SourceLibraryCard(
-    context: Context,
-    client: AniListClient,
-    artworkCache: LruCache<String, Bitmap>,
-    entry: AppDatabase.SourceLibraryEntry,
-    nextAiringEpisode: AniListAiringEpisode?,
-    selectionMode: Boolean,
-    selected: Boolean,
-    menuExpanded: Boolean,
-    availableGroups: List<String>,
-    assignedGroups: Set<String>,
-    onToggleGroup: (String) -> Unit,
-    onOpen: () -> Unit,
-    onMenu: () -> Unit,
-    onDismissMenu: () -> Unit,
-    onLongPress: () -> Unit,
-    onToggleSelected: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val coverKey = remember(entry.key, entry.thumbnailUrl) {
-        coverCacheKey(entry.thumbnailUrl, entry.title, emptyList())
-    }
-    var loadedBitmap by remember(coverKey) { mutableStateOf(artworkCache[coverKey]) }
-    LaunchedEffect(coverKey) {
-        if (loadedBitmap == null) {
-            loadedBitmap = withContext(Dispatchers.IO) {
-                loadCachedCover(context, entry.thumbnailUrl, client, entry.title, emptyList(), artworkCache)
-            }
-        }
-    }
-    val imageBitmap = remember(loadedBitmap) { loadedBitmap?.asImageBitmap() }
-
-    val cardShape = RoundedCornerShape(16.dp)
-    Column(
-        modifier.fillMaxWidth()
-            .clip(cardShape)
-            .then(
-                if (selected) Modifier.background(
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                    cardShape,
-                ) else Modifier,
-            )
-            .then(
-                if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
-                else Modifier,
-            )
-            .combinedClickable(
-                onClick = if (selectionMode) onToggleSelected else onOpen,
-                onLongClick = onLongPress,
-            ),
-    ) {
-        Box(
-            Modifier.fillMaxWidth()
-                .aspectRatio(0.78f)
-                .clip(cardShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (imageBitmap != null) {
-                Image(
-                    imageBitmap,
-                    contentDescription = localizeUiText("${entry.title} artwork"),
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
-                Icon(
-                    Icons.Default.VideoLibrary,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(38.dp),
-                )
-            }
-            nextAiringEpisode?.let { airing ->
-                Box(
-                    Modifier.align(Alignment.TopStart)
-                        .padding(8.dp)
-                        .size(30.dp)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Default.NotificationsActive,
-                        contentDescription = localizeUiText(
-                            "Upcoming episode ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
-                        ),
-                        modifier = Modifier.size(17.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-            if (selectionMode) {
-                IconButton(
-                    onClick = onToggleSelected,
-                    modifier = Modifier.align(Alignment.TopEnd),
-                ) {
-                    Box(
-                        Modifier.size(32.dp)
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            if (selected) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
-                            contentDescription = localizeUiText(if (selected) "Deselect ${entry.title}" else "Select ${entry.title}"),
-                            modifier = Modifier.size(18.dp),
-                            tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                }
-            } else {
-                Box(Modifier.align(Alignment.TopEnd)) {
-                    IconButton(
-                        onClick = onMenu,
-                    ) {
-                        Box(
-                            Modifier.size(32.dp)
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Default.MoreVert,
-                                contentDescription = localizeUiText("Title options"),
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    }
-                    DropdownMenu(expanded = menuExpanded, onDismissRequest = onDismissMenu) {
-                        GroupAssignmentMenuItems(
-                            availableGroups = availableGroups,
-                            assignedGroups = assignedGroups,
-                            onToggleGroup = onToggleGroup,
-                            onDismissMenu = onDismissMenu,
-                        )
-                    }
-                }
-            }
-        }
-        Material3Text(
-            entry.title,
-            Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Row(
-            Modifier.fillMaxWidth().padding(start = 2.dp, end = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Material3Text(
-                entry.sourceName,
-                Modifier.weight(1f).padding(start = 4.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                entry.episodeCount?.let { if (it == 1) "1 ep" else "$it eps" } ?: "— eps",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-private fun readLibraryGroups(database: AppDatabase): List<String> {
-    val stored = (database.readSetting("library.groups") as? org.json.JSONArray) ?: return emptyList()
-    return (0 until stored.length()).asSequence()
-        .mapNotNull { index -> stored.optString(index).trim().takeIf(String::isNotEmpty) }
-        .distinctBy { it.lowercase(java.util.Locale.ROOT) }
-        .sortedBy { it.lowercase(java.util.Locale.ROOT) }
-        .toList()
-}
-
-private fun readLibraryGroupAssignments(database: AppDatabase): Map<String, Set<String>> {
-    val stored = (database.readSetting("library.groupAssignments") as? org.json.JSONObject) ?: return emptyMap()
-    return buildMap {
-        val keys = stored.keys()
-        while (keys.hasNext()) {
-            val itemKey = keys.next()
-            val assigned = stored.optJSONArray(itemKey) ?: continue
-            val names = (0 until assigned.length()).asSequence()
-                .mapNotNull { index ->
-                    assigned.optString(index).trim().takeIf(String::isNotEmpty)
-                }
-                .toSet()
-            if (names.isNotEmpty()) put(itemKey, names)
-        }
-    }
-}
-
-private fun localLibraryGroupKey(showName: String): String =
-    "local:${showName.trim().lowercase(java.util.Locale.ROOT)}"
-
-private fun sourceLibraryGroupKey(entry: AppDatabase.SourceLibraryEntry): String =
-    "source:${entry.key}"
-
-private fun createLibraryArtworkCache(): LruCache<String, Bitmap> =
-    object : LruCache<String, Bitmap>(6 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
-    }
-
-private fun coverCacheKey(source: String?, showName: String, episodeNames: List<String>): String =
-    source?.takeIf(String::isNotBlank)?.let { "source:$it" }
-        ?: buildString {
-            append("anilist:")
-            append(showName)
-            episodeNames.forEach { append('\u0000').append(it) }
-        }
-
-private suspend fun loadCachedCover(
-    context: Context,
-    source: String?,
-    client: AniListClient,
-    showName: String,
-    episodeNames: List<String>,
-    cache: LruCache<String, Bitmap>,
-): Bitmap? {
-    val key = coverCacheKey(source, showName, episodeNames)
-    cache[key]?.let { return it }
-    return loadCover(context, source, client, showName, episodeNames)?.also { cache.put(key, it) }
-}
-
-private suspend fun loadCover(
-    context: Context,
-    source: String?,
-    client: AniListClient,
-    showName: String,
-    episodeNames: List<String>,
-): Bitmap? = try {
-    val bytes = when {
-        source.isNullOrBlank() -> {
-            val file = client.coverFor(showName, episodeNames) ?: return null
-            file.inputStream().use { it.readBytesBounded(12 * 1024 * 1024) }
-        }
-        source.startsWith("https://") -> withContext(Dispatchers.IO) {
-            val connection = (URL(source).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 8000
-                readTimeout = 15000
-            }
-            try {
-                val responseCode = connection.responseCode
-                if (responseCode !in (200..299)) {
-                    null
-                } else if (!connection.contentType.orEmpty().startsWith("image/")) {
-                    null
-                } else {
-                    connection.inputStream.use { it.readBytesBounded(12 * 1024 * 1024) }
-                }
-            } finally {
-                connection.disconnect()
-            }
-        }
-        source.startsWith("content://") -> context.contentResolver.openInputStream(source.toUri())?.use { it.readBytesBounded(12 * 1024 * 1024) }
-        source.startsWith("file://") -> File(source.toUri().path.orEmpty()).inputStream().use { it.readBytesBounded(12 * 1024 * 1024) }
-        else -> null
-    } ?: return null
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-    var sample = 1
-    while ((bounds.outWidth / sample) > 512) {
-        sample *= 2
-    }
-    while ((bounds.outHeight / sample) > 720) {
-        sample *= 2
-    }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
-} catch (_: Exception) { null }
-
-private fun java.io.InputStream.readBytesBounded(maxBytes: Int): ByteArray {
-    val output = java.io.ByteArrayOutputStream()
-    val buffer = ByteArray(8192)
-    var size = 0
-    while (true) {
-        val count = read(buffer)
-        if (count < 0) break
-        size += count
-        require(size <= maxBytes) { "Image exceeds the size limit." }
-        output.write(buffer, 0, count)
-    }
-    return output.toByteArray()
-}
-
-@Composable
-private fun EpisodeRow(episode: AnimeLibraryEpisode, saved: AppDatabase.RecentMedia?, onClick: () -> Unit) {
-    val progress = saved?.durationMs?.takeIf { it > 0 }?.let { (saved.positionMs.toFloat() / it).coerceIn(0f, 1f) }
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-        Spacer(Modifier.width(7.dp))
-        Column(Modifier.weight(1f)) {
-            Material3Text(episode.displayName, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-            if (progress != null) LinearProgressIndicator(progress = { progress }, Modifier.fillMaxWidth().padding(top = 4.dp))
-        }
-        if ((saved != null) && (saved.positionMs > 0)) Text(formatTime(saved.positionMs), Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-private fun formatTime(ms: Long): String {
-    val total = (ms / 1000).coerceAtLeast(0)
-    return "%d:%02d".format(total / 60, total % 60)
 }

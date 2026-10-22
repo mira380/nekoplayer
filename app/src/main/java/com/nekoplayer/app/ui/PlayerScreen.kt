@@ -162,28 +162,8 @@ private val PlayerOverlaySurface = Color(0xE6111415)
 private val PlayerOverlayText = Color(0xFFDEE7EC)
 private val PlayerOverlayAccent = Color(0xFFA0CDE0)
 
-private data class PlaybackSkipPoint(
-    val type: ChapterType,
-    val startMs: Long,
-    val endMs: Long,
-)
-
-private fun Double.toPlaybackSkipTimeMsOrNull(): Long? {
-    if (!isFinite() || this < 0.0 || this > Long.MAX_VALUE.toDouble() / 1_000.0) return null
-    return (this * 1_000.0).roundToLong()
-}
-
-private fun TimeStamp.toPlaybackSkipPointOrNull(): PlaybackSkipPoint? {
-    if (type != ChapterType.Opening && type != ChapterType.Ending) return null
-    val startMs = start.toPlaybackSkipTimeMsOrNull() ?: return null
-    val endMs = end.toPlaybackSkipTimeMsOrNull() ?: return null
-    if (endMs <= startMs) return null
-    return PlaybackSkipPoint(type, startMs, endMs)
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun PlayerScreen(
     activity: MainActivity,
     database: AppDatabase,
@@ -1560,7 +1540,8 @@ fun PlayerScreen(
             apiKey = jimakuApiKey,
             aniListClient = aniListClient,
             jimakuSubtitleClient = jimakuClient,
-            onSubtitleFile = { file ->
+            onSubtitleFile = { file, entryId ->
+                subtitleAnimeName?.let { saveManualJimakuMatch(database, it, entryId) }
                 showJimakuDialog = false
                 openExternalSubtitle(Uri.fromFile(file), file.name, SubtitleTrackSource.JIMAKU)
             },
@@ -1611,63 +1592,6 @@ fun PlayerScreen(
     }
 }
 
-@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
-@Composable
-private fun TrackDialog(
-    title: String,
-    tracks: Tracks,
-    kind: String,
-    externalTracks: List<SubtitleTrack>,
-    selectedExternalTrackId: String?,
-    useExternal: Boolean,
-    embeddedEnabled: Boolean,
-    onExternal: (SubtitleTrack) -> Unit,
-    onSelect: (Int, Tracks.Group, Int) -> Unit,
-    onOff: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val trackType = if (kind == "audio") C.TRACK_TYPE_AUDIO else C.TRACK_TYPE_TEXT
-    val groups = tracks.groups.filter { it.type == trackType }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            LazyColumn {
-                if (kind == "subtitle") {
-                    item {
-                        TextButton(onClick = { onOff() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("${if (!useExternal && !embeddedEnabled) "✓  " else ""}${localizeUiText("Subtitles off")}", modifier = Modifier.fillMaxWidth())
-                        }
-                    }
-                    items(externalTracks, key = SubtitleTrack::id) { track ->
-                        TextButton(onClick = { onExternal(track) }, modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                "${if (track.id == selectedExternalTrackId) "✓  " else ""}${track.name} (${localizeUiText("external")})",
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                    }
-                }
-                items(groups.flatMap { group -> (0 until group.length).map { group to it } }) { (group, index) ->
-                    val format = group.mediaTrackGroup.getFormat(index)
-                    val label = listOfNotNull(format.label?.takeIf(String::isNotBlank), format.language?.takeIf(String::isNotBlank))
-                        .distinct().joinToString(" · ").ifBlank { "Track ${index + 1}" }
-                    val selected = group.isTrackSelected(index)
-                    TextButton(onClick = { onSelect(trackType, group, index) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("${if (selected) "✓  " else ""}${localizeUiText(label)}", modifier = Modifier.fillMaxWidth())
-                    }
-                }
-                if (groups.isEmpty() && (kind == "audio" || externalTracks.isEmpty())) {
-                    item { Text("No ${if (kind == "audio") "audio" else "subtitle"} tracks found.") }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
-}
-
-
-
 private fun formatTime(timeMs: Long): String {
     val totalSeconds = (timeMs.coerceAtLeast(0L) / 1000L)
     val seconds = totalSeconds % 60
@@ -1676,31 +1600,6 @@ private fun formatTime(timeMs: Long): String {
     return if (hours > 0) String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
     else String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
 }
-
-private fun Long.saturatedPlus(other: Long): Long = when {
-    other > 0L && this > Long.MAX_VALUE - other -> Long.MAX_VALUE
-    other < 0L && this < Long.MIN_VALUE - other -> Long.MIN_VALUE
-    else -> this + other
-}
-
-private fun Long.saturatedMinus(other: Long): Long = when {
-    other > 0L && this < Long.MIN_VALUE + other -> Long.MIN_VALUE
-    other < 0L && this > Long.MAX_VALUE + other -> Long.MAX_VALUE
-    else -> this - other
-}
-
-private fun subtitleOffsetSettingsKeyFor(identity: String): String {
-    val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
-    val stableHash = digest.joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
-    return "player.subtitleOffset.$stableHash"
-}
-
-private fun formatSubtitleOffset(offsetMs: Long): String = when {
-    offsetMs > 0L -> "+${offsetMs} ms"
-    offsetMs < 0L -> "−${offsetMs.toString().drop(1)} ms"
-    else -> "0 ms"
-}
-
 
 private suspend fun awaitAnkiWritePermission(anki: AnkiDroidClient): Boolean =
     suspendCancellableCoroutine { continuation ->
