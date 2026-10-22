@@ -46,6 +46,14 @@ private fun appColorScheme(dark: Boolean, palette: String, accent: String) = run
             onSurfaceVariant = Color(0xFFB6AAA0)
             outlineVariant = Color(0xFF342C25)
         }
+        dark && (palette == "oled") -> {
+            background = Color.Black
+            surface = Color.Black
+            surfaceVariant = Color(0xFF101214)
+            onSurface = Color(0xFFE7ECEF)
+            onSurfaceVariant = Color(0xFFA8B0B5)
+            outlineVariant = Color(0xFF252A2D)
+        }
         dark && (palette == "ink") -> {
             background = Color(0xFF050607)
             surface = Color(0xFF0C0E10)
