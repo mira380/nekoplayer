@@ -1,5 +1,6 @@
 package com.nekoplayer.app
 
+import android.content.ComponentCallbacks2
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -82,6 +83,21 @@ class MainActivity : ComponentActivity(), AnkiDroidPermissionRequester {
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.isAppearanceLightStatusBars = enabled
         controller.isAppearanceLightNavigationBars = enabled
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        when {
+            level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ->
+                com.nekoplayer.app.ui.trimArtworkCaches(aggressive = true)
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ->
+                com.nekoplayer.app.ui.trimArtworkCaches(aggressive = false)
+        }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        com.nekoplayer.app.ui.trimArtworkCaches(aggressive = true)
     }
 
     private fun updateSystemBars() {

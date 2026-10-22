@@ -826,8 +826,19 @@ fun PlayerScreen(
         }
     }
 
-    fun seekSubtitleCue(index: Int?) {
+    fun seekSubtitleCue(next: Boolean) {
         val track = externalSubtitle ?: return
+        // positionMs is refreshed on a UI ticker, so calculate the cue from the
+        // player's live position. This matters after a seek and when tapping
+        // through short subtitle cues quickly.
+        val currentSubtitlePositionMs = player.currentPosition
+            .coerceAtLeast(0L)
+            .saturatedMinus(subtitleOffsetMs)
+        val index = if (next) {
+            SubtitleCueIndex.nextCueIndex(track, currentSubtitlePositionMs)
+        } else {
+            SubtitleCueIndex.previousCueIndex(track, currentSubtitlePositionMs)
+        }
         val cue = index?.let(track.cues::getOrNull) ?: return
         val target = SubtitleCueIndex.seekPositionMs(track, cue, durationMs)
             .saturatedPlus(subtitleOffsetMs)
@@ -1214,7 +1225,7 @@ fun PlayerScreen(
                                     Icon(Icons.Default.Replay10, contentDescription = localizeUiText("Back 10 seconds"), tint = PlayerOverlayText)
                                 }
                                 IconButton(
-                                    onClick = { seekSubtitleCue(previousSubtitleCueIndex) },
+                                    onClick = { seekSubtitleCue(next = false) },
                                     enabled = previousSubtitleCueIndex != null,
                                 ) {
                                     Icon(Icons.Default.SkipPrevious, contentDescription = localizeUiText("Previous subtitle"), tint = PlayerOverlayText)
@@ -1226,7 +1237,7 @@ fun PlayerScreen(
                                     Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = localizeUiText(if (playing) "Pause" else "Play"), tint = PlayerOverlayText, modifier = Modifier.size(28.dp))
                                 }
                                 IconButton(
-                                    onClick = { seekSubtitleCue(nextSubtitleCueIndex) },
+                                    onClick = { seekSubtitleCue(next = true) },
                                     enabled = nextSubtitleCueIndex != null,
                                 ) {
                                     Icon(Icons.Default.SkipNext, contentDescription = localizeUiText("Next subtitle"), tint = PlayerOverlayText)

@@ -252,6 +252,7 @@ private val japaneseLabels = mapOf(
     "Loading seasons…" to "シーズンを読み込み中…",
     "Loading episodes…" to "エピソードを読み込み中…",
     "Finding video streams…" to "動画を検索中…",
+    "Finding more video streams…" to "他の動画ストリームを検索中…",
     "Load more" to "さらに読み込む",
     "Add to library" to "ライブラリに追加",
     "Remove from library" to "ライブラリから削除",

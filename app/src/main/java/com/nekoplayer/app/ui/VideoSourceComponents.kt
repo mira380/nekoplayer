@@ -127,11 +127,13 @@ internal fun SourceArtwork(
         if (resolvedUrl == null) {
             bitmap = null
         } else if (bitmap == null) {
-            bitmap = withContext(Dispatchers.IO) {
-                sourceArtworkCache[resolvedUrl]
-                    ?: loadSourceArtwork(resolvedUrl, source)?.also {
-                        sourceArtworkCache.put(resolvedUrl, it)
-                    }
+            bitmap = withArtworkLoadSlot {
+                withContext(Dispatchers.IO) {
+                    sourceArtworkCache[resolvedUrl]
+                        ?: loadSourceArtwork(resolvedUrl, source)?.also {
+                            sourceArtworkCache.put(resolvedUrl, it)
+                        }
+                }
             }
         }
     }
@@ -161,8 +163,12 @@ internal fun SourceArtwork(
     }
 }
 
-private val sourceArtworkCache = object : LruCache<String, Bitmap>(12 * 1024 * 1024) {
+private val sourceArtworkCache = object : LruCache<String, Bitmap>(6 * 1024 * 1024) {
     override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+}
+
+internal fun trimSourceArtworkCache(aggressive: Boolean) {
+    sourceArtworkCache.trimToSize(if (aggressive) 0 else 3 * 1024 * 1024)
 }
 
 internal fun resolveArtworkUrl(imageUrl: String?, baseUrl: String?): String? = try {

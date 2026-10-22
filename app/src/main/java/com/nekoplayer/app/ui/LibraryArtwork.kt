@@ -21,9 +21,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 internal fun createLibraryArtworkCache(): LruCache<String, Bitmap> =
-    object : LruCache<String, Bitmap>(6 * 1024 * 1024) {
+    object : LruCache<String, Bitmap>(4 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
+
+private val libraryArtworkCache = createLibraryArtworkCache()
+
+internal fun sharedLibraryArtworkCache(): LruCache<String, Bitmap> = libraryArtworkCache
+
+internal fun trimLibraryArtworkCache(aggressive: Boolean) {
+    libraryArtworkCache.trimToSize(if (aggressive) 0 else 2 * 1024 * 1024)
+}
 
 internal fun coverCacheKey(source: String?, showName: String, episodeNames: List<String>): String =
     source?.takeIf(String::isNotBlank)?.let { "source:$it" }
@@ -43,7 +51,12 @@ internal suspend fun loadCachedCover(
 ): Bitmap? {
     val key = coverCacheKey(source, showName, episodeNames)
     cache[key]?.let { return it }
-    return loadCover(context, source, client, showName, episodeNames)?.also { cache.put(key, it) }
+    return withArtworkLoadSlot {
+        cache[key]?.let { return@withArtworkLoadSlot it }
+        withContext(Dispatchers.IO) {
+            loadCover(context, source, client, showName, episodeNames)
+        }?.also { cache.put(key, it) }
+    }
 }
 
 private suspend fun loadCover(
