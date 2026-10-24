@@ -116,7 +116,7 @@ fun LibraryScreen(
     onPickFolder: () -> Unit,
     onPickVideo: () -> Unit,
     onOpenVideo: (Uri, String, String?, NextEpisodeAction?) -> Unit,
-    onOpenSourceEntry: (AppDatabase.SourceLibraryEntry) -> Unit,
+    onOpenSourceEntry: (AppDatabase.SourceLibraryEntry, AniListAiringEpisode?) -> Unit,
     onPickCover: (String) -> Unit,
     onDetailScreenChanged: (Boolean) -> Unit,
     isActive: Boolean = true,
@@ -399,6 +399,9 @@ fun LibraryScreen(
         return count > seenCount
     }
 
+    fun shouldShowNewEpisodeBell(item: LibraryShelfItem): Boolean =
+        hasUnseenEpisode(item) && airingEpisodesByItemKey[item.key] != null
+
     fun markEpisodesSeen(item: LibraryShelfItem) {
         val episodeCount = item.episodeCount
         if (episodeCount <= 0 || episodeCount <= (seenEpisodeCounts[item.key] ?: 0)) return
@@ -562,9 +565,9 @@ fun LibraryScreen(
 
     if ((expandedShow != null) && selectedEpisodes.isNotEmpty()) {
         ShowDetailScreen(
-            aniList = aniList,
             showName = expandedShow.orEmpty(),
             episodes = selectedEpisodes,
+            nextAiringEpisode = airingEpisodesByItemKey["show:${expandedShow.orEmpty()}"],
             recent = recent,
             onBack = { expandedShow = null },
             onOpenVideo = { (uri, displayName, showName, _), onNextEpisode ->
@@ -852,15 +855,14 @@ fun LibraryScreen(
                                                     client = aniList,
                                                     artworkCache = artworkCache,
                                                     entry = entry,
-                                                    nextAiringEpisode = airingEpisodesByItemKey[shelfItem.key],
-                                                    newEpisodeAvailable = hasUnseenEpisode(shelfItem),
+                                                    newEpisodeAvailable = shouldShowNewEpisodeBell(shelfItem),
                                                     subtitleStatus = subtitleStatusFor(shelfItem),
                                                     selectionMode = selectingLibraryItems,
                                                     selected = sourceLibraryGroupKey(entry) in selectedLibraryItemKeys,
                                                     menuExpanded = expandedMenus["source:${entry.key}"] == true,
                                                     onOpen = {
                                                         markEpisodesSeen(shelfItem)
-                                                        onOpenSourceEntry(entry)
+                                                        onOpenSourceEntry(entry, airingEpisodesByItemKey[shelfItem.key])
                                                     },
                                                     onMenu = { expandedMenus["source:${entry.key}"] = true },
                                                     onDismissMenu = { expandedMenus["source:${entry.key}"] = false },
@@ -889,8 +891,7 @@ fun LibraryScreen(
                                                     artworkCache = artworkCache,
                                                     showName = showName,
                                                     episodeCount = showEpisodes.size,
-                                                    nextAiringEpisode = airingEpisodesByItemKey[shelfItem.key],
-                                                    newEpisodeAvailable = hasUnseenEpisode(shelfItem),
+                                                    newEpisodeAvailable = shouldShowNewEpisodeBell(shelfItem),
                                                     subtitleStatus = subtitleStatusFor(shelfItem),
                                                     episodeNames = showEpisodes.asSequence()
                                                         .take(8)

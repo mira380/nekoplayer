@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -110,23 +111,14 @@ internal fun EmptyLibraryCard(
 
 @Composable
 internal fun ShowDetailScreen(
-    aniList: AniListClient,
     showName: String,
     episodes: List<AnimeLibraryEpisode>,
+    nextAiringEpisode: AniListAiringEpisode?,
     recent: List<AppDatabase.RecentMedia>,
     onBack: () -> Unit,
     onOpenVideo: (AnimeLibraryEpisode, NextEpisodeAction?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var nextAiringEpisode by remember(showName) {
-        mutableStateOf<AniListAiringEpisode?>(null)
-    }
-    LaunchedEffect(aniList, showName, episodes) {
-        nextAiringEpisode = withContext(Dispatchers.IO) {
-            aniList.findNextAiringEpisode(showName, episodes.map(AnimeLibraryEpisode::displayName))
-        }
-    }
-
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Box(Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
@@ -257,7 +249,6 @@ internal fun ShowCard(
     artworkCache: LruCache<String, Bitmap>,
     showName: String,
     episodeCount: Int,
-    nextAiringEpisode: AniListAiringEpisode?,
     newEpisodeAvailable: Boolean = false,
     subtitleStatus: LibrarySubtitleStatus? = null,
     episodeNames: List<String>,
@@ -326,23 +317,6 @@ internal fun ShowCard(
                     title = showName,
                     modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
                 )
-            } else nextAiringEpisode?.let { airing ->
-                Box(
-                    Modifier.align(Alignment.TopStart)
-                        .padding(8.dp)
-                        .size(30.dp)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Default.NotificationsActive,
-                        contentDescription = localizeUiText(
-                            "Upcoming episode ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
-                        ),
-                        modifier = Modifier.size(17.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
             }
             if (selectionMode) {
                 IconButton(
@@ -403,7 +377,6 @@ internal fun SourceLibraryCard(
     client: AniListClient,
     artworkCache: LruCache<String, Bitmap>,
     entry: AppDatabase.SourceLibraryEntry,
-    nextAiringEpisode: AniListAiringEpisode?,
     newEpisodeAvailable: Boolean = false,
     subtitleStatus: LibrarySubtitleStatus? = null,
     selectionMode: Boolean,
@@ -478,23 +451,6 @@ internal fun SourceLibraryCard(
                     title = entry.title,
                     modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
                 )
-            } else nextAiringEpisode?.let { airing ->
-                Box(
-                    Modifier.align(Alignment.TopStart)
-                        .padding(8.dp)
-                        .size(30.dp)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Default.NotificationsActive,
-                        contentDescription = localizeUiText(
-                            "Upcoming episode ${airing.episode} · ${formatAiringDate(airing.airingAtEpochSeconds)}",
-                        ),
-                        modifier = Modifier.size(17.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
             }
             if (selectionMode) {
                 IconButton(
@@ -613,6 +569,7 @@ private fun SubtitleAvailabilityBadge(status: LibrarySubtitleStatus, modifier: M
         else -> status.state.label
     }
     val earlierSubsFound = status.state == LibrarySubtitleState.MISSING && status.latestAvailableEpisode != null
+    val hasAvailableSubtitles = status.state == LibrarySubtitleState.AVAILABLE || earlierSubsFound
     val icon = when (status.state) {
         LibrarySubtitleState.AVAILABLE -> Icons.Default.CheckCircle
         LibrarySubtitleState.MISSING -> if (earlierSubsFound) Icons.Default.CheckCircle else Icons.Default.Close
@@ -646,12 +603,26 @@ private fun SubtitleAvailabilityBadge(status: LibrarySubtitleStatus, modifier: M
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            modifier = Modifier.size(14.dp),
-            tint = tint,
-        )
+        if (hasAvailableSubtitles) {
+            Box(
+                Modifier.size(14.dp).background(tint, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(9.dp),
+                    tint = MaterialTheme.colorScheme.surface,
+                )
+            }
+        } else {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = tint,
+            )
+        }
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,

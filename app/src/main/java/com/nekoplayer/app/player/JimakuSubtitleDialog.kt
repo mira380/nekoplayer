@@ -372,7 +372,7 @@ fun JimakuSubtitleDialog(
                             }.joinToString(" · ")
                             if (detected.isNotBlank()) Text(detected, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             OutlinedButton(
-                                onClick = { searchJimakuByTitle(showName, automatic = true) },
+                                onClick = { searchJimakuByTitle(showName, automatic = false) },
                                 enabled = showName.isNotBlank(),
                                 modifier = Modifier.fillMaxWidth(),
                             ) {

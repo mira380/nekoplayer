@@ -77,7 +77,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -161,6 +160,25 @@ import kotlin.math.roundToLong
 private val PlayerOverlaySurface = Color(0xE6111415)
 private val PlayerOverlayText = Color(0xFFDEE7EC)
 private val PlayerOverlayAccent = Color(0xFFA0CDE0)
+
+private fun formatAnkiInfo(
+    displayName: String,
+    seriesTitle: String?,
+    alternateSeriesTitle: String?,
+    episodeName: String?,
+    episodeNumber: Int?,
+): String {
+    val title = seriesTitle?.trim()?.takeIf(String::isNotEmpty)
+        ?: alternateSeriesTitle?.trim()?.takeIf(String::isNotEmpty)
+        ?: return displayName.trim()
+    val episodeTitle = episodeName?.trim()?.takeIf(String::isNotEmpty)
+    val episodeInfo = buildList {
+        episodeNumber?.takeIf { it > 0 }?.let { add("Episode $it") }
+        episodeTitle?.takeUnless { episodeNumber != null && it.equals("Episode $episodeNumber", ignoreCase = true) }
+            ?.let(::add)
+    }.joinToString(": ")
+    return listOf(title, episodeInfo).filter(String::isNotBlank).joinToString(" · ")
+}
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -355,18 +373,22 @@ fun PlayerScreen(
     val externalSubtitle = selectedExternalTrack.takeIf { useExternalSubtitle }
     val subtitlePositionMs = positionMs.saturatedMinus(subtitleOffsetMs)
     val latestExternalSubtitle = rememberUpdatedState(externalSubtitle)
-    val externalCueIndex = externalSubtitle?.let {
-        SubtitleCueIndex.activeCueIndex(it, subtitlePositionMs)
-    }
+    val activeSubtitleCueIndices = externalSubtitle?.let {
+        SubtitleCueIndex.activeCueIndices(it, subtitlePositionMs)
+    }.orEmpty()
+    val activeSubtitleCues = externalSubtitle?.let { track ->
+        activeSubtitleCueIndices.mapNotNull(track.cues::getOrNull)
+    }.orEmpty()
+    val externalCueIndex = activeSubtitleCueIndices.lastOrNull()
     val previousSubtitleCueIndex = externalSubtitle?.let {
         SubtitleCueIndex.previousCueIndex(it, subtitlePositionMs)
     }
     val nextSubtitleCueIndex = externalSubtitle?.let {
         SubtitleCueIndex.nextCueIndex(it, subtitlePositionMs)
     }
-    val activeCue: SubtitleCue? = externalSubtitle?.takeIf { useExternalSubtitle }
-        ?.let { track -> externalCueIndex?.let(track.cues::getOrNull) }
-    val subtitleText = activeCue?.plainText ?: embeddedSubtitle
+    val activeCue: SubtitleCue? = activeSubtitleCues.lastOrNull()
+    val subtitleText = activeSubtitleCues.joinToString("\n") { it.plainText }
+        .ifBlank { embeddedSubtitle }
     val currentSkipPoint = if (skipPointsEnabled) {
         sourceSkipPointsForDuration.firstOrNull { point ->
             positionMs in point.startMs until point.endMs
@@ -394,6 +416,9 @@ fun PlayerScreen(
     val subtitleShadowStyle = remember(database) {
         database.readString("subtitles.shadowStyle", "").takeIf { it in setOf("Off", "Soft", "Strong", "Hard") }
             ?: if (database.readBoolean("subtitles.shadowEnabled", true)) "Soft" else "Off"
+    }
+    val subtitleOutlineEnabled = remember(database) {
+        database.readBoolean("subtitles.outlineEnabled", true)
     }
     val subtitleVignette = remember(database) { database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f) }
     val subtitleBottom = remember(database) { database.readNumber("subtitles.bottomInsetPx", 112.0).toFloat().coerceIn(0f, 240f) }
@@ -927,26 +952,7 @@ fun PlayerScreen(
         }
         val density = LocalDensity.current
         val subtitleShadow = remember(subtitleShadowStyle, density) {
-            with(density) {
-                when (subtitleShadowStyle) {
-                    "Strong" -> Shadow(
-                        color = Color.Black.copy(alpha = 0.95f),
-                        offset = Offset(0f, 3.dp.toPx()),
-                        blurRadius = 6.dp.toPx(),
-                    )
-                    "Hard" -> Shadow(
-                        color = Color.Black.copy(alpha = 0.9f),
-                        offset = Offset(0f, 2.dp.toPx()),
-                        blurRadius = 0f,
-                    )
-                    "Soft" -> Shadow(
-                        color = Color.Black.copy(alpha = 0.7f),
-                        offset = Offset(0f, 1.dp.toPx()),
-                        blurRadius = 3.dp.toPx(),
-                    )
-                    else -> null
-                }
-            }
+            subtitleShadowForStyle(subtitleShadowStyle, density)
         }
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -986,7 +992,7 @@ fun PlayerScreen(
             ) {}
         }
         if (subtitleText.isNotBlank()) {
-            Material3Text(
+            SubtitleCaptionText(
                 text = highlightedSubtitle,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -994,14 +1000,14 @@ fun PlayerScreen(
                     .padding(bottom = captionBottomInset)
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color.Black.copy(alpha = subtitleAlpha.coerceIn(0f, 1f)))
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                fontSize = subtitleFont.sp,
+                lineHeight = (subtitleFont * 1.25f).sp,
+                shadow = subtitleShadow,
+                outlineEnabled = subtitleOutlineEnabled,
+                foregroundModifier = Modifier
                     .onGloballyPositioned { subtitleCoordinates = it }
                     .pointerInput(subtitleText) { detectTapGestures { latestSubtitleTap.value(it) } },
-                color = Color.White,
-                fontSize = subtitleFont.sp,
-                style = MaterialTheme.typography.bodyMedium.copy(shadow = subtitleShadow),
-                textAlign = TextAlign.Center,
-                lineHeight = (subtitleFont * 1.25f).sp,
                 onTextLayout = { subtitleLayout = it },
             )
         }
@@ -1434,7 +1440,7 @@ fun PlayerScreen(
             expansion = dictionaryPopupExpansion,
             popupSize = dictionaryPopupSize,
             anchorInPlayer = lookupAnchor,
-            subtitleContext = activeCue?.plainText ?: embeddedSubtitle,
+            subtitleContext = subtitleText,
             dictionaries = dictionaries,
             onDismiss = ::dismissLookup,
             onPlayAudio = ::playPronunciation,
@@ -1442,14 +1448,15 @@ fun PlayerScreen(
                 if (!miningInProgress && lookupSourceText != null) {
                     miningInProgress = true
                     val mineRequestId = lookupRequestId
-                    val sentence = activeCue?.plainText ?: embeddedSubtitle
-                    val cueStart = activeCue?.startMs
-                        ?.saturatedPlus(externalSubtitle.offsetMs)
+                    val sentence = subtitleText
+                    val externalOffsetMs = externalSubtitle?.offsetMs ?: 0L
+                    val cueStart = activeSubtitleCues.minOfOrNull { it.startMs }
+                        ?.saturatedPlus(externalOffsetMs)
                         ?.saturatedPlus(subtitleOffsetMs)
                         ?.coerceAtLeast(0L)
                         ?: positionMs
-                    val cueEnd = activeCue?.endMs
-                        ?.saturatedPlus(externalSubtitle.offsetMs)
+                    val cueEnd = activeSubtitleCues.maxOfOrNull { it.endMs }
+                        ?.saturatedPlus(externalOffsetMs)
                         ?.saturatedPlus(subtitleOffsetMs)
                         ?.coerceAtLeast(cueStart)
                         ?: cueStart.saturatedPlus(1_500L)
@@ -1487,6 +1494,9 @@ fun PlayerScreen(
                                 entry,
                                 destinationField = "Pronunciation Audio",
                             )
+                            val sourceEpisodeName = subtitleEpisodeName?.takeIf(String::isNotBlank)
+                                ?: sourceProgressIdentity?.episodeName?.takeIf(String::isNotBlank)
+                            val sourceEpisodeNumber = subtitleEpisodeNumber ?: sourceProgressIdentity?.episodeNumber
                             AnkiDroidMiningWorkflow(context, database, anki, dictionaries = dictionaries).mine(
                                 uri = uri,
                                 sentence = sentence,
@@ -1496,6 +1506,13 @@ fun PlayerScreen(
                                 allEntries = allEntries,
                                 metadata = pageMetadata,
                                 surfaceText = lookupResult.surfaceText,
+                                info = formatAnkiInfo(
+                                    displayName = displayName,
+                                    seriesTitle = seriesTitle,
+                                    alternateSeriesTitle = alternateSeriesTitle,
+                                    episodeName = sourceEpisodeName,
+                                    episodeNumber = sourceEpisodeNumber,
+                                ),
                                 pronunciationAttachment = pronunciation?.attachment,
                                 mediaDurationMs = captureDurationMs,
                                 requestHeaders = requestHeaders,

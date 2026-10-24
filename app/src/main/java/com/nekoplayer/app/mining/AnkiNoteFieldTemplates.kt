@@ -23,6 +23,7 @@ object AnkiNoteFieldTemplates {
         AnkiTemplateValue("sentence", "Sentence", listOf("sentence", "context", "example", "examplesentence", "japanesesentence")),
         AnkiTemplateValue("sentenceFurigana", "Sentence Furigana", listOf("sentencefurigana", "sentencewithfurigana", "furiganasentence")),
         AnkiTemplateValue("sentenceAudio", "Sentence audio", listOf("sentenceaudio", "sentencesound", "audiosentence")),
+        AnkiTemplateValue("info", "Info", listOf("miscinfo", "info", "source", "sourceinfo", "origin")),
         AnkiTemplateValue("audio", "Pronunciation audio", listOf("expressionaudio", "audio")),
         AnkiTemplateValue("pronunciationAudio", "Pronunciation audio (camelCase alias)", listOf("pronunciationaudio", "wordaudio", "vocabularyaudio", "sound")),
         AnkiTemplateValue("screenshot", "Screenshot", listOf("definitionpicture", "screenshot", "image", "picture", "capture")),
@@ -157,6 +158,7 @@ object AnkiNoteFieldTemplates {
         return when (normalize(cleaned)) {
             "expressionfurigana", "furiganaplain" -> "furiganaplain"
             "audio" -> "pronunciationaudio"
+            "miscinfo" -> "info"
             "popupselectiontext" -> "selectiontext"
             "singleglossary" -> "singleglossary"
             else -> cleaned.lowercase().filter(Char::isLetterOrDigit)
