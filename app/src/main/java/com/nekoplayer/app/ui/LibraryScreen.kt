@@ -119,10 +119,11 @@ fun LibraryScreen(
     onOpenSourceEntry: (AppDatabase.SourceLibraryEntry) -> Unit,
     onPickCover: (String) -> Unit,
     onDetailScreenChanged: (Boolean) -> Unit,
+    isActive: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val artworkCache = remember { createLibraryArtworkCache() }
+    val artworkCache = remember { sharedLibraryArtworkCache() }
     val jimakuSubtitleClient = remember(context) { JimakuSubtitleClient(context.cacheDir) }
     var recent by remember { mutableStateOf(emptyList<AppDatabase.RecentMedia>()) }
     var sourceEntries by remember(database) { mutableStateOf(database.listSourceLibraryEntries()) }
@@ -398,6 +399,9 @@ fun LibraryScreen(
         return count > seenCount
     }
 
+    fun shouldShowNewEpisodeBell(item: LibraryShelfItem): Boolean =
+        hasUnseenEpisode(item) && airingEpisodesByItemKey[item.key] != null
+
     fun markEpisodesSeen(item: LibraryShelfItem) {
         val episodeCount = item.episodeCount
         if (episodeCount <= 0 || episodeCount <= (seenEpisodeCounts[item.key] ?: 0)) return
@@ -524,7 +528,7 @@ fun LibraryScreen(
         }
     }
 
-    BackHandler(enabled = (expandedShow != null) || selectingLibraryItems) {
+    BackHandler(enabled = isActive && ((expandedShow != null) || selectingLibraryItems)) {
         when {
             expandedShow != null -> expandedShow = null
             showBatchGroupDialog -> showBatchGroupDialog = false
@@ -537,7 +541,9 @@ fun LibraryScreen(
             else -> clearLibrarySelection()
         }
     }
-    LaunchedEffect(expandedShow) { onDetailScreenChanged(expandedShow != null) }
+    LaunchedEffect(expandedShow, isActive) {
+        if (isActive) onDetailScreenChanged(expandedShow != null)
+    }
 
     if ((expandedShow != null) && selectedEpisodes.isNotEmpty()) {
         ShowDetailScreen(
@@ -831,8 +837,7 @@ fun LibraryScreen(
                                                     client = aniList,
                                                     artworkCache = artworkCache,
                                                     entry = entry,
-                                                    nextAiringEpisode = airingEpisodesByItemKey[shelfItem.key],
-                                                    newEpisodeAvailable = hasUnseenEpisode(shelfItem),
+                                                    newEpisodeAvailable = shouldShowNewEpisodeBell(shelfItem),
                                                     subtitleStatus = subtitleStatusFor(shelfItem),
                                                     selectionMode = selectingLibraryItems,
                                                     selected = sourceLibraryGroupKey(entry) in selectedLibraryItemKeys,
@@ -868,8 +873,7 @@ fun LibraryScreen(
                                                     artworkCache = artworkCache,
                                                     showName = showName,
                                                     episodeCount = showEpisodes.size,
-                                                    nextAiringEpisode = airingEpisodesByItemKey[shelfItem.key],
-                                                    newEpisodeAvailable = hasUnseenEpisode(shelfItem),
+                                                    newEpisodeAvailable = shouldShowNewEpisodeBell(shelfItem),
                                                     subtitleStatus = subtitleStatusFor(shelfItem),
                                                     episodeNames = showEpisodes.asSequence()
                                                         .take(8)

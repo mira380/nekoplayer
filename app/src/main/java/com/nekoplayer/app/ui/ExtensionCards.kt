@@ -52,8 +52,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 
-private val extensionIconCache = object : LruCache<String, Bitmap>(4 * 1024 * 1024) {
+private val extensionIconCache = object : LruCache<String, Bitmap>(2 * 1024 * 1024) {
     override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+}
+
+internal fun trimExtensionIconCache(aggressive: Boolean) {
+    extensionIconCache.trimToSize(if (aggressive) 0 else 1 * 1024 * 1024)
 }
 
 @Composable
@@ -232,8 +236,10 @@ internal fun SourceIcon(
             drawable != null -> withContext(Dispatchers.IO) {
                 runCatching { drawable.toBitmap(iconSizePx, iconSizePx) }.getOrNull()
             }
-            !iconUrl.isNullOrBlank() -> withContext(Dispatchers.IO) {
-                loadRemoteExtensionIcon(iconUrl, iconSizePx)
+            !iconUrl.isNullOrBlank() -> withArtworkLoadSlot {
+                withContext(Dispatchers.IO) {
+                    loadRemoteExtensionIcon(iconUrl, iconSizePx)
+                }
             }
             else -> null
         }

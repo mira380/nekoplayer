@@ -14,6 +14,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -48,9 +51,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
@@ -389,8 +394,7 @@ fun NekoApp(
                     Box(
                         Modifier.fillMaxHeight().widthIn(max = 720.dp).fillMaxWidth(),
                     ) {
-                        when (page) {
-                        AppPage.Library -> LibraryScreen(
+                        LibraryScreen(
                             database = database,
                             extensionManager = extensionManager,
                             aniList = aniList,
@@ -411,84 +415,105 @@ fun NekoApp(
                             },
                             onPickCover = { show -> coverTarget = show; coverPicker.launch(arrayOf("image/*")) },
                             onDetailScreenChanged = { detailScreen = it },
-                            modifier = Modifier.fillMaxSize(),
+                            isActive = page == AppPage.Library,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .then(
+                                    if (page == AppPage.Library) Modifier
+                                    else Modifier.alpha(0f).clearAndSetSemantics {},
+                                ),
                         )
-                        AppPage.Dictionaries -> DictionaryScreen(
-                            repository = dictionaryRepository,
-                            refreshKey = dictionaryVersion,
-                            onImportDictionary = {
-                                dictionaryImportStatus = null
-                                importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
-                            },
-                            dictionaryImportStatus = dictionaryImportStatus,
-                            dictionaryImportBusy = dictionaryImportBusy,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        AppPage.Extensions -> {
-                            ExtensionsScreen(
-                                manager = extensionManager,
-                                database = database,
-                                aniList = aniList,
-                                sourceEntryToOpen = pendingSourceEntry,
-                                onSourceEntryOpened = { pendingSourceEntry = null },
-                                onReturnToLibrary = {
-                                    page = AppPage.Library
-                                    pendingSourceEntry = null
-                                    detailScreen = false
-                                },
-                                onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle, onNextEpisode, sourceSkipTimestamps ->
-                                    openVideo(
-                                        sourceUri = uri,
-                                        name = name,
-                                        seriesTitle = title,
-                                        requestHeaders = headers,
-                                        subtitleEpisodeName = episodeName,
-                                        subtitleEpisodeNumber = episodeNumber,
-                                        sourceProgressIdentity = progressIdentity,
-                                        alternateSeriesTitle = alternateTitle,
-                                        onPlayNextEpisode = onNextEpisode,
-                                        sourceSkipTimestamps = sourceSkipTimestamps,
+                        if (page != AppPage.Library) {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.background)
+                                    .clickable(
+                                        indication = null,
+                                        interactionSource = remember { MutableInteractionSource() },
+                                    ) {},
+                            ) {
+                                when (page) {
+                                    AppPage.Library -> Unit
+                                    AppPage.Dictionaries -> DictionaryScreen(
+                                        repository = dictionaryRepository,
+                                        refreshKey = dictionaryVersion,
+                                        onImportDictionary = {
+                                            dictionaryImportStatus = null
+                                            importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+                                        },
+                                        dictionaryImportStatus = dictionaryImportStatus,
+                                        dictionaryImportBusy = dictionaryImportBusy,
+                                        modifier = Modifier.fillMaxSize(),
                                     )
-                                },
-                                onDetailScreenChanged = { detailScreen = it },
-                                modifier = Modifier.fillMaxSize(),
-                            )
+                                    AppPage.Extensions -> {
+                                        ExtensionsScreen(
+                                            manager = extensionManager,
+                                            database = database,
+                                            progressRefreshKey = libraryProgressRefreshKey,
+                                            aniList = aniList,
+                                            sourceEntryToOpen = pendingSourceEntry,
+                                            onSourceEntryOpened = { pendingSourceEntry = null },
+                                            onReturnToLibrary = {
+                                                page = AppPage.Library
+                                                pendingSourceEntry = null
+                                                detailScreen = false
+                                            },
+                                            onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle, onNextEpisode, sourceSkipTimestamps ->
+                                                openVideo(
+                                                    sourceUri = uri,
+                                                    name = name,
+                                                    seriesTitle = title,
+                                                    requestHeaders = headers,
+                                                    subtitleEpisodeName = episodeName,
+                                                    subtitleEpisodeNumber = episodeNumber,
+                                                    sourceProgressIdentity = progressIdentity,
+                                                    alternateSeriesTitle = alternateTitle,
+                                                    onPlayNextEpisode = onNextEpisode,
+                                                    sourceSkipTimestamps = sourceSkipTimestamps,
+                                                )
+                                            },
+                                            onDetailScreenChanged = { detailScreen = it },
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                    }
+                                    AppPage.Settings -> SettingsScreen(
+                                        database = database,
+                                        dictionaries = dictionaryRepository,
+                                        anki = anki,
+                                        darkMode = darkMode,
+                                        language = language,
+                                        palette = palette,
+                                        accent = accent,
+                                        onDarkModeChanged = { value ->
+                                            darkMode = value
+                                            scope.launch(Dispatchers.IO) { database.writeSetting("appearance.dark", value) }
+                                        },
+                                        onLanguageChanged = { value ->
+                                            language = value
+                                            scope.launch(Dispatchers.IO) { database.writeSetting("appearance.language", value) }
+                                        },
+                                        onPaletteChanged = { value ->
+                                            palette = value
+                                            scope.launch(Dispatchers.IO) { database.writeSetting("appearance.palette", value) }
+                                        },
+                                        onAccentChanged = { value ->
+                                            accent = value
+                                            scope.launch(Dispatchers.IO) { database.writeSetting("appearance.accent", value) }
+                                        },
+                                        onImportDictionary = {
+                                            dictionaryImportStatus = null
+                                            importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+                                        },
+                                        dictionaryImportStatus = dictionaryImportStatus,
+                                        dictionaryImportBusy = dictionaryImportBusy,
+                                        refreshKey = dictionaryVersion,
+                                        onDetailScreenChanged = { detailScreen = it },
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
+                            }
                         }
-                        AppPage.Settings -> SettingsScreen(
-                            database = database,
-                            dictionaries = dictionaryRepository,
-                            anki = anki,
-                            darkMode = darkMode,
-                            language = language,
-                            palette = palette,
-                            accent = accent,
-                            onDarkModeChanged = { value ->
-                                darkMode = value
-                                scope.launch(Dispatchers.IO) { database.writeSetting("appearance.dark", value) }
-                            },
-                            onLanguageChanged = { value ->
-                                language = value
-                                scope.launch(Dispatchers.IO) { database.writeSetting("appearance.language", value) }
-                            },
-                            onPaletteChanged = { value ->
-                                palette = value
-                                scope.launch(Dispatchers.IO) { database.writeSetting("appearance.palette", value) }
-                            },
-                            onAccentChanged = { value ->
-                                accent = value
-                                scope.launch(Dispatchers.IO) { database.writeSetting("appearance.accent", value) }
-                            },
-                            onImportDictionary = {
-                                dictionaryImportStatus = null
-                                importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
-                            },
-                            dictionaryImportStatus = dictionaryImportStatus,
-                            dictionaryImportBusy = dictionaryImportBusy,
-                            refreshKey = dictionaryVersion,
-                            onDetailScreenChanged = { detailScreen = it },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
                     }
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(8.dp))
                 }

@@ -1,9 +1,6 @@
 package com.nekoplayer.app.ui
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.drawable.Drawable
-import android.util.LruCache
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -83,15 +80,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 
-private val extensionIconCache = object : LruCache<String, Bitmap>(4 * 1024 * 1024) {
-    override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
-}
-
 @Suppress("DEPRECATION")
 @Composable
 fun ExtensionsScreen(
     manager: ExtensionManager,
     database: AppDatabase,
+    progressRefreshKey: Int,
     aniList: AniListClient,
     sourceEntryToOpen: AppDatabase.SourceLibraryEntry?,
     onSourceEntryOpened: () -> Unit,
@@ -190,6 +184,7 @@ fun ExtensionsScreen(
         VideoSourceBrowser(
             item = source,
             database = database,
+            progressRefreshKey = progressRefreshKey,
             aniList = aniList,
             initialAnime = selectedAnimeToOpen,
             onBack = {

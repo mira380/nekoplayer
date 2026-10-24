@@ -383,7 +383,7 @@ class AniListClient(context: Context) {
         return results
     }
 
-    /** Resolves strong AniList matches in batches so the Library can reuse IDs for Jimaku lookups. */
+    // Resolves strong AniList matches in batches so Library can reuse IDs for Jimaku lookups without creating needless rate limits.
     fun findLibraryMatches(
         lookups: Iterable<AniListAiringLookup>,
     ): Map<String, AniListLibraryMatch> {

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -77,7 +78,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.time.Duration.Companion.milliseconds
@@ -339,6 +342,9 @@ fun SettingsScreen(
                 ?: if (database.readBoolean("subtitles.shadowEnabled", true)) "Soft" else "Off",
         )
     }
+    var subtitleOutlineEnabled by remember(database) {
+        mutableStateOf(database.readBoolean("subtitles.outlineEnabled", true))
+    }
     var vignetteIntensity by remember { mutableFloatStateOf(database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f)) }
     var prePadding by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.audioPrePadding", 900.0).toFloat(), 10f, 0f..5000f)) }
     var postPadding by remember { mutableFloatStateOf(snapToGrid(database.readNumber("capture.audioPostPadding", 5000.0).toFloat(), 10f, 0f..5000f)) }
@@ -587,19 +593,20 @@ fun SettingsScreen(
 
         if (selectedSection == "Subtitles") {
         item {
-            SettingSection("Subtitle appearance") {
+            SettingSection("Text and placement") {
                 SettingSlider("Font size", "${fontSize.roundToInt()} sp", fontSize, 14f..48f, { fontSize = it }) {
                     save("subtitles.fontSize", it.toDouble())
                 }
                 SettingSlider("Bottom spacing", "${bottomInset.roundToInt()} px", bottomInset, 0f..240f, { bottomInset = it }) {
                     save("subtitles.bottomInsetPx", it.toDouble())
                 }
-                SettingSlider("Background opacity", "${(backgroundOpacity * 100).roundToInt()}%", backgroundOpacity, 0f..1f, { backgroundOpacity = it }) {
-                    save("subtitles.backgroundOpacity", it.toDouble())
-                }
+            }
+        }
+        item {
+            SettingSection("Text effects") {
                 Text("Text shadow", style = MaterialTheme.typography.labelLarge)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Off", "Soft", "Strong", "Hard").forEach { style ->
+                    listOf("Off", "Soft", "Strong", "Hard").forEach { style ->
                         FilterChip(
                             selected = shadowStyle == style,
                             onClick = {
@@ -610,6 +617,21 @@ fun SettingsScreen(
                             label = { Text(style) },
                         )
                     }
+                }
+                SettingSwitch(
+                    "Text outline",
+                    subtitleOutlineEnabled,
+                    "Adds a dark edge to subtitles.",
+                ) { enabled ->
+                    subtitleOutlineEnabled = enabled
+                    save("subtitles.outlineEnabled", enabled)
+                }
+            }
+        }
+        item {
+            SettingSection("Subtitle background") {
+                SettingSlider("Background opacity", "${(backgroundOpacity * 100).roundToInt()}%", backgroundOpacity, 0f..1f, { backgroundOpacity = it }) {
+                    save("subtitles.backgroundOpacity", it.toDouble())
                 }
                 SettingSlider(
                     "Video vignette",
@@ -625,23 +647,34 @@ fun SettingsScreen(
         }
         item {
             SettingSection("Subtitle preview") {
-                Box(
-                    Modifier.fillMaxWidth()
-                        .heightIn(min = 120.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MaterialTheme.colorScheme.background),
-                    contentAlignment = Alignment.BottomCenter,
-                ) {
-                    Text(
-                        "日本語字幕のプレビュー",
-                        modifier = Modifier.fillMaxWidth()
-                            .padding(bottom = (bottomInset / 4f).dp.coerceIn(8.dp, 40.dp))
-                            .background(Color.Black.copy(alpha = backgroundOpacity))
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        color = Color.White,
-                        fontSize = fontSize.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    )
+                val density = LocalDensity.current
+                val previewShadow = remember(shadowStyle, density) {
+                    subtitleShadowForStyle(shadowStyle, density)
+                }
+                val previewBottomInset = with(density) { bottomInset.toDp() }.coerceAtMost(40.dp)
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val previewHeight = (this.maxWidth * (9f / 16f)).coerceAtLeast(120.dp)
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .heightIn(min = previewHeight)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color.White)
+                            .border(1.dp, Color(0xFFD8DEE2), RoundedCornerShape(16.dp)),
+                        contentAlignment = Alignment.BottomCenter,
+                    ) {
+                        SubtitleCaptionText(
+                            text = AnnotatedString("字幕サンプル"),
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                                .padding(bottom = previewBottomInset)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.Black.copy(alpha = backgroundOpacity.coerceIn(0f, 1f)))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            fontSize = fontSize.sp,
+                            lineHeight = (fontSize * 1.25f).sp,
+                            shadow = previewShadow,
+                            outlineEnabled = subtitleOutlineEnabled,
+                        )
+                    }
                 }
             }
         }

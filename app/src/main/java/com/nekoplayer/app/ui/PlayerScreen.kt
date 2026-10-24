@@ -77,7 +77,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -394,6 +393,9 @@ fun PlayerScreen(
     val subtitleShadowStyle = remember(database) {
         database.readString("subtitles.shadowStyle", "").takeIf { it in setOf("Off", "Soft", "Strong", "Hard") }
             ?: if (database.readBoolean("subtitles.shadowEnabled", true)) "Soft" else "Off"
+    }
+    val subtitleOutlineEnabled = remember(database) {
+        database.readBoolean("subtitles.outlineEnabled", true)
     }
     val subtitleVignette = remember(database) { database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f) }
     val subtitleBottom = remember(database) { database.readNumber("subtitles.bottomInsetPx", 112.0).toFloat().coerceIn(0f, 240f) }
@@ -826,8 +828,19 @@ fun PlayerScreen(
         }
     }
 
-    fun seekSubtitleCue(index: Int?) {
+    fun seekSubtitleCue(next: Boolean) {
         val track = externalSubtitle ?: return
+        // positionMs is refreshed on a UI ticker, so calculate the cue from the
+        // player's live position. This matters after a seek and when tapping
+        // through short subtitle cues quickly.
+        val currentSubtitlePositionMs = player.currentPosition
+            .coerceAtLeast(0L)
+            .saturatedMinus(subtitleOffsetMs)
+        val index = if (next) {
+            SubtitleCueIndex.nextCueIndex(track, currentSubtitlePositionMs)
+        } else {
+            SubtitleCueIndex.previousCueIndex(track, currentSubtitlePositionMs)
+        }
         val cue = index?.let(track.cues::getOrNull) ?: return
         val target = SubtitleCueIndex.seekPositionMs(track, cue, durationMs)
             .saturatedPlus(subtitleOffsetMs)
@@ -916,26 +929,7 @@ fun PlayerScreen(
         }
         val density = LocalDensity.current
         val subtitleShadow = remember(subtitleShadowStyle, density) {
-            with(density) {
-                when (subtitleShadowStyle) {
-                    "Strong" -> Shadow(
-                        color = Color.Black.copy(alpha = 0.95f),
-                        offset = Offset(0f, 3.dp.toPx()),
-                        blurRadius = 6.dp.toPx(),
-                    )
-                    "Hard" -> Shadow(
-                        color = Color.Black.copy(alpha = 0.9f),
-                        offset = Offset(0f, 2.dp.toPx()),
-                        blurRadius = 0f,
-                    )
-                    "Soft" -> Shadow(
-                        color = Color.Black.copy(alpha = 0.7f),
-                        offset = Offset(0f, 1.dp.toPx()),
-                        blurRadius = 3.dp.toPx(),
-                    )
-                    else -> null
-                }
-            }
+            subtitleShadowForStyle(subtitleShadowStyle, density)
         }
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -975,7 +969,7 @@ fun PlayerScreen(
             ) {}
         }
         if (subtitleText.isNotBlank()) {
-            Material3Text(
+            SubtitleCaptionText(
                 text = highlightedSubtitle,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -983,14 +977,14 @@ fun PlayerScreen(
                     .padding(bottom = captionBottomInset)
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color.Black.copy(alpha = subtitleAlpha.coerceIn(0f, 1f)))
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                fontSize = subtitleFont.sp,
+                lineHeight = (subtitleFont * 1.25f).sp,
+                shadow = subtitleShadow,
+                outlineEnabled = subtitleOutlineEnabled,
+                foregroundModifier = Modifier
                     .onGloballyPositioned { subtitleCoordinates = it }
                     .pointerInput(subtitleText) { detectTapGestures { latestSubtitleTap.value(it) } },
-                color = Color.White,
-                fontSize = subtitleFont.sp,
-                style = MaterialTheme.typography.bodyMedium.copy(shadow = subtitleShadow),
-                textAlign = TextAlign.Center,
-                lineHeight = (subtitleFont * 1.25f).sp,
                 onTextLayout = { subtitleLayout = it },
             )
         }
@@ -1214,7 +1208,7 @@ fun PlayerScreen(
                                     Icon(Icons.Default.Replay10, contentDescription = localizeUiText("Back 10 seconds"), tint = PlayerOverlayText)
                                 }
                                 IconButton(
-                                    onClick = { seekSubtitleCue(previousSubtitleCueIndex) },
+                                    onClick = { seekSubtitleCue(next = false) },
                                     enabled = previousSubtitleCueIndex != null,
                                 ) {
                                     Icon(Icons.Default.SkipPrevious, contentDescription = localizeUiText("Previous subtitle"), tint = PlayerOverlayText)
@@ -1226,7 +1220,7 @@ fun PlayerScreen(
                                     Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = localizeUiText(if (playing) "Pause" else "Play"), tint = PlayerOverlayText, modifier = Modifier.size(28.dp))
                                 }
                                 IconButton(
-                                    onClick = { seekSubtitleCue(nextSubtitleCueIndex) },
+                                    onClick = { seekSubtitleCue(next = true) },
                                     enabled = nextSubtitleCueIndex != null,
                                 ) {
                                     Icon(Icons.Default.SkipNext, contentDescription = localizeUiText("Next subtitle"), tint = PlayerOverlayText)

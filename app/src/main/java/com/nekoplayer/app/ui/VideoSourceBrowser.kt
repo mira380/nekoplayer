@@ -95,13 +95,29 @@ import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+
+private const val MAX_PARALLEL_STREAM_HOSTERS = 3
+
+private data class HosterStreamUpdate(
+    val hosterIndex: Int,
+    val choices: List<StreamChoice>,
+    val isComplete: Boolean,
+)
 
 @Composable
 internal fun VideoSourceBrowser(
     item: ExtensionManager.InstalledVideoSource,
     database: AppDatabase,
+    progressRefreshKey: Int,
     aniList: AniListClient,
     initialAnime: SAnime?,
     onBack: () -> Unit,
@@ -156,6 +172,8 @@ internal fun VideoSourceBrowser(
     var showEpisodeSortMenu by remember(source.id) { mutableStateOf(false) }
     var selectedEpisode by remember(source.id) { mutableStateOf<SEpisode?>(null) }
     var streamChoices by remember(source.id) { mutableStateOf<List<StreamChoice>>(emptyList()) }
+    var streamDiscoveryJob by remember(source.id) { mutableStateOf<Job?>(null) }
+    var streamRequestId by remember(source.id) { mutableIntStateOf(0) }
     var busy by remember(source.id) { mutableStateOf(false) }
     var error by remember(source.id) { mutableStateOf<String?>(null) }
     val visibleEpisodes = remember(episodes, episodeQuery, episodeSortOrder) {
@@ -325,6 +343,13 @@ internal fun VideoSourceBrowser(
         return true
     }
 
+    fun cancelStreamSearch() {
+        streamRequestId++
+        streamDiscoveryJob?.cancel()
+        streamDiscoveryJob = null
+        busy = false
+    }
+
     fun openEpisode(
         episode: SEpisode,
         autoPlayFirst: Boolean = false,
@@ -333,7 +358,9 @@ internal fun VideoSourceBrowser(
     ) {
         selectedEpisode = episode
         streamChoices = emptyList()
-        scope.launch {
+        streamDiscoveryJob?.cancel()
+        val requestId = ++streamRequestId
+        streamDiscoveryJob = scope.launch {
             busy = true
             error = null
             try {
@@ -355,78 +382,82 @@ internal fun VideoSourceBrowser(
                         directVideoHoster()
                     }
                     val sortedHosters = httpSource?.run { hosters.sortHosters() } ?: hosters
-                    val resolvedChoices = mutableListOf<StreamChoice>()
-                    hosterLoop@ for (hoster in sortedHosters) {
+                    val hosterRequests = sortedHosters.mapIndexed { index, hoster ->
                         val hosterLabel = hoster.hosterName
                             .takeUnless { it == Hoster.NO_HOSTER_LIST }
                             .orEmpty()
-                        val hosterIdentity = normalizedStreamLabel(hosterLabel)
-                        if (preferredStream != null && hosterIdentity != preferredStream.hosterName) {
-                            continue@hosterLoop
-                        }
-                        val videos = if (!hoster.lazy && hoster.videoList != null) {
-                            hoster.videoList
-                        } else {
-                            source.getVideoList(hoster)
-                        }
-                        val sortedVideos = httpSource?.run { videos.sortVideos() } ?: videos
-                        val matchingVideos = if (preferredStream == null) {
-                            sortedVideos
-                        } else {
-                            sortedVideos.filter { video ->
-                                video.videoTitle.isBlank() ||
-                                    streamIdentity(hosterLabel, video.videoTitle) == preferredStream
-                            }
-                        }
-                        if (
-                            autoPlayFirst &&
-                            preferredStream != null &&
-                            preferredStream.videoTitle.isBlank() &&
-                            matchingVideos.size > 1
-                        ) {
-                            continue@hosterLoop
-                        }
-                        for (video in matchingVideos) {
-                            val resolved = if (httpSource != null) {
-                                httpSource.resolveVideo(video) ?: continue
-                            } else {
-                                video
-                            }
-                            if (
-                                preferredStream != null &&
-                                streamIdentity(hosterLabel, resolved.videoTitle.ifBlank { video.videoTitle }) != preferredStream
-                            ) {
-                                continue
-                            }
-                            if (
-                                httpSource != null &&
-                                (resolved.videoUrl.isBlank() || resolved.videoUrl == "null")
-                            ) {
-                                runCatching { httpSource.getVideoUrl(resolved) }
-                                    .getOrNull()
-                                    ?.takeIf(String::isNotBlank)
-                                    ?.let { resolved.videoUrl = it }
-                            }
-                            if (resolved.videoUrl.isBlank() || resolved.videoUrl == "null") {
-                                continue
-                            }
-                            resolvedChoices += StreamChoice(
-                                label = listOf(hosterLabel, resolved.videoTitle)
-                                    .asSequence()
-                                    .filter(String::isNotBlank)
-                                    .joinToString(" · "),
-                                video = resolved,
-                                identity = streamIdentity(
-                                    hosterLabel,
-                                    resolved.videoTitle.ifBlank { video.videoTitle },
-                                ),
-                            )
-                            if (autoPlayFirst) break@hosterLoop
-                        }
+                        Triple(index, hoster, hosterLabel)
                     }
-                    resolvedChoices
+
+                    if (autoPlayFirst) {
+                        val resolvedChoices = mutableListOf<StreamChoice>()
+                        for ((_, hoster, hosterLabel) in hosterRequests) {
+                            val choice = resolveHosterStreamChoices(
+                                source = source,
+                                hoster = hoster,
+                                hosterLabel = hosterLabel,
+                                preferredStream = preferredStream,
+                                firstPlayableOnly = true,
+                            ).firstOrNull()
+                            if (choice != null) {
+                                resolvedChoices += choice
+                                break
+                            }
+                        }
+                        resolvedChoices
+                    } else {
+                        val choicesByHoster = arrayOfNulls<List<StreamChoice>>(sortedHosters.size)
+                        if (hosterRequests.isNotEmpty()) {
+                            val updates = Channel<HosterStreamUpdate>(Channel.UNLIMITED)
+                            val parallelHosters = Semaphore(MAX_PARALLEL_STREAM_HOSTERS)
+                            coroutineScope {
+                                val jobs = hosterRequests.map { (index, hoster, hosterLabel) ->
+                                    launch(Dispatchers.IO) {
+                                        val hosterChoices = try {
+                                            parallelHosters.withPermit {
+                                                resolveHosterStreamChoices(
+                                                    source = source,
+                                                    hoster = hoster,
+                                                    hosterLabel = hosterLabel,
+                                                    preferredStream = preferredStream,
+                                                    firstPlayableOnly = false,
+                                                    onChoicesUpdated = { partialChoices ->
+                                                        updates.trySend(
+                                                            HosterStreamUpdate(index, partialChoices, isComplete = false),
+                                                        )
+                                                    },
+                                                )
+                                            }
+                                        } catch (cancelled: CancellationException) {
+                                            throw cancelled
+                                        } catch (_: Exception) {
+                                            emptyList()
+                                        }
+                                        updates.send(HosterStreamUpdate(index, hosterChoices, isComplete = true))
+                                    }
+                                }
+                                var completedHosters = 0
+                                while (completedHosters < jobs.size) {
+                                    val update = updates.receive()
+                                    choicesByHoster[update.hosterIndex] = update.choices
+                                    if (update.isComplete) completedHosters++
+                                    val partialChoices = choicesByHoster.filterNotNull().flatten()
+                                    withContext(Dispatchers.Main.immediate) {
+                                        if (requestId == streamRequestId && selectedEpisode?.url == episode.url) {
+                                            streamChoices = partialChoices
+                                        }
+                                    }
+                                }
+                                jobs.joinAll()
+                            }
+                            updates.close()
+                        }
+                        choicesByHoster.filterNotNull().flatten()
+                    }
                 }
-                streamChoices = choices
+                if (requestId == streamRequestId && selectedEpisode?.url == episode.url) {
+                    streamChoices = choices
+                }
                 if (autoPlayFirst) {
                     val choice = choices.firstOrNull()
                     if (choice == null) {
@@ -459,14 +490,24 @@ internal fun VideoSourceBrowser(
                 } else if (choices.isEmpty()) {
                     error = "This episode has no playable video streams."
                 }
+            } catch (cancelled: CancellationException) {
+                onAutoPlayFinished?.invoke(false)
+                throw cancelled
             } catch (linkage: LinkageError) {
-                error = linkage.toExtensionRuntimeMessage(item.extension.libVersion)
+                if (requestId == streamRequestId) {
+                    error = linkage.toExtensionRuntimeMessage(item.extension.libVersion)
+                }
                 onAutoPlayFinished?.invoke(false)
             } catch (_: Exception) {
-                error = "Couldn’t load video streams for ${episode.name}."
+                if (requestId == streamRequestId) {
+                    error = "Couldn’t load video streams for ${episode.name}."
+                }
                 onAutoPlayFinished?.invoke(false)
             } finally {
-                busy = false
+                if (requestId == streamRequestId) {
+                    busy = false
+                    streamDiscoveryJob = null
+                }
             }
         }
     }
@@ -474,6 +515,7 @@ internal fun VideoSourceBrowser(
     BackHandler(enabled = true) {
         when {
             selectedEpisode != null -> {
+                cancelStreamSearch()
                 selectedEpisode = null
                 streamChoices = emptyList()
                 error = null
@@ -495,7 +537,7 @@ internal fun VideoSourceBrowser(
         }
     }
 
-    LaunchedEffect(source.id, sourceProgressAnimeUrl) {
+    LaunchedEffect(source.id, sourceProgressAnimeUrl, progressRefreshKey) {
         val seriesUrl = sourceProgressAnimeUrl
         savedSourceProgress = if (seriesUrl.isNullOrBlank()) {
             null
@@ -562,7 +604,11 @@ internal fun VideoSourceBrowser(
             IconButton(
                 onClick = {
                     when {
-                        selectedEpisode != null -> { selectedEpisode = null; streamChoices = emptyList() }
+                        selectedEpisode != null -> {
+                            cancelStreamSearch()
+                            selectedEpisode = null
+                            streamChoices = emptyList()
+                        }
                         selectedAnime != null && initialAnime != null -> onBack()
                         selectedAnime != null -> {
                             selectedAnime = null
@@ -639,7 +685,7 @@ internal fun VideoSourceBrowser(
 
         if (selectedAnime == null) {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 108.dp),
+                columns = GridCells.Fixed(2),
                 state = catalogueGridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
@@ -1004,6 +1050,7 @@ internal fun VideoSourceBrowser(
                         Card(
                             onClick = {
                                 selectedEpisode?.let { episode ->
+                                    cancelStreamSearch()
                                     val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
                                     val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
                                     val nextAction: NextEpisodeAction? = nextEpisode?.let { next ->
@@ -1031,6 +1078,9 @@ internal fun VideoSourceBrowser(
                                 Text("Play", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                             }
                         }
+                    }
+                    if (streamChoices.isNotEmpty() && busy) {
+                        item { LoadingCard(localizeUiText("Finding more video streams…")) }
                     }
                 }
             }
