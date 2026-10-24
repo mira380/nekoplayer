@@ -29,6 +29,7 @@ class AnkiDroidMiningWorkflow(
         allEntries: List<DictionaryEntry>,
         metadata: List<DictionaryTermMeta>,
         surfaceText: String = "",
+        info: String = "",
         pronunciationAttachment: AnkiDroidAttachment? = null,
         mediaDurationMs: Long? = null,
         requestHeaders: Map<String, String> = emptyMap(),
@@ -109,6 +110,7 @@ class AnkiDroidMiningWorkflow(
                     "glossary" to if (separateGlossary || definitionFields.isEmpty()) allGlossary else "",
                     "sentence" to boldMinedWord(cleanSentence, expression, surfaceText),
                     "sentenceFurigana" to sentenceWithFurigana,
+                    "info" to info,
                     "frequency" to frequency,
                     "frequencies" to frequencies,
                     "frequencySort" to frequencySort,
@@ -174,7 +176,7 @@ class AnkiDroidMiningWorkflow(
                             sentenceAudioFields.forEach { field ->
                                 add(AnkiDroidAttachment(
                                     file = media.audioFile,
-                                    preferredName = "nekoplayer_audio_$safeName.${media.audioFile.extension}",
+                                    preferredName = "nekoplayer_audio.${media.audioFile.extension}",
                                     mimeType = if (media.audioFile.extension.equals("wav", ignoreCase = true)) {
                                         "audio/wav"
                                     } else {

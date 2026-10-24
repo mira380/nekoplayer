@@ -264,43 +264,6 @@ class AniListClient(context: Context) {
     }
 
     @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
-    fun findNextAiringEpisode(
-        showName: String,
-        episodeFileNames: Iterable<String> = emptyList(),
-    ): AniListAiringEpisode? {
-        val normalizedShowName = normalize(showName)
-        if (normalizedShowName.isBlank()) return null
-        val searchFileNames = episodeFileNames
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .take(2)
-        val cacheKey = buildString {
-            append(normalizedShowName)
-            searchFileNames.forEach { append('|').append(normalize(it)) }
-        }
-        val now = System.currentTimeMillis()
-        val cached = synchronized(airingScheduleCache) { airingScheduleCache[cacheKey] }
-        val cachedEpisode = cached?.second
-        if (
-            cached != null &&
-            now - cached.first < AIRING_CACHE_LIFETIME_MS &&
-            (cachedEpisode == null || cachedEpisode.airingAtEpochSeconds * 1_000L > now)
-        ) {
-            return cachedEpisode
-        }
-
-        val result = searchAnimeCandidates(
-            showName = showName,
-            episodeFileNames = searchFileNames,
-            minimumMatchScore = STRONG_MATCH_SCORE,
-        ).firstOrNull()?.nextAiringEpisode
-        synchronized(airingScheduleCache) {
-            airingScheduleCache[cacheKey] = now to result
-        }
-        return result
-    }
-
-    @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
     fun findNextAiringEpisodes(
         lookups: Iterable<AniListAiringLookup>,
     ): Map<String, AniListAiringEpisode> {
@@ -337,7 +300,12 @@ class AniListClient(context: Context) {
                 continue
             }
 
-            val queries = searchQueries(lookup.showName, episodeFileNames)
+            val baseQueries = searchQueries(lookup.showName, episodeFileNames)
+            val queries = (
+                baseQueries.take(1) +
+                    airingSearchFallbackQueries(lookup.showName) +
+                    baseQueries.drop(1)
+                ).distinctBy(::normalize).take(MAX_SEARCH_QUERIES)
             if (queries.isEmpty()) continue
             val pending = pendingByCacheKey.getOrPut(cacheKey) {
                 PendingLookup(cacheKey = cacheKey, queries = queries)
@@ -348,6 +316,7 @@ class AniListClient(context: Context) {
 
         val queryTexts = linkedMapOf<String, String>()
         val queryOwners = linkedMapOf<String, MutableSet<String>>()
+        val successfulQueries = mutableSetOf<String>()
         pendingByCacheKey.values.forEach { pending ->
             pending.queries.forEach { query ->
                 val normalizedQuery = normalize(query)
@@ -361,7 +330,8 @@ class AniListClient(context: Context) {
             batch.forEach queryLoop@{ query ->
                 val normalizedQuery = normalize(query)
                 val media = mediaByQuery[normalizedQuery] ?: return@queryLoop
-                val matches = parseAnimeCandidates(query, media, STRONG_MATCH_SCORE)
+                successfulQueries += normalizedQuery
+                val matches = parseAnimeCandidates(query, media, AIRING_MATCH_SCORE)
                 queryOwners[normalizedQuery].orEmpty().forEach ownerLoop@{ cacheKey ->
                     val pending = pendingByCacheKey[cacheKey] ?: return@ownerLoop
                     matches.forEach { mergeAnimeCandidate(pending.candidates, it) }
@@ -371,10 +341,15 @@ class AniListClient(context: Context) {
 
         pendingByCacheKey.values.forEach { pending ->
             val airingEpisode = pending.candidates.values
+                .filter { candidate ->
+                    candidate.nextAiringEpisode?.airingAtEpochSeconds?.times(1_000L)?.let { it > now } == true
+                }
                 .maxByOrNull(AniListCandidate::score)
                 ?.nextAiringEpisode
-            synchronized(airingScheduleCache) {
-                airingScheduleCache[pending.cacheKey] = now to airingEpisode
+            if (airingEpisode != null || pending.queries.all { normalize(it) in successfulQueries }) {
+                synchronized(airingScheduleCache) {
+                    airingScheduleCache[pending.cacheKey] = now to airingEpisode
+                }
             }
             airingEpisode?.let { episode ->
                 pending.itemKeys.forEach { key -> results[key] = episode }
@@ -612,6 +587,19 @@ class AniListClient(context: Context) {
         return result
     }
 
+    private fun airingSearchFallbackQueries(showName: String): List<String> {
+        val cleanedTitle = cleanSearchTitle(showName)
+        val subtitleFreeTitle = cleanedTitle.substringBefore(':').trim()
+        if (
+            subtitleFreeTitle != cleanedTitle &&
+            subtitleFreeTitle.split(Regex("\\s+")).size >= 4
+        ) {
+            return listOf(subtitleFreeTitle)
+        }
+        val words = cleanedTitle.split(Regex("\\s+")).filter(String::isNotBlank)
+        return if (words.size >= 5) listOf(words.take(4).joinToString(" ")) else emptyList()
+    }
+
     private fun episodeSeriesTitle(title: String): String? {
         val withoutGroup = title.replaceFirst(Regex("^\\s*\\[[^]]+]\\s*"), "")
         val cleaned = cleanSearchTitle(withoutGroup)
@@ -640,6 +628,14 @@ class AniListClient(context: Context) {
     private fun aniListSearchTitleScore(search: String, candidate: String): Double {
         val query = normalize(search)
         val result = normalize(candidate)
+        val compactQuery = query.replace(" ", "")
+        val compactResult = result.replace(" ", "")
+        if (
+            compactQuery.length >= MIN_COMPACT_EXACT_TITLE_LENGTH &&
+            compactQuery == compactResult
+        ) {
+            return 1.0
+        }
         val baseScore = titleMatchScore(search, candidate)
         if (query.isNotEmpty() && result.startsWith("$query ")) return maxOf(baseScore, PREFIX_TITLE_SCORE)
         if (result.isNotEmpty() && query.startsWith("$result ")) return maxOf(baseScore, PREFIX_TITLE_SCORE)
@@ -678,6 +674,8 @@ class AniListClient(context: Context) {
         private const val MAX_SEARCH_QUERIES = 6
         private const val MAX_AIRING_BATCH_QUERIES = 20
         private const val MAX_CANDIDATES = 15
+        private const val MIN_COMPACT_EXACT_TITLE_LENGTH = 12
+        private const val AIRING_MATCH_SCORE = 0.75
         private const val MINIMUM_MATCH_SCORE = 0.42
         private const val PREFIX_TITLE_SCORE = 0.75
         private const val STRONG_MATCH_SCORE = 0.88

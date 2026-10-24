@@ -122,6 +122,7 @@ private val ankiSourceFields = listOf(
     AnkiSourceField("frequencies", "Frequencies (all dictionaries)"),
     AnkiSourceField("frequencySort", "Frequency sort (harmonic rank)"),
     AnkiSourceField("pitchAccent", "Pitch Accent"),
+    AnkiSourceField("info", "Info"),
 )
 
 @Composable

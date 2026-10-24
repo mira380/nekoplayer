@@ -161,6 +161,25 @@ private val PlayerOverlaySurface = Color(0xE6111415)
 private val PlayerOverlayText = Color(0xFFDEE7EC)
 private val PlayerOverlayAccent = Color(0xFFA0CDE0)
 
+private fun formatAnkiInfo(
+    displayName: String,
+    seriesTitle: String?,
+    alternateSeriesTitle: String?,
+    episodeName: String?,
+    episodeNumber: Int?,
+): String {
+    val title = seriesTitle?.trim()?.takeIf(String::isNotEmpty)
+        ?: alternateSeriesTitle?.trim()?.takeIf(String::isNotEmpty)
+        ?: return displayName.trim()
+    val episodeTitle = episodeName?.trim()?.takeIf(String::isNotEmpty)
+    val episodeInfo = buildList {
+        episodeNumber?.takeIf { it > 0 }?.let { add("Episode $it") }
+        episodeTitle?.takeUnless { episodeNumber != null && it.equals("Episode $episodeNumber", ignoreCase = true) }
+            ?.let(::add)
+    }.joinToString(": ")
+    return listOf(title, episodeInfo).filter(String::isNotBlank).joinToString(" · ")
+}
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun PlayerScreen(
@@ -354,18 +373,22 @@ fun PlayerScreen(
     val externalSubtitle = selectedExternalTrack.takeIf { useExternalSubtitle }
     val subtitlePositionMs = positionMs.saturatedMinus(subtitleOffsetMs)
     val latestExternalSubtitle = rememberUpdatedState(externalSubtitle)
-    val externalCueIndex = externalSubtitle?.let {
-        SubtitleCueIndex.activeCueIndex(it, subtitlePositionMs)
-    }
+    val activeSubtitleCueIndices = externalSubtitle?.let {
+        SubtitleCueIndex.activeCueIndices(it, subtitlePositionMs)
+    }.orEmpty()
+    val activeSubtitleCues = externalSubtitle?.let { track ->
+        activeSubtitleCueIndices.mapNotNull(track.cues::getOrNull)
+    }.orEmpty()
+    val externalCueIndex = activeSubtitleCueIndices.lastOrNull()
     val previousSubtitleCueIndex = externalSubtitle?.let {
         SubtitleCueIndex.previousCueIndex(it, subtitlePositionMs)
     }
     val nextSubtitleCueIndex = externalSubtitle?.let {
         SubtitleCueIndex.nextCueIndex(it, subtitlePositionMs)
     }
-    val activeCue: SubtitleCue? = externalSubtitle?.takeIf { useExternalSubtitle }
-        ?.let { track -> externalCueIndex?.let(track.cues::getOrNull) }
-    val subtitleText = activeCue?.plainText ?: embeddedSubtitle
+    val activeCue: SubtitleCue? = activeSubtitleCues.lastOrNull()
+    val subtitleText = activeSubtitleCues.joinToString("\n") { it.plainText }
+        .ifBlank { embeddedSubtitle }
     val currentSkipPoint = if (skipPointsEnabled) {
         sourceSkipPointsForDuration.firstOrNull { point ->
             positionMs in point.startMs until point.endMs
@@ -1417,7 +1440,7 @@ fun PlayerScreen(
             expansion = dictionaryPopupExpansion,
             popupSize = dictionaryPopupSize,
             anchorInPlayer = lookupAnchor,
-            subtitleContext = activeCue?.plainText ?: embeddedSubtitle,
+            subtitleContext = subtitleText,
             dictionaries = dictionaries,
             onDismiss = ::dismissLookup,
             onPlayAudio = ::playPronunciation,
@@ -1425,14 +1448,15 @@ fun PlayerScreen(
                 if (!miningInProgress && lookupSourceText != null) {
                     miningInProgress = true
                     val mineRequestId = lookupRequestId
-                    val sentence = activeCue?.plainText ?: embeddedSubtitle
-                    val cueStart = activeCue?.startMs
-                        ?.saturatedPlus(externalSubtitle.offsetMs)
+                    val sentence = subtitleText
+                    val externalOffsetMs = externalSubtitle?.offsetMs ?: 0L
+                    val cueStart = activeSubtitleCues.minOfOrNull { it.startMs }
+                        ?.saturatedPlus(externalOffsetMs)
                         ?.saturatedPlus(subtitleOffsetMs)
                         ?.coerceAtLeast(0L)
                         ?: positionMs
-                    val cueEnd = activeCue?.endMs
-                        ?.saturatedPlus(externalSubtitle.offsetMs)
+                    val cueEnd = activeSubtitleCues.maxOfOrNull { it.endMs }
+                        ?.saturatedPlus(externalOffsetMs)
                         ?.saturatedPlus(subtitleOffsetMs)
                         ?.coerceAtLeast(cueStart)
                         ?: cueStart.saturatedPlus(1_500L)
@@ -1470,6 +1494,9 @@ fun PlayerScreen(
                                 entry,
                                 destinationField = "Pronunciation Audio",
                             )
+                            val sourceEpisodeName = subtitleEpisodeName?.takeIf(String::isNotBlank)
+                                ?: sourceProgressIdentity?.episodeName?.takeIf(String::isNotBlank)
+                            val sourceEpisodeNumber = subtitleEpisodeNumber ?: sourceProgressIdentity?.episodeNumber
                             AnkiDroidMiningWorkflow(context, database, anki, dictionaries = dictionaries).mine(
                                 uri = uri,
                                 sentence = sentence,
@@ -1479,6 +1506,13 @@ fun PlayerScreen(
                                 allEntries = allEntries,
                                 metadata = pageMetadata,
                                 surfaceText = lookupResult.surfaceText,
+                                info = formatAnkiInfo(
+                                    displayName = displayName,
+                                    seriesTitle = seriesTitle,
+                                    alternateSeriesTitle = alternateSeriesTitle,
+                                    episodeName = sourceEpisodeName,
+                                    episodeNumber = sourceEpisodeNumber,
+                                ),
                                 pronunciationAttachment = pronunciation?.attachment,
                                 mediaDurationMs = captureDurationMs,
                                 requestHeaders = requestHeaders,

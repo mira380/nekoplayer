@@ -93,7 +93,7 @@ object SubtitleParser {
             else -> emptyList()
         }.asSequence()
             .filter { it.startMs >= 0 && it.endMs > it.startMs && plainText(it.text).isNotEmpty() }
-            .sortedWith(compareBy<RawCue> { it.startMs }.thenBy { it.endMs })
+            .sortedBy { it.startMs }
             .toList()
 
         if (rawCues.isEmpty()) {
@@ -238,20 +238,41 @@ object SubtitleParser {
     private data class RawCue(val startMs: Long, val endMs: Long, val text: String)
 }
 
-// Cues are sorted by start and end time, so these lookups use binary search.
+// Cues are sorted by start time, so binary search narrows the active range.
 object SubtitleCueIndex {
+    fun activeCueIndices(track: SubtitleTrack, positionMs: Long): List<Int> {
+        val cues = track.cues
+        if (cues.isEmpty()) return emptyList()
+        val subtitleTime = positionMs - track.offsetMs
+        val lastStartedCue = lastStartedCueIndex(cues, subtitleTime)
+        if (lastStartedCue < 0) return emptyList()
+        return buildList {
+            for (index in 0..lastStartedCue) {
+                if (cues[index].endMs > subtitleTime) add(index)
+            }
+        }
+    }
+
     fun activeCueIndex(track: SubtitleTrack, positionMs: Long): Int? {
         val cues = track.cues
         if (cues.isEmpty()) return null
         val subtitleTime = positionMs - track.offsetMs
+        val lastStartedCue = lastStartedCueIndex(cues, subtitleTime)
+        if (lastStartedCue < 0) return null
+        for (index in lastStartedCue downTo 0) {
+            if (cues[index].endMs > subtitleTime) return index
+        }
+        return null
+    }
+
+    private fun lastStartedCueIndex(cues: List<SubtitleCue>, subtitleTime: Long): Int {
         var low = 0
         var high = cues.size
         while (low < high) {
             val middle = low + ((high - low) ushr 1)
             if (cues[middle].startMs <= subtitleTime) low = middle + 1 else high = middle
         }
-        val candidate = low - 1
-        return candidate.takeIf { it >= 0 && cues[it].endMs > subtitleTime }
+        return low - 1
     }
 
     fun nextCueIndex(track: SubtitleTrack, positionMs: Long): Int? {

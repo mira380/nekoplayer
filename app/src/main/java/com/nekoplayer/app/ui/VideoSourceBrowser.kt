@@ -84,6 +84,7 @@ import androidx.compose.ui.unit.dp
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.extensions.ExtensionManager
 import com.nekoplayer.app.library.AniListAiringEpisode
+import com.nekoplayer.app.library.AniListAiringLookup
 import com.nekoplayer.app.library.AniListClient
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
@@ -120,6 +121,7 @@ internal fun VideoSourceBrowser(
     progressRefreshKey: Int,
     aniList: AniListClient,
     initialAnime: SAnime?,
+    initialAiringEpisode: AniListAiringEpisode?,
     onBack: () -> Unit,
     onPlayVideo: (
         android.net.Uri,
@@ -154,8 +156,8 @@ internal fun VideoSourceBrowser(
     var sourceProgressAnimeTitle by remember(source.id, initialAnime?.url) {
         mutableStateOf(initialAnime?.title)
     }
-    var savedSourceProgress by remember(source.id, initialAnime?.url) {
-        mutableStateOf<AppDatabase.SourceEpisodeProgress?>(null)
+    var savedSourceProgresses by remember(source.id, initialAnime?.url) {
+        mutableStateOf<List<AppDatabase.SourceEpisodeProgress>>(emptyList())
     }
     var pendingContinueProgress by remember(source.id, initialAnime?.url) {
         mutableStateOf<AppDatabase.SourceEpisodeProgress?>(null)
@@ -196,13 +198,22 @@ internal fun VideoSourceBrowser(
         }
     }
 
-    LaunchedEffect(aniList, details?.url, details?.title) {
+    LaunchedEffect(aniList, details?.url, details?.title, initialAiringEpisode) {
         val title = details?.title?.takeIf(String::isNotBlank)
-        nextAiringEpisode = if (title == null) {
+        nextAiringEpisode = if (
+            initialAiringEpisode != null &&
+            initialAnime?.url == details?.url
+        ) {
+            initialAiringEpisode
+        } else if (title == null) {
             null
         } else {
+            val lookup = AniListAiringLookup(
+                key = "source:${source.id}:${details?.url.orEmpty()}",
+                showName = title,
+            )
             withContext(Dispatchers.IO) {
-                aniList.findNextAiringEpisode(title, episodes.take(2).map(SEpisode::name))
+                aniList.findNextAiringEpisodes(listOf(lookup))[lookup.key]
             }
         }
     }
@@ -527,7 +538,7 @@ internal fun VideoSourceBrowser(
                 selectedAnimeUrl = null
                 sourceProgressAnimeUrl = null
                 sourceProgressAnimeTitle = null
-                savedSourceProgress = null
+                savedSourceProgresses = emptyList()
                 pendingContinueProgress = null
                 details = null
                 episodes = emptyList()
@@ -539,11 +550,11 @@ internal fun VideoSourceBrowser(
 
     LaunchedEffect(source.id, sourceProgressAnimeUrl, progressRefreshKey) {
         val seriesUrl = sourceProgressAnimeUrl
-        savedSourceProgress = if (seriesUrl.isNullOrBlank()) {
-            null
+        savedSourceProgresses = if (seriesUrl.isNullOrBlank()) {
+            emptyList()
         } else {
             withContext(Dispatchers.IO) {
-                database.latestUnfinishedSourceProgress(source.id, seriesUrl)
+                database.sourceEpisodeProgresses(source.id, seriesUrl)
             }
         }
     }
@@ -616,7 +627,7 @@ internal fun VideoSourceBrowser(
                             selectedAnimeUrl = null
                             sourceProgressAnimeUrl = null
                             sourceProgressAnimeTitle = null
-                            savedSourceProgress = null
+                            savedSourceProgresses = emptyList()
                             pendingContinueProgress = null
                             details = null
                             episodes = emptyList()
@@ -859,9 +870,14 @@ internal fun VideoSourceBrowser(
                         item { Text("Seasons", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
                     }
                     items(seasons, key = { "${source.id}:season:${it.url}" }) { season ->
-                        val seasonProgress = savedSourceProgress?.takeIf {
-                            it.identity.detailAnimeUrl == season.url
-                        }
+                        val seasonProgress = savedSourceProgresses.asSequence()
+                            .filter { progress ->
+                                progress.identity.detailAnimeUrl == season.url &&
+                                    progress.positionMs > 0L &&
+                                    (progress.durationMs <= 0L || progress.positionMs <
+                                        progress.durationMs - AppDatabase.SOURCE_COMPLETION_TOLERANCE_MS)
+                            }
+                            .maxByOrNull { it.updatedAtMs }
                         Card(
                             onClick = {
                                 if (seasonProgress != null) continueSourceProgress(seasonProgress)
@@ -980,12 +996,15 @@ internal fun VideoSourceBrowser(
                             item { EmptyCard("No matching episodes", "Try a different episode title or number.") }
                         }
                         items(visibleEpisodes, key = { "${source.id}:${it.url}" }) { episode ->
-                            val episodeProgress = savedSourceProgress?.takeIf { progress ->
-                                progress.identity.detailAnimeUrl == selectedAnimeUrl &&
-                                    (progress.identity.episodeUrl == episode.url ||
-                                        (progress.identity.episodeNumber != null &&
-                                            episode.sortingNumber() == progress.identity.episodeNumber.toFloat()))
-                            }
+                            val episodeProgress = savedSourceProgresses.asSequence()
+                                .filter { progress ->
+                                    progress.identity.detailAnimeUrl == selectedAnimeUrl &&
+                                        progress.positionMs > 0L &&
+                                        (progress.identity.episodeUrl == episode.url ||
+                                            (progress.identity.episodeNumber != null &&
+                                                episode.sortingNumber() == progress.identity.episodeNumber.toFloat()))
+                                }
+                                .maxByOrNull { it.updatedAtMs }
                             Card(
                                 onClick = {
                                     openEpisode(episode, autoPlayFirst = episodeProgress != null)

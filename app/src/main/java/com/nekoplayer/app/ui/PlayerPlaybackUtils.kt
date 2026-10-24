@@ -1,11 +1,5 @@
 package com.nekoplayer.app.ui
 
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.dp
-
 import eu.kanade.tachiyomi.animesource.model.ChapterType
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 
@@ -40,27 +34,6 @@ internal fun formatPlayerTime(timeMs: Long): String {
     val hours = totalSeconds / 3600
     return if (hours > 0) String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
     else String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
-}
-
-internal fun subtitleShadowForStyle(style: String, density: Density): Shadow? = with(density) {
-    when (style) {
-        "Soft" -> Shadow(
-            color = Color.Black.copy(alpha = 0.86f),
-            offset = Offset(0f, 1.5.dp.toPx()),
-            blurRadius = 4.dp.toPx(),
-        )
-        "Strong" -> Shadow(
-            color = Color.Black.copy(alpha = 0.98f),
-            offset = Offset(0f, 3.dp.toPx()),
-            blurRadius = 7.dp.toPx(),
-        )
-        "Hard" -> Shadow(
-            color = Color.Black.copy(alpha = 0.99f),
-            offset = Offset(0f, 1.5.dp.toPx()),
-            blurRadius = 1.dp.toPx(),
-        )
-        else -> null
-    }
 }
 
 internal fun Long.saturatedPlus(other: Long): Long = when {

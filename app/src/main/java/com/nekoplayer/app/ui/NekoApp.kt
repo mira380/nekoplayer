@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.widthIn
@@ -35,12 +37,15 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -56,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
@@ -63,10 +69,14 @@ import com.nekoplayer.app.MainActivity
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.data.DictionaryRepository
 import com.nekoplayer.app.extensions.ExtensionManager
+import com.nekoplayer.app.library.AniListAiringEpisode
 import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.AnimeLibraryEpisode
 import com.nekoplayer.app.library.AnimeLibraryScanner
 import com.nekoplayer.app.mining.AnkiDroidClient
+import com.nekoplayer.app.update.AppUpdateClient
+import com.nekoplayer.app.update.AppUpdateException
+import com.nekoplayer.app.update.AppUpdateRelease
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +91,8 @@ private enum class AppPage(val label: String) {
     Extensions("Extensions"),
     Settings("Settings"),
 }
+
+private const val DISMISSED_UPDATE_VERSION_KEY = "updates.dismissedVersion"
 
 internal typealias NextEpisodeAction = ((Boolean) -> Unit) -> Unit
 
@@ -114,6 +126,30 @@ fun NekoApp(
     val aniList = remember(context) { AniListClient(context) }
     val snackbar = remember { SnackbarHostState() }
     val extensionManager = remember(context, database) { ExtensionManager(context, database) }
+    val appUpdateClient = remember(context) { AppUpdateClient(context) }
+    val appVersion = remember(context) {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
+            .getOrNull() ?: "Unknown"
+    }
+    var startupUpdateRelease by remember { mutableStateOf<AppUpdateRelease?>(null) }
+    var startupUpdateError by remember { mutableStateOf<String?>(null) }
+    var startupUpdateDownloading by remember { mutableStateOf(false) }
+    var startupUpdateDownloadProgress by remember { mutableStateOf(0f) }
+    var downloadedStartupUpdate by remember { mutableStateOf<File?>(null) }
+    val startupUpdateInstallPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val apk = downloadedStartupUpdate
+        if (apk != null && appUpdateClient.canInstallUnknownApps()) {
+            runCatching { appUpdateClient.install(apk) }
+                .onFailure {
+                    startupUpdateError = (it as? AppUpdateException)?.message
+                        ?: "Couldn’t start the installer. Try again."
+                }
+        } else if (apk != null) {
+            startupUpdateError = "Allow NekoPlayer to install updates to continue."
+        }
+    }
 
     LaunchedEffect(database, dictionaryRepository) {
         withContext(Dispatchers.IO) {
@@ -137,6 +173,7 @@ fun NekoApp(
 
     var page by remember { mutableStateOf(AppPage.Library) }
     var pendingSourceEntry by remember { mutableStateOf<AppDatabase.SourceLibraryEntry?>(null) }
+    var pendingSourceAiringEpisode by remember { mutableStateOf<AniListAiringEpisode?>(null) }
     var detailScreen by remember { mutableStateOf(false) }
     var darkMode by remember { mutableStateOf(database.readBoolean("appearance.dark", true)) }
     var palette by remember { mutableStateOf(database.readString("appearance.palette", "classic")) }
@@ -168,6 +205,80 @@ fun NekoApp(
         folderUri = withContext(Dispatchers.IO) { database.readSetting("library.folderPath") as? String }
         libraryLoading = !folderUri.isNullOrBlank()
         folderUriLoaded = true
+    }
+
+    LaunchedEffect(appUpdateClient, appVersion, database) {
+        val dismissedVersion = withContext(Dispatchers.IO) {
+            database.readString(DISMISSED_UPDATE_VERSION_KEY)
+        }
+        val release = try {
+            appUpdateClient.latestRelease()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return@LaunchedEffect
+        }
+        if (
+            AppUpdateClient.isNewerVersion(release.versionTag, appVersion) &&
+            dismissedVersion != release.versionTag
+        ) {
+            startupUpdateRelease = release
+        }
+    }
+
+    fun dismissStartupUpdate() {
+        val version = startupUpdateRelease?.versionTag ?: return
+        startupUpdateRelease = null
+        startupUpdateError = null
+        scope.launch(Dispatchers.IO) {
+            database.writeSetting(DISMISSED_UPDATE_VERSION_KEY, version)
+        }
+    }
+
+    fun installStartupUpdate(apk: File) {
+        if (!appUpdateClient.canInstallUnknownApps()) {
+            runCatching {
+                startupUpdateInstallPermissionLauncher.launch(appUpdateClient.installPermissionIntent())
+            }.onFailure {
+                startupUpdateError = "Couldn’t start the installer. Try again."
+            }
+            return
+        }
+        runCatching { appUpdateClient.install(apk) }
+            .onFailure {
+                startupUpdateError = (it as? AppUpdateException)?.message
+                    ?: "Couldn’t start the installer. Try again."
+            }
+    }
+
+    fun downloadOrInstallStartupUpdate() {
+        if (startupUpdateDownloading) return
+        val cachedApk = downloadedStartupUpdate?.takeIf { it.isFile }
+        if (cachedApk != null) {
+            installStartupUpdate(cachedApk)
+            return
+        }
+        val downloadUrl = startupUpdateRelease?.apkUrl ?: return
+        scope.launch {
+            startupUpdateDownloading = true
+            startupUpdateDownloadProgress = 0f
+            startupUpdateError = null
+            try {
+                val apk = appUpdateClient.downloadApk(downloadUrl) { progress ->
+                    startupUpdateDownloadProgress = progress
+                }
+                downloadedStartupUpdate = apk
+                installStartupUpdate(apk)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: AppUpdateException) {
+                startupUpdateError = error.message ?: "Couldn’t download the update. Check your connection and try again."
+            } catch (_: Exception) {
+                startupUpdateError = "Couldn’t download the update. Check your connection and try again."
+            } finally {
+                startupUpdateDownloading = false
+            }
+        }
     }
 
     LaunchedEffect(folderUri, folderUriLoaded, libraryScanRequest) {
@@ -409,8 +520,9 @@ fun NekoApp(
                             onOpenVideo = { uri, name, title, onNextEpisode ->
                                 openVideo(uri, name, title, onPlayNextEpisode = onNextEpisode)
                             },
-                            onOpenSourceEntry = { entry ->
+                            onOpenSourceEntry = { entry, airingEpisode ->
                                 pendingSourceEntry = entry
+                                pendingSourceAiringEpisode = airingEpisode
                                 page = AppPage.Extensions
                             },
                             onPickCover = { show -> coverTarget = show; coverPicker.launch(arrayOf("image/*")) },
@@ -453,10 +565,15 @@ fun NekoApp(
                                             progressRefreshKey = libraryProgressRefreshKey,
                                             aniList = aniList,
                                             sourceEntryToOpen = pendingSourceEntry,
-                                            onSourceEntryOpened = { pendingSourceEntry = null },
+                                            sourceEntryAiringEpisode = pendingSourceAiringEpisode,
+                                            onSourceEntryOpened = {
+                                                pendingSourceEntry = null
+                                                pendingSourceAiringEpisode = null
+                                            },
                                             onReturnToLibrary = {
                                                 page = AppPage.Library
                                                 pendingSourceEntry = null
+                                                pendingSourceAiringEpisode = null
                                                 detailScreen = false
                                             },
                                             onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle, onNextEpisode, sourceSkipTimestamps ->
@@ -581,6 +698,57 @@ fun NekoApp(
             BackHandler(enabled = current != null) {
                 activeVideo = null
             }
+        }
+        startupUpdateRelease?.takeIf { current == null }?.let { release ->
+            val cachedApk = downloadedStartupUpdate?.takeIf { it.isFile }
+            AlertDialog(
+                onDismissRequest = {
+                    if (!startupUpdateDownloading) dismissStartupUpdate()
+                },
+                title = { Text("Update available") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Update available: ${release.versionTag} · Installed: $appVersion")
+                        release.releaseNotes?.take(800)?.takeIf(String::isNotBlank)?.let { notes ->
+                            Text(notes, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                        }
+                        if (release.apkUrl == null) {
+                            Text("No APK is attached to the latest release.")
+                        }
+                        startupUpdateError?.let { error ->
+                            Text(error, color = MaterialTheme.colorScheme.error)
+                        }
+                        if (startupUpdateDownloading) {
+                            LinearProgressIndicator(
+                                progress = { startupUpdateDownloadProgress },
+                                modifier = Modifier.fillMaxWidth().height(3.dp),
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    if (release.apkUrl != null) {
+                        TextButton(
+                            onClick = ::downloadOrInstallStartupUpdate,
+                            enabled = !startupUpdateDownloading,
+                        ) {
+                            Text(
+                                when {
+                                    startupUpdateDownloading -> "Downloading update…"
+                                    cachedApk != null -> "Install update"
+                                    else -> "Download and install"
+                                },
+                            )
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = ::dismissStartupUpdate,
+                        enabled = !startupUpdateDownloading,
+                    ) { Text("Later") }
+                },
+            )
         }
       }
     }

@@ -111,23 +111,14 @@ internal fun EmptyLibraryCard(
 
 @Composable
 internal fun ShowDetailScreen(
-    aniList: AniListClient,
     showName: String,
     episodes: List<AnimeLibraryEpisode>,
+    nextAiringEpisode: AniListAiringEpisode?,
     recent: List<AppDatabase.RecentMedia>,
     onBack: () -> Unit,
     onOpenVideo: (AnimeLibraryEpisode, NextEpisodeAction?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var nextAiringEpisode by remember(showName) {
-        mutableStateOf<AniListAiringEpisode?>(null)
-    }
-    LaunchedEffect(aniList, showName, episodes) {
-        nextAiringEpisode = withContext(Dispatchers.IO) {
-            aniList.findNextAiringEpisode(showName, episodes.map(AnimeLibraryEpisode::displayName))
-        }
-    }
-
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Box(Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {

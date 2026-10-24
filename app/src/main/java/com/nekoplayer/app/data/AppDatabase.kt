@@ -288,6 +288,11 @@ class AppDatabase(context: Context) : Closeable {
         readSourceEpisodeProgress().firstOrNull { it.identity.key == identity.key }
 
     @Synchronized
+    fun sourceEpisodeProgresses(sourceId: Long, seriesAnimeUrl: String): List<SourceEpisodeProgress> =
+        readSourceEpisodeProgress()
+            .filter { it.identity.sourceId == sourceId && it.identity.seriesAnimeUrl == seriesAnimeUrl }
+
+    @Synchronized
     fun latestSourceProgress(sourceId: Long, seriesAnimeUrl: String): SourceEpisodeProgress? =
         readSourceEpisodeProgress()
             .asSequence()

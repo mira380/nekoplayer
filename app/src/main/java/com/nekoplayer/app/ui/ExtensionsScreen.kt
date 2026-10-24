@@ -72,6 +72,7 @@ import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import com.nekoplayer.app.extensions.model.Extension
 import com.nekoplayer.app.extensions.model.ExtensionApiVersion
+import com.nekoplayer.app.library.AniListAiringEpisode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -88,6 +89,7 @@ fun ExtensionsScreen(
     progressRefreshKey: Int,
     aniList: AniListClient,
     sourceEntryToOpen: AppDatabase.SourceLibraryEntry?,
+    sourceEntryAiringEpisode: AniListAiringEpisode?,
     onSourceEntryOpened: () -> Unit,
     onReturnToLibrary: () -> Unit,
     onPlayVideo: (
@@ -126,6 +128,7 @@ fun ExtensionsScreen(
     var busyPackage by remember { mutableStateOf<String?>(null) }
     var updatingAll by remember { mutableStateOf(false) }
     var selectedAnimeToOpen by remember { mutableStateOf<SAnime?>(null) }
+    var selectedAnimeAiringEpisode by remember { mutableStateOf<AniListAiringEpisode?>(null) }
     var sourceEntryError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) { manager.start() }
@@ -145,6 +148,7 @@ fun ExtensionsScreen(
                 description = entry.description
                 initialized = false
             }
+            selectedAnimeAiringEpisode = sourceEntryAiringEpisode
             sourceEntryError = null
             onSourceEntryOpened()
         } else if (!loading) {
@@ -162,6 +166,7 @@ fun ExtensionsScreen(
             val openedFromLibrary = selectedAnimeToOpen != null
             selectedSource = null
             selectedAnimeToOpen = null
+            selectedAnimeAiringEpisode = null
             if (openedFromLibrary) {
                 onDetailScreenChanged(false)
                 onReturnToLibrary()
@@ -187,10 +192,12 @@ fun ExtensionsScreen(
             progressRefreshKey = progressRefreshKey,
             aniList = aniList,
             initialAnime = selectedAnimeToOpen,
+            initialAiringEpisode = selectedAnimeAiringEpisode,
             onBack = {
                 val openedFromLibrary = selectedAnimeToOpen != null
                 selectedSource = null
                 selectedAnimeToOpen = null
+                selectedAnimeAiringEpisode = null
                 if (openedFromLibrary) {
                     onDetailScreenChanged(false)
                     onReturnToLibrary()
