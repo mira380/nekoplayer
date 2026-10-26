@@ -503,6 +503,7 @@ class AppDatabase(context: Context) : Closeable {
         const val DATABASE_NAME = "app.db"
         const val SCHEMA_VERSION = 6
         const val DICTIONARY_PAYLOAD_COMPACTED_KEY = "storage.dictionaryPayloadCompactV1"
+        const val DICTIONARY_PAYLOAD_COMPRESSION_VERSION_KEY = "storage.dictionaryPayloadCompressionVersion"
         const val RECENT_KEY = "recent_media"
         const val SOURCE_LIBRARY_KEY = "library.videoSourceEntries"
         const val SOURCE_PROGRESS_KEY = "playback.sourceEpisodes"

@@ -10,7 +10,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -28,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -42,6 +42,8 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Schedule
@@ -50,7 +52,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -58,6 +59,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -102,6 +104,9 @@ import java.util.Locale
 
 private const val LIBRARY_EPISODE_BADGE_BASELINE_RESET_KEY = "library.episodeBadgeBaselineReset.v1"
 
+@android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
+private fun libraryCurrentEpochSeconds(): Long = System.currentTimeMillis() / 1_000L
+
 @Composable
 fun LibraryScreen(
     database: AppDatabase,
@@ -132,7 +137,10 @@ fun LibraryScreen(
         mutableStateOf((database.readSetting("library.customCovers") as? org.json.JSONObject) ?: org.json.JSONObject())
     }
     var libraryGroups by remember(database) { mutableStateOf(readLibraryGroups(database)) }
-    var groupAssignments by remember(database) { mutableStateOf(readLibraryGroupAssignments(database)) }
+    val storedGroupAssignments = remember(database) { readLibraryGroupAssignments(database) }
+    var groupAssignments by remember(database) {
+        mutableStateOf(normalizeLibraryGroupAssignments(storedGroupAssignments, libraryGroups))
+    }
     var collapsedGroups by remember(database) {
         mutableStateOf(readCollapsedLibraryGroups(database))
     }
@@ -329,6 +337,30 @@ fun LibraryScreen(
             }
         }
     }
+    val libraryItems = remember(libraryShelves) {
+        libraryShelves.flatMap(LibraryShelf::entries).distinctBy(LibraryShelfItem::key)
+    }
+    LaunchedEffect(libraryItems, aniListSubtitleMatches, subtitleCacheLoaded) {
+        if (!subtitleCacheLoaded) return@LaunchedEffect
+
+        val currentItemKeys = libraryItems.mapTo(mutableSetOf(), LibraryShelfItem::key)
+        val resolvedCacheKeys = mutableSetOf<String>()
+        val cachedSchedules = buildMap {
+            val nowEpochSeconds = libraryCurrentEpochSeconds()
+            libraryItems.forEach { item ->
+                val lookup = item.toAiringLookup()
+                val cached = aniListSubtitleMatches[item.key]
+                    ?.takeIf { it.signature == aniListLookupSignature(lookup) }
+                    ?: return@forEach
+                resolvedCacheKeys += item.key
+                cached.match.nextAiringEpisode
+                    ?.takeIf { it.airingAtEpochSeconds > nowEpochSeconds }
+                    ?.let { put(item.key, it) }
+            }
+        }
+        airingEpisodesByItemKey = airingEpisodesByItemKey
+            .filterKeys { it in currentItemKeys && it !in resolvedCacheKeys } + cachedSchedules
+    }
 
     LaunchedEffect(database, subtitleCacheLoaded, jimakuApiKey, libraryShelves) {
         if (
@@ -358,10 +390,6 @@ fun LibraryScreen(
             }
             subtitleStatuses = result.statuses
             aniListSubtitleMatches = result.aniListMatches
-            val airingUpdates = result.aniListMatches.mapNotNull { (key, value) ->
-                value.match.nextAiringEpisode?.let { key to it }
-            }.toMap()
-            if (airingUpdates.isNotEmpty()) airingEpisodesByItemKey = airingEpisodesByItemKey + airingUpdates
         } finally {
             subtitleRefreshing = false
         }
@@ -410,18 +438,23 @@ fun LibraryScreen(
         scope.launch(Dispatchers.IO) { writeLibrarySeenEpisodeCounts(database, updated) }
     }
 
-    LaunchedEffect(aniList, libraryShelves, collapsedGroups) {
-        val expandedShelves = libraryShelves.filterNot { it.key in collapsedGroups }
-        expandedShelves.forEach { shelf ->
-            val lookups = shelf.entries.map(LibraryShelfItem::toAiringLookup)
-            if (lookups.isEmpty()) return@forEach
-            val itemKeys = lookups.map(AniListAiringLookup::key).toSet()
-            val schedules = withContext(Dispatchers.IO) {
-                aniList.findNextAiringEpisodes(lookups)
-            }
-            airingEpisodesByItemKey =
-                airingEpisodesByItemKey.filterKeys { it !in itemKeys } + schedules
+    LaunchedEffect(aniList, libraryShelves, collapsedGroups, subtitleCacheLoaded) {
+        if (!subtitleCacheLoaded) return@LaunchedEffect
+        val lookups = libraryShelves
+            .asSequence()
+            .filterNot { it.key in collapsedGroups }
+            .flatMap { it.entries.asSequence() }
+            .distinctBy(LibraryShelfItem::key)
+            .map(LibraryShelfItem::toAiringLookup)
+            .toList()
+        if (lookups.isEmpty()) return@LaunchedEffect
+
+        val itemKeys = lookups.mapTo(mutableSetOf(), AniListAiringLookup::key)
+        val schedules = withContext(Dispatchers.IO) {
+            aniList.findNextAiringEpisodes(lookups)
         }
+        airingEpisodesByItemKey =
+            airingEpisodesByItemKey.filterKeys { it !in itemKeys } + schedules
     }
 
     val selectedEpisodes = remember(expandedShow, groups) {
@@ -434,14 +467,22 @@ fun LibraryScreen(
     }
 
     fun saveGroupAssignments(updatedAssignments: Map<String, Set<String>>) {
-        groupAssignments = updatedAssignments
+        val normalizedAssignments = normalizeLibraryGroupAssignments(updatedAssignments, libraryGroups)
+        groupAssignments = normalizedAssignments
         val encoded = org.json.JSONObject()
-        updatedAssignments.forEach { (itemKey, assignedGroups) ->
+        normalizedAssignments.forEach { (itemKey, assignedGroups) ->
             if (assignedGroups.isNotEmpty()) {
                 encoded.put(itemKey, org.json.JSONArray(assignedGroups.sorted()))
             }
         }
         database.writeSetting("library.groupAssignments", encoded)
+    }
+
+    LaunchedEffect(database, storedGroupAssignments) {
+        val normalizedAssignments = normalizeLibraryGroupAssignments(storedGroupAssignments, libraryGroups)
+        if (normalizedAssignments != storedGroupAssignments) {
+            saveGroupAssignments(normalizedAssignments)
+        }
     }
 
     fun saveCollapsedGroups(updatedCollapsedGroups: Set<String>) {
@@ -482,10 +523,11 @@ fun LibraryScreen(
     }
 
     fun addSelectedItemsToGroups() {
-        if (selectedLibraryItemKeys.isEmpty() || batchGroupDraft.isEmpty()) return
+        val groupName = batchGroupDraft.singleOrNull() ?: return
+        if (selectedLibraryItemKeys.isEmpty()) return
         val updated = groupAssignments.toMutableMap()
         selectedLibraryItemKeys.forEach { itemKey ->
-            updated[itemKey] = updated[itemKey].orEmpty() + batchGroupDraft
+            updated[itemKey] = setOf(groupName)
         }
         saveGroupAssignments(updated)
         showBatchGroupDialog = false
@@ -496,11 +538,7 @@ fun LibraryScreen(
         val updated = groupAssignments.toMutableMap()
         val current = updated[itemKey].orEmpty()
         val alreadyAssigned = current.any { it.equals(groupName, ignoreCase = true) }
-        val next = if (alreadyAssigned) {
-            current.filterNot { it.equals(groupName, ignoreCase = true) }.toSet()
-        } else {
-            current + groupName
-        }
+        val next = if (alreadyAssigned) emptySet() else setOf(groupName)
         if (next.isEmpty()) updated.remove(itemKey) else updated[itemKey] = next
         saveGroupAssignments(updated)
     }
@@ -657,7 +695,7 @@ fun LibraryScreen(
                         Icon(
                             Icons.Default.FolderOpen,
                             contentDescription = localizeUiText(
-                                if (libraryGroups.isEmpty()) "Create group" else "Manage groups",
+                                if (libraryGroups.isEmpty()) "Create" else "Manage groups",
                             ),
                         )
                     }
@@ -931,30 +969,23 @@ fun LibraryScreen(
         val selectedCount = selectedLibraryItemKeys.size
         AlertDialog(
             onDismissRequest = { showBatchGroupDialog = false },
-            title = { Text("Add selected to groups") },
+            title = { Text("Add selected to a group") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Choose groups for $selectedCount selected items.")
+                    Text("Choose one group for $selectedCount selected items.")
                     LazyColumn(Modifier.heightIn(max = 280.dp)) {
                         items(libraryGroups, key = { "batch-group:$it" }) { groupName ->
-                            val checked = groupName in batchGroupDraft
+                            val checked = batchGroupDraft.any { it.equals(groupName, ignoreCase = true) }
                             Row(
                                 Modifier.fillMaxWidth()
                                     .heightIn(min = 48.dp)
-                                    .toggleable(
-                                        value = checked,
-                                        role = Role.Checkbox,
-                                        onValueChange = { isChecked ->
-                                            batchGroupDraft = if (isChecked) {
-                                                batchGroupDraft + groupName
-                                            } else {
-                                                batchGroupDraft - groupName
-                                            }
-                                        },
+                                    .clickable(
+                                        role = Role.RadioButton,
+                                        onClick = { batchGroupDraft = setOf(groupName) },
                                     ),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Checkbox(checked = checked, onCheckedChange = null)
+                                RadioButton(selected = checked, onClick = null)
                                 Spacer(Modifier.width(8.dp))
                                 Text(groupName)
                             }
@@ -967,7 +998,7 @@ fun LibraryScreen(
                     onClick = ::addSelectedItemsToGroups,
                     enabled = batchGroupDraft.isNotEmpty(),
                 ) {
-                    Text(if (batchGroupDraft.size == 1) "Add to group" else "Add to groups")
+                    Text("Add to group")
                 }
             },
             dismissButton = {
@@ -986,6 +1017,7 @@ fun LibraryScreen(
                         value = groupNameDraft,
                         onValueChange = { groupNameDraft = it },
                         modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
                         label = { Text("New group name") },
                         singleLine = true,
                     )
@@ -993,12 +1025,37 @@ fun LibraryScreen(
                         Text("Add titles to a group from their options menus.")
                     } else {
                         LazyColumn(Modifier.heightIn(max = 260.dp)) {
-                            items(libraryGroups, key = { "library-group:$it" }) { groupName ->
+                            itemsIndexed(
+                                libraryGroups,
+                                key = { _, groupName -> "library-group:$groupName" },
+                            ) { index, groupName ->
                                 Row(
                                     Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Text(groupName, Modifier.weight(1f))
+                                    IconButton(
+                                        onClick = {
+                                            saveLibraryGroups(moveLibraryGroup(libraryGroups, groupName, index - 1))
+                                        },
+                                        enabled = index > 0,
+                                    ) {
+                                        Icon(
+                                            Icons.Default.ArrowUpward,
+                                            contentDescription = localizeUiText("Move $groupName up"),
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            saveLibraryGroups(moveLibraryGroup(libraryGroups, groupName, index + 1))
+                                        },
+                                        enabled = index < libraryGroups.lastIndex,
+                                    ) {
+                                        Icon(
+                                            Icons.Default.ArrowDownward,
+                                            contentDescription = localizeUiText("Move $groupName down"),
+                                        )
+                                    }
                                     IconButton(
                                         onClick = {
                                             groupToDelete = groupName
@@ -1008,6 +1065,7 @@ fun LibraryScreen(
                                         Icon(
                                             Icons.Default.Delete,
                                             contentDescription = localizeUiText("Delete $groupName"),
+                                            tint = MaterialTheme.colorScheme.error,
                                         )
                                     }
                                 }
@@ -1021,14 +1079,14 @@ fun LibraryScreen(
                     onClick = {
                         val name = groupNameDraft.trim()
                         if (name.isNotEmpty() && libraryGroups.none { it.equals(name, ignoreCase = true) }) {
-                            saveLibraryGroups((libraryGroups + name).sortedBy { it.lowercase() })
+                            saveLibraryGroups(libraryGroups + name)
                             groupNameDraft = ""
                         }
                     },
                     enabled = groupNameDraft.isNotBlank() &&
                         libraryGroups.none { it.equals(groupNameDraft.trim(), ignoreCase = true) },
                 ) {
-                    Text("Create group")
+                    Text("Create")
                 }
             },
             confirmButton = {
@@ -1045,7 +1103,9 @@ fun LibraryScreen(
                 showGroupManager = true
             },
             title = { Text("Delete group?") },
-            text = { Text("Remove “$deletingGroup” from the library and all assigned titles?") },
+            text = {
+                Text("Delete “$deletingGroup”? Titles in this group will stay in your library and become ungrouped.")
+            },
             confirmButton = {
                 TextButton(
                     onClick = {

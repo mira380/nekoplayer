@@ -23,6 +23,45 @@ data class AppUpdateRelease(
 
 class AppUpdateException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
+internal fun formatReleaseNotes(markdown: String, versionTag: String? = null): String {
+    val versionNumber = versionTag?.trim()?.removePrefix("v")
+    val lines = mutableListOf<String>()
+
+    markdown.replace("\r\n", "\n").lines().forEach { rawLine ->
+        var line = rawLine.trim()
+        if (line.startsWith("```") || line.matches(Regex("(?:---+|\\*\\*\\*+|___+)"))) return@forEach
+        if (line.isEmpty()) {
+            if (lines.isNotEmpty() && lines.last().isNotEmpty()) lines += ""
+            return@forEach
+        }
+
+        val isHeading = line.startsWith('#')
+        if (isHeading) line = line.dropWhile { it == '#' }.trim()
+        val normalizedHeading = line.removePrefix("v").lowercase()
+        if (isHeading && (
+                normalizedHeading == "changes" ||
+                    (versionNumber != null && normalizedHeading == "${versionNumber.lowercase()} changes")
+                )
+        ) return@forEach
+
+        line = when {
+            line.startsWith("- ") || line.startsWith("* ") || line.startsWith("+ ") -> "• ${line.drop(2)}"
+            Regex("^\\d+[.)]\\s+").containsMatchIn(line) -> "• " + line.replaceFirst(Regex("^\\d+[.)]\\s+"), "")
+            line.startsWith("> ") -> line.drop(2)
+            else -> line
+        }
+        line = Regex("!?\\[([^]]+)]\\([^)]*\\)").replace(line, "$1")
+        line = Regex("(\\*\\*|__)(.+?)\\1").replace(line, "$2")
+        line = Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)").replace(line, "$1")
+        line = Regex("(?<!\\w)_(.+?)_(?!\\w)").replace(line, "$1")
+        line = Regex("~~(.+?)~~").replace(line, "$1")
+        line = Regex("`([^`]+)`").replace(line, "$1")
+        lines += line
+    }
+
+    return lines.joinToString("\n").trim()
+}
+
 class AppUpdateClient(context: Context) {
     private val appContext = context.applicationContext
 

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -62,9 +63,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 
 import com.nekoplayer.app.data.AppDatabase
@@ -559,8 +562,11 @@ private fun NewEpisodeIndicator(title: String, modifier: Modifier = Modifier) {
 private fun SubtitleAvailabilityBadge(status: LibrarySubtitleStatus, modifier: Modifier = Modifier) {
     val label = when (status.state) {
         LibrarySubtitleState.AVAILABLE -> "Subs ${status.episodeNumber}/${status.episodeNumber}"
-        LibrarySubtitleState.MISSING -> "Subs ${(status.latestAvailableEpisode ?: 0).coerceAtMost(status.episodeNumber)}/${status.episodeNumber}"
-        LibrarySubtitleState.NO_MATCH -> "No Jimaku match"
+        LibrarySubtitleState.MISSING -> status.latestAvailableEpisode
+            ?.takeIf { it > 0 }
+            ?.let { "Subs ${it.coerceAtMost(status.episodeNumber)}/${status.episodeNumber}" }
+            ?: "No subs"
+        LibrarySubtitleState.NO_MATCH -> "No subs"
         LibrarySubtitleState.CHECKING -> "Checking EP${status.episodeNumber}"
         LibrarySubtitleState.RATE_LIMITED -> "Rate limited"
         LibrarySubtitleState.ERROR -> Regex("""HTTP\s+\d{3}""", RegexOption.IGNORE_CASE)
@@ -568,14 +574,17 @@ private fun SubtitleAvailabilityBadge(status: LibrarySubtitleStatus, modifier: M
             ?: if (status.errorMessage.orEmpty().contains("connection", ignoreCase = true)) "Offline" else status.state.label
         else -> status.state.label
     }
-    val earlierSubsFound = status.state == LibrarySubtitleState.MISSING && status.latestAvailableEpisode != null
-    val hasAvailableSubtitles = status.state == LibrarySubtitleState.AVAILABLE || earlierSubsFound
+    val earlierSubsFound = status.state == LibrarySubtitleState.MISSING &&
+        status.latestAvailableEpisode != null && status.latestAvailableEpisode < status.episodeNumber
+    val hasAvailableSubtitles = status.state == LibrarySubtitleState.AVAILABLE
+    val noSubtitles = status.state == LibrarySubtitleState.NO_MATCH ||
+        (status.state == LibrarySubtitleState.MISSING && !earlierSubsFound)
     val icon = when (status.state) {
         LibrarySubtitleState.AVAILABLE -> Icons.Default.CheckCircle
-        LibrarySubtitleState.MISSING -> if (earlierSubsFound) Icons.Default.CheckCircle else Icons.Default.Close
+        LibrarySubtitleState.MISSING,
+        LibrarySubtitleState.NO_MATCH -> Icons.Default.Close
         LibrarySubtitleState.MATCHING,
         LibrarySubtitleState.CHECKING -> Icons.Default.Schedule
-        LibrarySubtitleState.NO_MATCH,
         LibrarySubtitleState.ANI_LIST_ERROR,
         LibrarySubtitleState.KEY_REQUIRED,
         LibrarySubtitleState.KEY_REJECTED,
@@ -586,34 +595,53 @@ private fun SubtitleAvailabilityBadge(status: LibrarySubtitleStatus, modifier: M
         LibrarySubtitleState.MATCHING,
         LibrarySubtitleState.AVAILABLE,
         LibrarySubtitleState.CHECKING -> MaterialTheme.colorScheme.primary
-        LibrarySubtitleState.MISSING -> if (earlierSubsFound) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.onSurfaceVariant
+        LibrarySubtitleState.MISSING -> if (earlierSubsFound) Color(0xFFFFC857)
+        else MaterialTheme.colorScheme.error
+        LibrarySubtitleState.NO_MATCH -> MaterialTheme.colorScheme.error
         LibrarySubtitleState.ANI_LIST_ERROR,
         LibrarySubtitleState.KEY_REJECTED,
         LibrarySubtitleState.RATE_LIMITED,
         LibrarySubtitleState.ERROR -> MaterialTheme.colorScheme.error
-        LibrarySubtitleState.NO_MATCH,
         LibrarySubtitleState.KEY_REQUIRED -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Row(
         modifier = modifier
+            .offset(y = (-0.5).dp)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
             .padding(horizontal = 8.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (hasAvailableSubtitles) {
+        if (hasAvailableSubtitles || earlierSubsFound || noSubtitles) {
             Box(
                 Modifier.size(14.dp).background(tint, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = null,
-                    modifier = Modifier.size(9.dp),
-                    tint = MaterialTheme.colorScheme.surface,
-                )
+                if (hasAvailableSubtitles) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(9.dp).offset(y = (-0.25).dp),
+                        tint = MaterialTheme.colorScheme.surface,
+                    )
+                } else if (earlierSubsFound) {
+                    Material3Text(
+                        "−",
+                        color = Color(0xFF302400),
+                        fontSize = 12.sp,
+                        lineHeight = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                if (noSubtitles) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(9.dp).offset(y = (-0.5).dp),
+                        tint = MaterialTheme.colorScheme.onError,
+                    )
+                }
             }
         } else {
             Icon(

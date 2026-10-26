@@ -9,14 +9,20 @@ import android.util.JsonReader
 import android.util.JsonToken
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
 import java.util.Calendar
 import java.util.Locale
 import java.text.SimpleDateFormat
 import java.util.TimeZone
+import java.util.zip.Deflater
+import java.util.zip.DeflaterOutputStream
+import java.util.zip.InflaterInputStream
 import java.util.zip.ZipFile
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -65,6 +71,9 @@ class DictionaryRepository(
     companion object {
         private const val BATCH_SIZE = 256
         private const val COMPACT_PAYLOAD_VERSION = 1
+        private const val COMPRESSED_PAYLOAD_VERSION = 2
+        private const val MIN_COMPRESS_PAYLOAD_CHARS = 768
+        private const val MIN_COMPRESS_SAVINGS_BYTES = 48
         private const val EXACT_CHUNK_SIZE = 400
         private const val MAX_SEARCH_LIMIT = 100
         private const val MAX_EXACT_LIMIT = 1_000
@@ -231,9 +240,15 @@ class DictionaryRepository(
         val expression = cursor.getString(2)
         val reading = cursor.getString(3)
         val score = cursor.getInt(4)
-        val payload = JSONArray(cursor.getString(5))
+        val payloadVersion = cursor.getInt(6)
+        val payloadJson = if (payloadVersion == COMPRESSED_PAYLOAD_VERSION) {
+            inflateTermPayload(cursor.getBlob(5))
+        } else {
+            cursor.getString(5)
+        }
+        val payload = JSONArray(payloadJson)
         val dictionaryName = cursor.getString(7)
-        if (cursor.getInt(6) >= COMPACT_PAYLOAD_VERSION) {
+        if (payloadVersion >= COMPACT_PAYLOAD_VERSION) {
             val glossary = payload.optJSONArray(4) ?: JSONArray()
             return DictionaryEntry(
                 id = id,
@@ -326,6 +341,91 @@ class DictionaryRepository(
         }.toString()
     }
 
+    suspend fun compressExistingTermPayloads(): Int {
+        var updatedCount = 0
+        var lastId = 0L
+        val update = database.compileStatement(
+            "UPDATE dictionary_entries SET entry_json=?,payload_version=? " +
+                "WHERE id=? AND payload_version<?",
+        )
+        try {
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val batch = mutableListOf<Triple<Long, String, Int>>()
+                database.rawQuery(
+                    "SELECT id,entry_json,payload_version FROM dictionary_entries " +
+                        "WHERE id>? AND payload_version<? ORDER BY id LIMIT ?",
+                    arrayOf(
+                        lastId.toString(),
+                        COMPRESSED_PAYLOAD_VERSION.toString(),
+                        BATCH_SIZE.toString(),
+                    ),
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        batch += Triple(cursor.getLong(0), cursor.getString(1), cursor.getInt(2))
+                    }
+                }
+                if (batch.isEmpty()) break
+
+                database.transaction {
+                    batch.forEach { (id, storedPayload, version) ->
+                        val compactPayload = if (version == 0) compactTermPayload(storedPayload) else storedPayload
+                        val compressed = compressTermPayload(compactPayload)
+                        if (compressed == null && version >= COMPACT_PAYLOAD_VERSION) return@forEach
+
+                        update.clearBindings()
+                        if (compressed != null) {
+                            update.bindBlob(1, compressed)
+                            update.bindLong(2, COMPRESSED_PAYLOAD_VERSION.toLong())
+                        } else {
+                            update.bindString(1, compactPayload)
+                            update.bindLong(2, COMPACT_PAYLOAD_VERSION.toLong())
+                        }
+                        update.bindLong(3, id)
+                        update.bindLong(4, COMPRESSED_PAYLOAD_VERSION.toLong())
+                        updatedCount += update.executeUpdateDelete()
+                    }
+                }
+                lastId = batch.last().first
+                yield()
+            }
+        } finally {
+            update.close()
+        }
+        return updatedCount
+    }
+
+    private fun compressTermPayload(payload: String): ByteArray? {
+        if (payload.length < MIN_COMPRESS_PAYLOAD_CHARS) return null
+        val deflater = Deflater(Deflater.BEST_SPEED)
+        val output = ByteArrayOutputStream(minOf(payload.length / 2, 32 * 1024))
+        return try {
+            DeflaterOutputStream(output, deflater, 8 * 1024).use { compressed ->
+                OutputStreamWriter(compressed, StandardCharsets.UTF_8).apply {
+                    write(payload)
+                    flush()
+                }
+            }
+            output.toByteArray().takeIf {
+                it.size + MIN_COMPRESS_SAVINGS_BYTES < payload.length
+            }
+        } finally {
+            deflater.end()
+        }
+    }
+
+    private fun inflateTermPayload(payload: ByteArray): String =
+        InflaterInputStream(ByteArrayInputStream(payload)).bufferedReader(StandardCharsets.UTF_8).use { reader ->
+            val output = StringBuilder(payload.size * 2)
+            val buffer = CharArray(8 * 1024)
+            while (true) {
+                val count = reader.read(buffer)
+                if (count < 0) break
+                output.append(buffer, 0, count)
+            }
+            output.toString()
+        }
+
     private fun searchEmbedded(query: String, limit: Int): List<DictionaryEntry> {
         val runes = mutableListOf<Int>()
         var offset = 0
@@ -408,7 +508,7 @@ class DictionaryRepository(
     private fun readTermBank(input: InputStream, dictionaryId: Long): Int {
         val statement = database.compileStatement(
             "INSERT INTO dictionary_entries(dictionary_id,expression,reading,score,entry_json,payload_version) " +
-                "VALUES(?,?,?,?,?,1)",
+                "VALUES(?,?,?,?,?,?)",
         )
         val consumer = NativeTermBankBatchConsumer { expressions, readings, scores, rawRows ->
             require(expressions.size == readings.size && expressions.size == scores.size && expressions.size == rawRows.size) {
@@ -633,7 +733,15 @@ class DictionaryRepository(
         statement.bindString(2, expression)
         statement.bindString(3, reading)
         statement.bindLong(4, score.toLong())
-        statement.bindString(5, compactTermPayload(raw))
+        val compactPayload = compactTermPayload(raw)
+        val compressed = compressTermPayload(compactPayload)
+        if (compressed != null) {
+            statement.bindBlob(5, compressed)
+            statement.bindLong(6, COMPRESSED_PAYLOAD_VERSION.toLong())
+        } else {
+            statement.bindString(5, compactPayload)
+            statement.bindLong(6, COMPACT_PAYLOAD_VERSION.toLong())
+        }
         statement.executeInsert()
     }
     private fun insertMeta(statement: SQLiteStatement, id: Long, meta: MetaRow) {

@@ -28,6 +28,36 @@ internal enum class LibraryShowSort(val title: String) {
     }
 }
 
+internal fun moveLibraryGroup(
+    groups: List<String>,
+    groupName: String,
+    targetIndex: Int,
+): List<String> {
+    val currentIndex = groups.indexOfFirst { it.equals(groupName, ignoreCase = true) }
+    if (currentIndex < 0 || groups.size < 2) return groups
+
+    val destination = targetIndex.coerceIn(0, groups.lastIndex)
+    if (currentIndex == destination) return groups
+
+    return groups.toMutableList().apply {
+        val group = removeAt(currentIndex)
+        add(destination, group)
+    }
+}
+
+internal fun normalizeLibraryGroupAssignments(
+    assignments: Map<String, Set<String>>,
+    groupPriority: List<String>,
+): Map<String, Set<String>> = buildMap {
+    assignments.forEach { (itemKey, assignedGroups) ->
+        if (itemKey.isBlank()) return@forEach
+        val selectedGroup = groupPriority.firstOrNull { groupName ->
+            assignedGroups.any { it.equals(groupName, ignoreCase = true) }
+        }
+        if (selectedGroup != null) put(itemKey, setOf(selectedGroup))
+    }
+}
+
 internal sealed interface LibraryShelfItem {
     val key: String
     val title: String
@@ -62,7 +92,7 @@ internal data class LibraryShelf(
 
 internal enum class LibrarySubtitleState(val label: String) {
     MATCHING("Matching"),
-    NO_MATCH("No Jimaku match"),
+    NO_MATCH("No subs"),
     ANI_LIST_ERROR("AniList error"),
     CHECKING("Checking"),
     AVAILABLE("Subs"),

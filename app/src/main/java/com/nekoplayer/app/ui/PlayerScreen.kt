@@ -137,6 +137,7 @@ import com.nekoplayer.app.mining.AnkiDroidClient
 import com.nekoplayer.app.mining.AnkiDroidMiningWorkflow
 import com.nekoplayer.app.mining.PlaybackAudioCapture
 import com.nekoplayer.app.mining.PronunciationAudioClient
+import com.nekoplayer.app.mining.PronunciationPlaybackSource
 import com.nekoplayer.app.player.JimakuSubtitleDialog
 import com.nekoplayer.app.player.AutomaticJimakuSubtitleStore
 import kotlinx.coroutines.CancellationException
@@ -343,6 +344,7 @@ fun PlayerScreen(
     var dictionaryPopupSize by remember(database) {
         mutableFloatStateOf(DictionaryPopupSize.load(database))
     }
+    var pronunciationRequestId by remember(player) { mutableIntStateOf(0) }
     var pronunciationPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var pronunciationFile by remember { mutableStateOf<File?>(null) }
     val pronunciationClient = remember(database) { PronunciationAudioClient(database, context.cacheDir) }
@@ -605,46 +607,126 @@ fun PlayerScreen(
         }
     }
 
+    fun startPronunciationPlayback(
+        entry: DictionaryEntry,
+        dataSource: String,
+        localFile: File?,
+        requestId: Int,
+        allowDownloadFallback: Boolean,
+    ) {
+        if (requestId != pronunciationRequestId) {
+            localFile?.delete()
+            return
+        }
+        pronunciationPlayer?.release()
+        pronunciationFile?.delete()
+        val nextPlayer = MediaPlayer()
+        pronunciationPlayer = nextPlayer
+        pronunciationFile = localFile
+
+        fun clearCurrentPlayer() {
+            if (pronunciationPlayer === nextPlayer) {
+                pronunciationPlayer = null
+                pronunciationFile?.delete()
+                pronunciationFile = null
+            }
+        }
+
+        fun fallBackToDownloadedAudio() {
+            scope.launch {
+                val asset = pronunciationClient.resolve(entry, destinationField = "Pronunciation Audio")
+                if (requestId != pronunciationRequestId) {
+                    asset?.attachment?.file?.delete()
+                    return@launch
+                }
+                if (asset == null) {
+                    onNotify("No pronunciation audio is available for this word.")
+                } else {
+                    startPronunciationPlayback(
+                        entry = entry,
+                        dataSource = asset.attachment.file.absolutePath,
+                        localFile = asset.attachment.file,
+                        requestId = requestId,
+                        allowDownloadFallback = false,
+                    )
+                }
+            }
+        }
+
+        nextPlayer.setOnPreparedListener { preparedPlayer ->
+            if (requestId != pronunciationRequestId || pronunciationPlayer !== preparedPlayer) {
+                preparedPlayer.release()
+                return@setOnPreparedListener
+            }
+            preparedPlayer.start()
+        }
+        nextPlayer.setOnCompletionListener { completed ->
+            completed.release()
+            if (pronunciationPlayer === completed) {
+                pronunciationPlayer = null
+                pronunciationFile?.delete()
+                pronunciationFile = null
+            }
+        }
+        nextPlayer.setOnErrorListener { failed, _, _ ->
+            val isCurrent = pronunciationPlayer === failed
+            failed.release()
+            if (isCurrent) {
+                clearCurrentPlayer()
+                if (allowDownloadFallback && requestId == pronunciationRequestId) {
+                    fallBackToDownloadedAudio()
+                } else if (requestId == pronunciationRequestId) {
+                    onNotify("Pronunciation audio could not be played.")
+                }
+            }
+            true
+        }
+        try {
+            nextPlayer.setDataSource(dataSource)
+            nextPlayer.prepareAsync()
+        } catch (_: Exception) {
+            nextPlayer.release()
+            clearCurrentPlayer()
+            if (allowDownloadFallback) {
+                fallBackToDownloadedAudio()
+            } else if (requestId == pronunciationRequestId) {
+                onNotify("Pronunciation audio could not be played.")
+            }
+        }
+    }
+
     fun playPronunciation(entry: DictionaryEntry) {
+        val requestId = pronunciationRequestId + 1
+        pronunciationRequestId = requestId
         scope.launch {
-            val asset = pronunciationClient.resolve(entry, destinationField = "Pronunciation Audio")
-            if (asset == null) {
+            val source = pronunciationClient.resolveForPlayback(
+                entry,
+                destinationField = "Pronunciation Audio",
+            )
+            if (requestId != pronunciationRequestId) {
+                (source as? PronunciationPlaybackSource.CachedFile)
+                    ?.audio?.attachment?.file?.delete()
+                return@launch
+            }
+            if (source == null) {
                 onNotify("No pronunciation audio is available for this word.")
                 return@launch
             }
-            pronunciationPlayer?.release()
-            pronunciationFile?.delete()
-            val nextPlayer = MediaPlayer()
-            pronunciationPlayer = nextPlayer
-            pronunciationFile = asset.attachment.file
-            try {
-                nextPlayer.setDataSource(asset.attachment.file.absolutePath)
-                nextPlayer.setOnPreparedListener { prepared -> prepared.start() }
-                nextPlayer.setOnCompletionListener { completed ->
-                    completed.release()
-                    if (pronunciationPlayer === completed) {
-                        pronunciationPlayer = null
-                        pronunciationFile?.delete()
-                        pronunciationFile = null
-                    }
-                }
-                nextPlayer.setOnErrorListener { failed, _, _ ->
-                    failed.release()
-                    if (pronunciationPlayer === failed) {
-                        pronunciationPlayer = null
-                        pronunciationFile?.delete()
-                        pronunciationFile = null
-                    }
-                    onNotify("Pronunciation audio could not be played.")
-                    true
-                }
-                nextPlayer.prepareAsync()
-            } catch (_: Exception) {
-                nextPlayer.release()
-                pronunciationFile?.delete()
-                pronunciationPlayer = null
-                pronunciationFile = null
-                onNotify("Pronunciation audio could not be played.")
+            when (source) {
+                is PronunciationPlaybackSource.CachedFile -> startPronunciationPlayback(
+                    entry = entry,
+                    dataSource = source.audio.attachment.file.absolutePath,
+                    localFile = source.audio.attachment.file,
+                    requestId = requestId,
+                    allowDownloadFallback = false,
+                )
+                is PronunciationPlaybackSource.RemoteUrl -> startPronunciationPlayback(
+                    entry = entry,
+                    dataSource = source.url,
+                    localFile = null,
+                    requestId = requestId,
+                    allowDownloadFallback = true,
+                )
             }
         }
     }
@@ -929,9 +1011,13 @@ fun PlayerScreen(
         val pictureHeight = minOf(maxHeight, maxWidth / videoAspect.coerceAtLeast(0.1f))
         val pictureBottomInset = (maxHeight - pictureHeight) / 2
         val configuredSubtitleInset = with(LocalDensity.current) { subtitleBottom.toDp() }
+        // The compact layout stacks transport and option controls, while the
+        // wide layout keeps them on one row. Keep captions just above either
+        // layout instead of applying the compact inset to both.
+        val controlsSubtitleInset = if (maxWidth >= 600.dp) 112.dp else 160.dp
         val captionBottomInset = maxOf(
             pictureBottomInset + configuredSubtitleInset.coerceAtMost(pictureHeight / 4),
-            if (showControls) 160.dp else 0.dp,
+            if (showControls) controlsSubtitleInset else 0.dp,
         )
         val selectionHighlight = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
         val highlightedSubtitle = remember(subtitleText, lookup, lookupSourceText, selectionHighlight) {
@@ -1274,7 +1360,11 @@ fun PlayerScreen(
                                 ) {
                                     Text(
                                         "Sub ${formatSubtitleOffset(subtitleOffsetMs)}",
-                                        color = if (externalSubtitle != null) PlayerOverlayAccent else PlayerOverlayText.copy(alpha = 0.58f),
+                                        color = if (externalSubtitle != null) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f)
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
                                         maxLines = 1,
                                         softWrap = false,

@@ -15,22 +15,27 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.ime
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -59,9 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
@@ -77,6 +80,7 @@ import com.nekoplayer.app.mining.AnkiDroidClient
 import com.nekoplayer.app.update.AppUpdateClient
 import com.nekoplayer.app.update.AppUpdateException
 import com.nekoplayer.app.update.AppUpdateRelease
+import com.nekoplayer.app.update.formatReleaseNotes
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +116,7 @@ data class VideoTarget(
     val sourceSkipTimestamps: List<TimeStamp> = emptyList(),
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NekoApp(
     activity: MainActivity,
@@ -160,6 +165,10 @@ fun NekoApp(
                 if (!database.readBoolean(AppDatabase.DICTIONARY_PAYLOAD_COMPACTED_KEY)) {
                     dictionaryRepository.compactExistingTermPayloads()
                     database.writeSetting(AppDatabase.DICTIONARY_PAYLOAD_COMPACTED_KEY, true)
+                }
+                if (database.readNumber(AppDatabase.DICTIONARY_PAYLOAD_COMPRESSION_VERSION_KEY).toInt() < 1) {
+                    dictionaryRepository.compressExistingTermPayloads()
+                    database.writeSetting(AppDatabase.DICTIONARY_PAYLOAD_COMPRESSION_VERSION_KEY, 1)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -486,7 +495,10 @@ fun NekoApp(
             activity.setSystemBarDarkIcons(enabled = !darkMode && current == null)
         }
         Box(Modifier.fillMaxSize()) {
-            val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+            // Use the platform visibility flag instead of the animated inset size.
+            // The inset can briefly reach zero during an IME transition, which
+            // made the bottom navigation flash back in or disappear late.
+            val imeVisible = WindowInsets.isImeVisible
             val safeSides = if (detailScreen) {
                 WindowInsetsSides.Top + WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
             } else {
@@ -701,16 +713,30 @@ fun NekoApp(
         }
         startupUpdateRelease?.takeIf { current == null }?.let { release ->
             val cachedApk = downloadedStartupUpdate?.takeIf { it.isFile }
+            val releaseNotes = formatReleaseNotes(release.releaseNotes.orEmpty(), release.versionTag)
             AlertDialog(
                 onDismissRequest = {
                     if (!startupUpdateDownloading) dismissStartupUpdate()
                 },
                 title = { Text("Update available") },
                 text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Update available: ${release.versionTag} · Installed: $appVersion")
-                        release.releaseNotes?.take(800)?.takeIf(String::isNotBlank)?.let { notes ->
-                            Text(notes, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            "Update available: ${release.versionTag} · Installed: $appVersion",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (releaseNotes.isNotBlank()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 240.dp)
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text("What’s new", style = MaterialTheme.typography.titleSmall)
+                                Text(releaseNotes, style = MaterialTheme.typography.bodyMedium)
+                            }
                         }
                         if (release.apkUrl == null) {
                             Text("No APK is attached to the latest release.")

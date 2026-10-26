@@ -96,6 +96,7 @@ import com.nekoplayer.app.mining.AnkiNoteFieldTemplates
 import com.nekoplayer.app.mining.PronunciationAudioPresets
 import com.nekoplayer.app.update.AppUpdateClient
 import com.nekoplayer.app.update.AppUpdateException
+import com.nekoplayer.app.update.formatReleaseNotes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -966,10 +967,16 @@ fun SettingsScreen(
                             IconButton(enabled = index < audioSources.lastIndex, onClick = {
                                 audioSources = audioSources.toMutableList().apply { add(index + 1, removeAt(index)) }
                             }) { Icon(Icons.Default.ArrowDownward, contentDescription = localizeUiText("Move source down")) }
-                            if (source.kind.startsWith("custom")) {
-                                IconButton(onClick = { audioSources = audioSources.filterNot { it.name == source.name } }) {
-                                    Icon(Icons.Default.Delete, contentDescription = localizeUiText("Remove pronunciation source"), tint = MaterialTheme.colorScheme.error)
-                                }
+                            IconButton(
+                                onClick = {
+                                    audioSources = audioSources.filterIndexed { sourceIndex, _ -> sourceIndex != index }
+                                },
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = localizeUiText("Remove pronunciation source"),
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
                             }
                             Switch(
                                 checked = source.enabled,
@@ -1061,7 +1068,7 @@ fun SettingsScreen(
                         val isCurrent = version.removePrefix("v").equals(appVersion.removePrefix("v"), ignoreCase = true)
                         Text(
                             when {
-                                isCurrent -> "Installed version $appVersion is current."
+                                isCurrent -> "Up to date"
                                 versionIsNewer -> "Update available: $version · Installed: $appVersion"
                                 else -> "Latest release: $version · Installed: $appVersion"
                             },
@@ -1127,18 +1134,7 @@ fun SettingsScreen(
     }
 
     if (showReleaseNotes) {
-        val formattedNotes = latestReleaseNotes.orEmpty()
-            .lines()
-            .joinToString("\n") { rawLine ->
-                val line = rawLine.trim()
-                when {
-                    line.startsWith("#") -> line.dropWhile { it == '#' }.trim()
-                    line.startsWith("- ") || line.startsWith("* ") || line.startsWith("+ ") ->
-                        "• " + line.drop(2)
-                    else -> line
-                }
-            }
-            .trim()
+        val formattedNotes = formatReleaseNotes(latestReleaseNotes.orEmpty(), latestRelease)
 
         AlertDialog(
             onDismissRequest = { showReleaseNotes = false },
