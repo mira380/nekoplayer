@@ -42,7 +42,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
-import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -66,13 +65,13 @@ import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.extensions.ExtensionManager
-import com.nekoplayer.app.library.AniListClient
-import eu.kanade.tachiyomi.animesource.model.TimeStamp
-import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
-import eu.kanade.tachiyomi.animesource.model.SAnime
 import com.nekoplayer.app.extensions.model.Extension
 import com.nekoplayer.app.extensions.model.ExtensionApiVersion
 import com.nekoplayer.app.library.AniListAiringEpisode
+import com.nekoplayer.app.library.AniListClient
+import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
+import eu.kanade.tachiyomi.animesource.model.SAnime
+import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,6 +79,7 @@ import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import androidx.compose.material3.Text as Material3Text
 
 @Suppress("DEPRECATION")
 @Composable
@@ -91,6 +91,7 @@ fun ExtensionsScreen(
     sourceEntryToOpen: AppDatabase.SourceLibraryEntry?,
     sourceEntryAiringEpisode: AniListAiringEpisode?,
     onSourceEntryOpened: () -> Unit,
+    onLibraryChanged: () -> Unit,
     onReturnToLibrary: () -> Unit,
     onPlayVideo: (
         android.net.Uri,
@@ -134,20 +135,22 @@ fun ExtensionsScreen(
     LaunchedEffect(Unit) { manager.start() }
     LaunchedEffect(sourceEntryToOpen, installed, loading) {
         val entry = sourceEntryToOpen ?: return@LaunchedEffect
-        val installedSource = manager.catalogueSources().firstOrNull {
-            it.source.id == entry.sourceId
-        }
+        val installedSource =
+            manager.catalogueSources().firstOrNull {
+                it.source.id == entry.sourceId
+            }
         if (installedSource != null) {
             selectedPage = 0
             selectedSourceSettings = null
             selectedSource = installedSource
-            selectedAnimeToOpen = SAnime.create().apply {
-                url = entry.animeUrl
-                title = entry.title
-                thumbnail_url = entry.thumbnailUrl
-                description = entry.description
-                initialized = false
-            }
+            selectedAnimeToOpen =
+                SAnime.create().apply {
+                    url = entry.animeUrl
+                    title = entry.title
+                    thumbnail_url = entry.thumbnailUrl
+                    description = entry.description
+                    initialized = false
+                }
             selectedAnimeAiringEpisode = sourceEntryAiringEpisode
             sourceEntryError = null
             onSourceEntryOpened()
@@ -193,6 +196,7 @@ fun ExtensionsScreen(
             aniList = aniList,
             initialAnime = selectedAnimeToOpen,
             initialAiringEpisode = selectedAnimeAiringEpisode,
+            onLibraryChanged = onLibraryChanged,
             onBack = {
                 val openedFromLibrary = selectedAnimeToOpen != null
                 selectedSource = null
@@ -320,7 +324,7 @@ fun ExtensionsScreen(
                                     Text("Couldn’t load some extensions", style = MaterialTheme.typography.titleSmall)
                                     loadErrors.forEach { (name, reason) ->
                                         Material3Text(
-                                            "${name}: ${reason}",
+                                            "$name: $reason",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
@@ -346,23 +350,28 @@ fun ExtensionsScreen(
                     }
                 }
             } else {
-                val languages = remember(available) {
-                    available.flatMap(::extensionLanguageTags)
-                        .distinct()
-                        .sortedBy { extensionLanguageLabel(it).lowercase() }
-                }
+                val languages =
+                    remember(available) {
+                        available
+                            .flatMap(::extensionLanguageTags)
+                            .distinct()
+                            .sortedBy { extensionLanguageLabel(it).lowercase() }
+                    }
                 LaunchedEffect(languages) {
                     selectedLanguages = selectedLanguages.intersect(languages.toSet())
                     languageDraft = languageDraft.intersect(languages.toSet())
                 }
-                val results = available.filter { extension ->
-                    val matchesLanguage = selectedLanguages.isEmpty() ||
-                        extensionLanguageTags(extension).any(selectedLanguages::contains)
-                    val matchesQuery = browseQuery.isBlank() || extension.name.contains(browseQuery, true) ||
-                        extension.lang.contains(browseQuery, true) ||
-                        extension.sources.any { source -> source.name.contains(browseQuery, true) }
-                    matchesLanguage && matchesQuery
-                }
+                val results =
+                    available.filter { extension ->
+                        val matchesLanguage =
+                            selectedLanguages.isEmpty() ||
+                                extensionLanguageTags(extension).any(selectedLanguages::contains)
+                        val matchesQuery =
+                            browseQuery.isBlank() || extension.name.contains(browseQuery, true) ||
+                                extension.lang.contains(browseQuery, true) ||
+                                extension.sources.any { source -> source.name.contains(browseQuery, true) }
+                        matchesLanguage && matchesQuery
+                    }
                 Column(Modifier.fillMaxSize()) {
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 2.dp),
@@ -405,13 +414,18 @@ fun ExtensionsScreen(
                                         items(languages, key = { it }) { language ->
                                             val nativeLabel = extensionNativeLanguageLabel(language)
                                             Row(
-                                                Modifier.fillMaxWidth()
+                                                Modifier
+                                                    .fillMaxWidth()
                                                     .heightIn(min = 60.dp)
                                                     .padding(horizontal = 8.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                             ) {
                                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                                    Text(nativeLabel, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                                                    Text(
+                                                        nativeLabel,
+                                                        style = MaterialTheme.typography.bodyLarge,
+                                                        fontWeight = FontWeight.Medium,
+                                                    )
                                                     val englishLabel = extensionLanguageLabel(language)
                                                     if (!nativeLabel.equals(englishLabel, ignoreCase = true)) {
                                                         Text(
@@ -425,8 +439,11 @@ fun ExtensionsScreen(
                                                     checked = language in languageDraft,
                                                     onCheckedChange = { checked ->
                                                         languageDraft =
-                                                            if (checked) languageDraft + language
-                                                            else languageDraft - language
+                                                            if (checked) {
+                                                                languageDraft + language
+                                                            } else {
+                                                                languageDraft - language
+                                                            }
                                                     },
                                                 )
                                             }
@@ -460,11 +477,12 @@ fun ExtensionsScreen(
                             item {
                                 EmptyCard(
                                     title = "No extensions available",
-                                    body = if (repoUrls.isEmpty()) {
-                                        "Add a video-source repository to browse and install extensions."
-                                    } else {
-                                        "Check the repository connection or add another video-source repository."
-                                    }
+                                    body =
+                                        if (repoUrls.isEmpty()) {
+                                            "Add a video-source repository to browse and install extensions."
+                                        } else {
+                                            "Check the repository connection or add another video-source repository."
+                                        },
                                 )
                             }
                         }
@@ -495,12 +513,17 @@ fun ExtensionsScreen(
             }
         } else {
             val sources = manager.catalogueSources()
-            val sourcesByLanguage = sources.groupBy {
-                it.source.lang.trim().lowercase().ifBlank { "unknown" }
-            }
-            val orderedLanguages = sourcesByLanguage.keys.sortedBy {
-                if (it == "unknown") "zzzz" else extensionLanguageLabel(it).lowercase()
-            }
+            val sourcesByLanguage =
+                sources.groupBy {
+                    it.source.lang
+                        .trim()
+                        .lowercase()
+                        .ifBlank { "unknown" }
+                }
+            val orderedLanguages =
+                sourcesByLanguage.keys.sortedBy {
+                    if (it == "unknown") "zzzz" else extensionLanguageLabel(it).lowercase()
+                }
             LazyColumn(
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
@@ -624,7 +647,10 @@ internal fun LoadingCard(label: String) {
 }
 
 @Composable
-internal fun EmptyCard(title: String, body: String) {
+internal fun EmptyCard(
+    title: String,
+    body: String,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
@@ -683,7 +709,10 @@ private fun RepositoryDialog(
                 HorizontalDivider()
                 OutlinedTextField(
                     value = url,
-                    onValueChange = { url = it; error = null },
+                    onValueChange = {
+                        url = it
+                        error = null
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("HTTPS repository URL") },
                     placeholder = { Text("https://…/repo") },
@@ -700,7 +729,10 @@ private fun RepositoryDialog(
                             scope.launch {
                                 val result = onAdd(url)
                                 result.fold(
-                                    onSuccess = { url = ""; error = null },
+                                    onSuccess = {
+                                        url = ""
+                                        error = null
+                                    },
                                     onFailure = { error = it.message ?: "Couldn’t add this repository." },
                                 )
                                 adding = false
@@ -713,4 +745,3 @@ private fun RepositoryDialog(
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
     )
 }
-

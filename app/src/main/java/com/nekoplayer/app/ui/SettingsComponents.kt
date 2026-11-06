@@ -41,7 +41,6 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -56,10 +55,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-
 import com.nekoplayer.app.mining.AnkiNoteFieldTemplates
-
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
+import androidx.compose.material3.Text as Material3Text
 
 @Composable
 internal fun SettingsCategoryGroup(
@@ -83,7 +83,12 @@ internal fun SettingsCategoryGroup(
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                 categories.forEachIndexed { index, category ->
                     Row(
-                        Modifier.fillMaxWidth().height(64.dp).clickable { selected(category) }.padding(horizontal = 4.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { selected(category) }
+                            .padding(horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
@@ -127,12 +132,22 @@ internal fun <T> AnkiChoiceRow(
     onSelect: (T) -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(enabled = enabled, onClick = onExpand),
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onExpand),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Material3Text(value.ifBlank { localizeUiText("None") }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Material3Text(
+                value.ifBlank {
+                    localizeUiText("None")
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Box {
             TextButton(onClick = onExpand, enabled = enabled) {
@@ -166,7 +181,11 @@ internal fun AnkiSourceFieldMappingRow(
     onDestinationChange: (String) -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 50.dp).clickable(enabled = enabled, onClick = onMenuOpen),
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 50.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onMenuOpen),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -204,15 +223,22 @@ internal fun AnkiSourceFieldMappingRow(
     }
 }
 
-internal fun removeAnkiTemplateToken(template: String, token: String): String {
-    val remaining = Regex("\\{([^{}]+)\\}").replace(template) { match ->
-        if (AnkiNoteFieldTemplates.containsToken(match.value, token)) "" else match.value
-    }
+internal fun removeAnkiTemplateToken(
+    template: String,
+    token: String,
+): String {
+    val remaining =
+        Regex("\\{([^{}]+)\\}").replace(template) { match ->
+            if (AnkiNoteFieldTemplates.containsToken(match.value, token)) "" else match.value
+        }
     return remaining.replace(Regex("\\s+"), " ").trim()
 }
 
 @Composable
-internal fun SettingSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+internal fun SettingSection(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             title,
@@ -225,6 +251,11 @@ internal fun SettingSection(title: String, content: @Composable ColumnScope.() -
     }
 }
 
+@Composable
+internal fun SettingDivider() {
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.72f))
+}
+
 internal data class ThemePaletteOption(
     val label: String,
     val id: String,
@@ -234,18 +265,49 @@ internal data class ThemePaletteOption(
 )
 
 @Composable
-internal fun ThemePaletteRow(option: ThemePaletteOption, selected: Boolean, onClick: () -> Unit) {
+internal fun ThemePaletteRow(
+    option: ThemePaletteOption,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.RadioButton, onClick = onClick),
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(role = Role.RadioButton, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(
             Modifier.size(width = 48.dp, height = 30.dp).clip(RoundedCornerShape(7.dp)).background(option.background),
         ) {
-            Box(Modifier.weight(1f).fillMaxSize().padding(4.dp).clip(RoundedCornerShape(3.dp)).background(option.surface))
-            Box(Modifier.weight(1f).fillMaxSize().padding(vertical = 4.dp, horizontal = 2.dp).clip(RoundedCornerShape(3.dp)).background(option.accent))
-            Box(Modifier.weight(1f).fillMaxSize().padding(4.dp).clip(RoundedCornerShape(3.dp)).background(option.surface.copy(alpha = 0.72f)))
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxSize()
+                    .padding(4.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(option.surface),
+            )
+            Box(
+                Modifier
+                    .weight(
+                        1f,
+                    ).fillMaxSize()
+                    .padding(vertical = 4.dp, horizontal = 2.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(option.accent),
+            )
+            Box(
+                Modifier
+                    .weight(
+                        1f,
+                    ).fillMaxSize()
+                    .padding(4.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(option.surface.copy(alpha = 0.72f)),
+            )
         }
         Text(option.label, Modifier.weight(1f), fontWeight = FontWeight.Medium)
         RadioButton(selected = selected, onClick = null)
@@ -253,14 +315,24 @@ internal fun ThemePaletteRow(option: ThemePaletteOption, selected: Boolean, onCl
 }
 
 @Composable
-internal fun AccentColorRow(label: String, color: Color, selected: Boolean, onClick: () -> Unit) {
+internal fun AccentColorRow(
+    label: String,
+    color: Color,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(role = Role.RadioButton, onClick = onClick),
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(role = Role.RadioButton, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(
-            Modifier.size(28.dp)
+            Modifier
+                .size(28.dp)
                 .then(if (selected) Modifier.border(2.dp, color, CircleShape).padding(3.dp) else Modifier)
                 .clip(CircleShape)
                 .background(color),
@@ -270,42 +342,53 @@ internal fun AccentColorRow(label: String, color: Color, selected: Boolean, onCl
     }
 }
 
-private fun categoryIcon(category: String) = when (category) {
-    "Anki" -> Icons.Default.Style
-    "Dictionary settings" -> Icons.AutoMirrored.Filled.MenuBook
-    "Appearance" -> Icons.Default.ColorLens
-    "Playback" -> Icons.Default.PlayArrow
-    "Subtitles" -> Icons.Default.Subtitles
-    "Capture and audio" -> Icons.Default.GraphicEq
-    "About and storage" -> Icons.Default.Info
-    else -> Icons.Default.GraphicEq
-}
+private fun categoryIcon(category: String) =
+    when (category) {
+        "Anki" -> Icons.Default.Style
+        "Dictionary settings" -> Icons.AutoMirrored.Filled.MenuBook
+        "Appearance" -> Icons.Default.ColorLens
+        "Playback" -> Icons.Default.PlayArrow
+        "Subtitles" -> Icons.Default.Subtitles
+        "Capture and audio" -> Icons.Default.GraphicEq
+        "About and storage" -> Icons.Default.Info
+        else -> Icons.Default.GraphicEq
+    }
 
 @Composable
-internal fun SettingCard(spacing: androidx.compose.ui.unit.Dp = 6.dp, content: @Composable ColumnScope.() -> Unit) {
+internal fun SettingCard(
+    spacing: androidx.compose.ui.unit.Dp = 6.dp,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(spacing), content = content)
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(spacing),
+                content = content,
+            )
         }
     }
 }
 
 @Composable
-internal fun SettingSwitch(label: String, checked: Boolean, detail: String? = null, onChange: (Boolean) -> Unit) {
+internal fun SettingSwitch(
+    label: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable { onChange(!checked) },
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onChange(!checked) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, fontWeight = FontWeight.Medium)
-            detail?.takeIf(String::isNotBlank)?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
+        Text(label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
         Spacer(Modifier.width(12.dp))
         Switch(checked, onChange)
     }
@@ -322,63 +405,129 @@ internal fun SettingSlider(
     snapStep: Float = 0f,
     onFinished: (Float) -> Unit,
 ) {
-    fun snap(input: Float): Float = if (snapStep > 0f) snapToGrid(input, snapStep, range) else input
     Column {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label, style = MaterialTheme.typography.labelLarge)
             Text(valueLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Slider(
+        GridSlider(
             value = value,
-            onValueChange = { onChange(snap(it)) },
-            valueRange = range,
-            onValueChangeFinished = { onFinished(snap(value)) },
-            modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 10.dp),
-            track = { sliderState ->
-                val activeColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.48f)
-                val inactiveColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
-                val stopColor = MaterialTheme.colorScheme.primary
-                Canvas(Modifier.fillMaxWidth().height(16.dp)) {
-                    val trackHeight = size.height
-                    val endRadius = 5.dp.toPx()
-                    val cornerRadius = CornerRadius(endRadius, endRadius)
-                    val progressWidth = size.width * sliderState.coercedValueAsFraction
-                    drawRoundRect(
-                        color = inactiveColor,
-                        topLeft = Offset.Zero,
-                        size = Size(size.width, trackHeight),
-                        cornerRadius = cornerRadius,
-                    )
-                    if (progressWidth > 0f) {
-                        drawRoundRect(
-                            color = activeColor,
-                            topLeft = Offset.Zero,
-                            size = Size(progressWidth, trackHeight),
-                            cornerRadius = cornerRadius,
-                        )
-                    }
-                    drawCircle(
-                        color = stopColor,
-                        radius = 2.dp.toPx(),
-                        center = Offset(size.width - endRadius, trackHeight / 2f),
-                    )
-                }
-            },
+            range = range,
+            onChange = onChange,
+            snapStep = snapStep,
+            onFinished = onFinished,
         )
     }
 }
 
-internal fun snapToGrid(value: Float, step: Float, range: ClosedFloatingPointRange<Float>): Float {
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+internal fun GridSlider(
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit,
+    snapStep: Float = 0f,
+    onFinished: (Float) -> Unit,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+) {
+    fun snap(input: Float): Float = if (snapStep > 0f) snapToGrid(input, snapStep, range) else input
+    Slider(
+        value = value,
+        onValueChange = { onChange(snap(it)) },
+        valueRange = range,
+        enabled = enabled,
+        onValueChangeFinished = { onFinished(snap(value)) },
+        modifier = modifier.height(48.dp).padding(horizontal = 10.dp),
+        thumb = { _ ->
+            Box(
+                Modifier
+                    .width(8.dp)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+        },
+        track = { sliderState ->
+            val activeColor = MaterialTheme.colorScheme.primary
+            val inactiveColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+            val activeDotColor = MaterialTheme.colorScheme.onPrimary
+            val inactiveDotColor = MaterialTheme.colorScheme.primary
+            Canvas(Modifier.fillMaxWidth().height(16.dp)) {
+                val trackHeight = size.height
+                val endRadius = 5.dp.toPx()
+                val cornerRadius = CornerRadius(endRadius, endRadius)
+                val progressWidth = size.width * sliderState.coercedValueAsFraction
+                drawRoundRect(
+                    color = inactiveColor,
+                    topLeft = Offset.Zero,
+                    size = Size(size.width, trackHeight),
+                    cornerRadius = cornerRadius,
+                )
+                if (progressWidth > 0f) {
+                    drawRoundRect(
+                        color = activeColor,
+                        topLeft = Offset.Zero,
+                        size = Size(progressWidth, trackHeight),
+                        cornerRadius = cornerRadius,
+                    )
+                }
+                if (snapStep > 0f) {
+                    val firstGridIndex = ceil(range.start / snapStep).toInt()
+                    val lastGridIndex = floor(range.endInclusive / snapStep).toInt()
+                    val gridTickCount = (lastGridIndex - firstGridIndex + 1).coerceAtLeast(0)
+                    val dotSpacing =
+                        when {
+                            gridTickCount > 100 -> 8.dp
+                            gridTickCount > 32 -> 12.dp
+                            else -> 16.dp
+                        }
+                    val maxVisibleDots = (size.width / dotSpacing.toPx()).roundToInt().coerceAtLeast(3)
+                    val interiorSlots = (maxVisibleDots - 2).coerceAtLeast(1)
+                    val gridStride = ceil(gridTickCount.toFloat() / interiorSlots).toInt().coerceAtLeast(1)
+                    val edgeInsetFraction = 4.dp.toPx() / size.width
+                    var gridIndex = firstGridIndex
+                    while (gridIndex <= lastGridIndex) {
+                        val gridValue = gridIndex * snapStep
+                        val fraction = (gridValue - range.start) / (range.endInclusive - range.start)
+                        if (
+                            fraction > edgeInsetFraction &&
+                            fraction < 1f - edgeInsetFraction &&
+                            (gridIndex - firstGridIndex) % gridStride == 0
+                        ) {
+                            drawCircle(
+                                color = if (fraction <= sliderState.coercedValueAsFraction) activeDotColor else inactiveDotColor,
+                                radius = 2.dp.toPx(),
+                                center = Offset(size.width * fraction, trackHeight / 2f),
+                            )
+                        }
+                        gridIndex += gridStride
+                    }
+                }
+            }
+        },
+    )
+}
+
+internal fun snapToGrid(
+    value: Float,
+    step: Float,
+    range: ClosedFloatingPointRange<Float>,
+): Float {
     val bounded = value.coerceIn(range.start, range.endInclusive)
     if (step <= 0f) return bounded
     return ((bounded / step).roundToInt() * step).coerceIn(range.start, range.endInclusive)
 }
 
-internal fun audioSourceLabel(source: AudioSourceSetting, index: Int): String = when (source.kind) {
-    "jpod101" -> "JapanesePod101"
-    "language-pod-101" -> "Language Pod 101"
-    "jisho" -> "Jisho"
-    "custom-url" -> "Custom URL ${index + 1}"
-    "custom-json" -> "Custom JSON ${index + 1}"
-    else -> source.name.replaceFirstChar(Char::uppercase)
-}
+internal fun audioSourceLabel(
+    source: AudioSourceSetting,
+    index: Int,
+): String =
+    when (source.kind) {
+        "jpod101" -> "JapanesePod101"
+        "language-pod-101" -> "Language Pod 101"
+        "jisho" -> "Jisho"
+        "custom-url" -> "Custom URL ${index + 1}"
+        "custom-json" -> "Custom JSON ${index + 1}"
+        else -> source.name.replaceFirstChar(Char::uppercase)
+    }

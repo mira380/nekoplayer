@@ -1,23 +1,23 @@
 package com.nekoplayer.app.mining
 
-import android.text.Html
 import android.os.Build
+import android.text.Html
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.data.DictionaryEntry
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.text.Normalizer
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.text.Normalizer
 import java.util.Locale
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
@@ -30,21 +30,60 @@ internal data class PronunciationAudioPreset(
 )
 
 internal object PronunciationAudioPresets {
-    val defaults = listOf(
-        PronunciationAudioPreset("NHK-2016", "ajatt-index", "https://github.com/Ajatt-Tools/nhk_2016_pronunciations_index/releases/latest/download/NHK-2016_main.zip"),
-        PronunciationAudioPreset("NHK-1998", "ajatt-index", "https://github.com/Ajatt-Tools/nhk_1998_pronunciations_index/releases/latest/download/NHK-1998_main.zip"),
-        PronunciationAudioPreset("Shinmeikai-8", "ajatt-index", "https://github.com/Ajatt-Tools/shinmeikai_8_pronunciations_index/releases/latest/download/Shinmeikai-8_main.zip"),
-        PronunciationAudioPreset("Daijisen", "ajatt-index", "https://github.com/Ajatt-Tools/daijisen_pronunciations_index/releases/latest/download/Daijisen_main.zip"),
-        PronunciationAudioPreset("TAAS", "ajatt-index", "https://github.com/Ajatt-Tools/taas_pronunciations_index/releases/latest/download/TAAS_main.zip"),
-        PronunciationAudioPreset("JapanesePod101", "ajatt-index", "https://github.com/Ajatt-Tools/jpod_pronunciations_index/releases/latest/download/JapanesePod101_main.zip"),
-        PronunciationAudioPreset("Obunsha-Kogo", "ajatt-index", "https://github.com/Ajatt-Tools/oubunsha_kogo_pronunciations_index/releases/latest/download/Oubunsha-Kogo_main.zip"),
-    )
+    val defaults =
+        listOf(
+            PronunciationAudioPreset(
+                "NHK-2016",
+                "ajatt-index",
+                "https://github.com/Ajatt-Tools/nhk_2016_pronunciations_index/releases/latest/download/NHK-2016_main.zip",
+            ),
+            PronunciationAudioPreset(
+                "NHK-1998",
+                "ajatt-index",
+                "https://github.com/Ajatt-Tools/nhk_1998_pronunciations_index/releases/latest/download/NHK-1998_main.zip",
+            ),
+            PronunciationAudioPreset(
+                "Shinmeikai-8",
+                "ajatt-index",
+                "https://github.com/Ajatt-Tools/shinmeikai_8_pronunciations_index/releases/latest/download/Shinmeikai-8_main.zip",
+            ),
+            PronunciationAudioPreset(
+                "Daijisen",
+                "ajatt-index",
+                "https://github.com/Ajatt-Tools/daijisen_pronunciations_index/releases/latest/download/Daijisen_main.zip",
+            ),
+            PronunciationAudioPreset(
+                "TAAS",
+                "ajatt-index",
+                "https://github.com/Ajatt-Tools/taas_pronunciations_index/releases/latest/download/TAAS_main.zip",
+            ),
+            PronunciationAudioPreset(
+                "JapanesePod101",
+                "ajatt-index",
+                "https://github.com/Ajatt-Tools/jpod_pronunciations_index/releases/latest/download/JapanesePod101_main.zip",
+            ),
+            PronunciationAudioPreset(
+                "Obunsha-Kogo",
+                "ajatt-index",
+                "https://github.com/Ajatt-Tools/oubunsha_kogo_pronunciations_index/releases/latest/download/Oubunsha-Kogo_main.zip",
+            ),
+        )
 }
 
 data class PronunciationAudio(
     val attachment: AnkiDroidAttachment,
     val sourceId: String,
 )
+
+internal sealed interface PronunciationPlaybackSource {
+    data class CachedFile(
+        val audio: PronunciationAudio,
+    ) : PronunciationPlaybackSource
+
+    data class RemoteUrl(
+        val url: String,
+    ) : PronunciationPlaybackSource
+}
 
 // Tries configured Yomitan-style sources in order. Network and file work is bounded and runs on Dispatchers.IO.
 class PronunciationAudioClient(
@@ -56,6 +95,7 @@ class PronunciationAudioClient(
     private val maxAudioBytes: Int = 12 * 1024 * 1024,
 ) {
     private val indexLock = Any()
+    private val audioCacheLock = Any()
     private var cachedIndexSourceId: String? = null
     private var cachedIndex: AjattIndex? = null
 
@@ -63,80 +103,330 @@ class PronunciationAudioClient(
         entry: DictionaryEntry,
         language: String = "ja",
         destinationField: String,
-    ): PronunciationAudio? = withContext(Dispatchers.IO) {
-        val term = entry.expression.trim()
-        if (term.isEmpty() || destinationField.isBlank()) return@withContext null
-        val reading = entry.reading.trim()
-        val sources = loadSources()
-        for (source in sources) {
-            if (!source.enabled) continue
-            try {
-                val bytes = resolveSource(source, term, reading, language) ?: continue
-                val mime = sniffMime(bytes) ?: continue
-                val extension = when (mime) {
-                    "audio/mpeg" -> "mp3"
-                    "audio/ogg" -> "ogg"
-                    "audio/wav" -> "wav"
-                    "audio/mp4" -> "m4a"
-                    else -> continue
-                }
-                val directory = File(cacheDirectory, "mining")
-                if (!directory.exists() && !directory.mkdirs()) continue
-                val safeStem = "pron-${sha256("${source.id}\u0000$term\u0000$reading").take(20)}"
-                val file = File.createTempFile("$safeStem-", ".$extension", directory)
+    ): PronunciationAudio? =
+        withContext(Dispatchers.IO) {
+            val term = entry.expression.trim()
+            if (term.isEmpty() || destinationField.isBlank()) return@withContext null
+            val reading = entry.reading.trim()
+            val sources = loadSources().filter(Source::enabled)
+            val cacheKey = audioCacheKey(sources, term, reading, language)
+            readCachedAudio(cacheKey, sources, term, reading, destinationField)?.let {
+                return@withContext it
+            }
+            for ((sourceIndex, source) in sources.withIndex()) {
                 try {
-                    file.outputStream().use { it.write(bytes) }
+                    for (url in resolveSourceUrls(source, term, reading, language)) {
+                        val bytes = download(url) ?: continue
+                        val mime = sniffMime(bytes) ?: continue
+                        val extension = audioExtension(mime) ?: continue
+                        val attachment =
+                            createAudioAttachment(
+                                sourceId = source.id,
+                                term = term,
+                                reading = reading,
+                                extension = extension,
+                                destinationField = destinationField,
+                            ) { file -> file.outputStream().use { it.write(bytes) } } ?: continue
+                        writeCachedAudio(cacheKey, sourceIndex, extension, bytes)
+                        return@withContext attachment
+                    }
                 } catch (error: Exception) {
-                    file.delete()
-                    throw error
+                    if (error is CancellationException) throw error
+                    // Keep trying the next source if this one fails.
                 }
-                return@withContext PronunciationAudio(
-                    attachment = AnkiDroidAttachment(
+            }
+            null
+        }
+
+    internal suspend fun resolveForPlayback(
+        entry: DictionaryEntry,
+        language: String = "ja",
+        destinationField: String,
+    ): PronunciationPlaybackSource? =
+        withContext(Dispatchers.IO) {
+            val term = entry.expression.trim()
+            if (term.isEmpty() || destinationField.isBlank()) return@withContext null
+            val reading = entry.reading.trim()
+            val sources = loadSources().filter(Source::enabled)
+            val cacheKey = audioCacheKey(sources, term, reading, language)
+            readCachedAudio(cacheKey, sources, term, reading, destinationField)?.let {
+                return@withContext PronunciationPlaybackSource.CachedFile(it)
+            }
+            for (source in sources) {
+                try {
+                    val url = resolveSourceUrls(source, term, reading, language).firstOrNull() ?: continue
+                    return@withContext PronunciationPlaybackSource.RemoteUrl(url)
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    // Keep trying the next source if this one cannot be resolved.
+                }
+            }
+            null
+        }
+
+    private fun audioCacheKey(
+        sources: List<Source>,
+        term: String,
+        reading: String,
+        language: String,
+    ): String {
+        val identity =
+            buildString {
+                appendCachePart(term)
+                appendCachePart(reading)
+                appendCachePart(language)
+                sources.forEach { source ->
+                    appendCachePart(source.id)
+                    appendCachePart(source.kind)
+                    appendCachePart(source.urlTemplate.orEmpty())
+                }
+            }
+        return sha256(identity)
+    }
+
+    @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
+    private fun readCachedAudio(
+        cacheKey: String,
+        sources: List<Source>,
+        term: String,
+        reading: String,
+        destinationField: String,
+    ): PronunciationAudio? {
+        return synchronized(audioCacheLock) {
+            val cacheDirectory = pronunciationAudioCacheDirectory()
+            val metadataFile = File(cacheDirectory, "$cacheKey.meta")
+            if (!metadataFile.isFile) return@synchronized null
+            val now = System.currentTimeMillis()
+            if (now - metadataFile.lastModified() > AUDIO_CACHE_TTL_MS) {
+                removeAudioCacheEntry(metadataFile)
+                return@synchronized null
+            }
+
+            try {
+                val metadata = JSONObject(metadataFile.readText())
+                val source =
+                    sources.getOrNull(metadata.optInt("sourceIndex", -1)) ?: run {
+                        removeAudioCacheEntry(metadataFile)
+                        return@synchronized null
+                    }
+                val extension = metadata.optString("extension")
+                if (extension !in AUDIO_EXTENSIONS) {
+                    removeAudioCacheEntry(metadataFile)
+                    return@synchronized null
+                }
+                val cachedFile = File(cacheDirectory, "$cacheKey.$extension")
+                if (!cachedFile.isFile || cachedFile.length() !in 1..maxAudioBytes.toLong()) {
+                    removeAudioCacheEntry(metadataFile)
+                    return@synchronized null
+                }
+                val header = ByteArray(minOf(12L, cachedFile.length()).toInt())
+                var headerSize = 0
+                cachedFile.inputStream().use { input ->
+                    while (headerSize < header.size) {
+                        val count = input.read(header, headerSize, header.size - headerSize)
+                        if (count < 0) break
+                        headerSize += count
+                    }
+                }
+                val mime = sniffMime(header.copyOf(headerSize))
+                if (mime == null || audioExtension(mime) != extension) {
+                    removeAudioCacheEntry(metadataFile)
+                    return@synchronized null
+                }
+                val attachment =
+                    createAudioAttachment(
+                        sourceId = source.id,
+                        term = term,
+                        reading = reading,
+                        extension = extension,
+                        destinationField = destinationField,
+                    ) { file ->
+                        cachedFile.inputStream().use { input ->
+                            file.outputStream().use { output -> input.copyTo(output) }
+                        }
+                    }
+                if (attachment == null) {
+                    removeAudioCacheEntry(metadataFile)
+                    return@synchronized null
+                }
+                metadataFile.setLastModified(now)
+                cachedFile.setLastModified(now)
+                attachment
+            } catch (_: Exception) {
+                removeAudioCacheEntry(metadataFile)
+                null
+            }
+        }
+    }
+
+    private fun createAudioAttachment(
+        sourceId: String,
+        term: String,
+        reading: String,
+        extension: String,
+        destinationField: String,
+        writeFile: (File) -> Unit,
+    ): PronunciationAudio? {
+        val directory = File(cacheDirectory, "mining")
+        if (!directory.exists() && !directory.mkdirs()) return null
+        val safeStem = "pron-${sha256("$sourceId\u0000$term\u0000$reading").take(20)}"
+        val file = File.createTempFile("$safeStem-", ".$extension", directory)
+        return try {
+            writeFile(file)
+            PronunciationAudio(
+                attachment =
+                    AnkiDroidAttachment(
                         file = file,
-                        preferredName = "${safeStem}.$extension",
+                        preferredName = "$safeStem.$extension",
                         mimeType = "audio",
                         destinationField = destinationField,
                     ),
-                    sourceId = source.id,
-                )
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                // Keep trying the next source if this one fails.
-            }
+                sourceId = sourceId,
+            )
+        } catch (error: Exception) {
+            file.delete()
+            throw error
         }
-        null
     }
 
-    private fun loadSources(): List<Source> {
-        val saved = database.readSetting("audio.pronunciationSources") as? JSONArray
-            ?: return defaultSources
-        if (saved.length() == 0) return defaultSources
-
-        val defaultByKey = PronunciationAudioPresets.defaults.associateBy { it.id to it.kind }
-        val sources = (0 until saved.length()).mapNotNull { index ->
-            val item = saved.optJSONObject(index) ?: return@mapNotNull null
-            val id = item.optString("id").trim()
-            val kind = item.optString("kind").trim()
-            if (id.isEmpty() || kind.isEmpty()) {
-                null
-            } else {
-                val preset = defaultByKey[id to kind]
-                Source(
-                    id = id,
-                    kind = kind,
-                    enabled = item.optBoolean("enabled", preset != null),
-                    urlTemplate = item.optString("urlTemplate").takeIf(String::isNotBlank)
-                        ?: preset?.url,
-                )
+    private fun writeCachedAudio(
+        cacheKey: String,
+        sourceIndex: Int,
+        extension: String,
+        bytes: ByteArray,
+    ) {
+        synchronized(audioCacheLock) {
+            try {
+                val directory = pronunciationAudioCacheDirectory()
+                if (!directory.exists() && !directory.mkdirs()) return@synchronized
+                val metadataFile = File(directory, "$cacheKey.meta")
+                val audioFile = File(directory, "$cacheKey.$extension")
+                metadataFile.delete()
+                AUDIO_EXTENSIONS
+                    .filter { it != extension }
+                    .forEach { File(directory, "$cacheKey.$it").delete() }
+                val audioTemporary = File.createTempFile("audio-", ".tmp", directory)
+                try {
+                    audioTemporary.outputStream().use { it.write(bytes) }
+                    if (audioFile.exists() && !audioFile.delete()) return@synchronized
+                    if (!audioTemporary.renameTo(audioFile)) return@synchronized
+                } finally {
+                    audioTemporary.delete()
+                }
+                val metadataTemporary = File.createTempFile("audio-meta-", ".tmp", directory)
+                try {
+                    JSONObject()
+                        .put("sourceIndex", sourceIndex)
+                        .put("extension", extension)
+                        .toString()
+                        .toByteArray(Charsets.UTF_8)
+                        .let { metadataTemporary.outputStream().use { stream -> stream.write(it) } }
+                    if (!metadataTemporary.renameTo(metadataFile)) {
+                        metadataTemporary.copyTo(metadataFile, overwrite = true)
+                    }
+                } finally {
+                    metadataTemporary.delete()
+                }
+                trimAudioCache(directory)
+            } catch (_: Exception) {
+                // Audio lookup remains usable when the optional cache cannot be written.
             }
         }
-        val legacyDefault = sources.size == 3 &&
-            sources.all { it.enabled && it.urlTemplate.isNullOrBlank() } &&
-            sources.map { it.id to it.kind }.toSet() == setOf(
-                "jpod101" to "jpod101",
-                "language-pod-101" to "language-pod-101",
-                "jisho" to "jisho",
-            )
+    }
+
+    @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
+    private fun trimAudioCache(directory: File) {
+        val metadataFiles =
+            directory
+                .listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".meta") }
+                .orEmpty()
+        val entries =
+            metadataFiles
+                .mapNotNull { metadataFile ->
+                    runCatching {
+                        val metadata = JSONObject(metadataFile.readText())
+                        val extension = metadata.optString("extension")
+                        if (extension !in AUDIO_EXTENSIONS) return@runCatching null
+                        val audioFile = File(directory, metadataFile.name.removeSuffix(".meta") + ".$extension")
+                        if (!audioFile.isFile) return@runCatching null
+                        AudioCacheEntry(metadataFile, audioFile, metadataFile.lastModified())
+                    }.getOrNull()
+                }.toMutableList()
+        val now = System.currentTimeMillis()
+        var totalBytes = entries.sumOf { it.audioFile.length() }
+        entries.sortedBy { it.lastUsedAt }.forEach { entry ->
+            if (now - entry.lastUsedAt > AUDIO_CACHE_TTL_MS || totalBytes > MAX_AUDIO_CACHE_BYTES) {
+                totalBytes -= entry.audioFile.length()
+                removeAudioCacheEntry(entry.metadataFile)
+            }
+        }
+    }
+
+    private fun removeAudioCacheEntry(metadataFile: File) {
+        val cacheDirectory = metadataFile.parentFile ?: return
+        val cacheKey = metadataFile.name.removeSuffix(".meta")
+        runCatching {
+            val metadata = JSONObject(metadataFile.readText())
+            val extension = metadata.optString("extension")
+            if (extension in AUDIO_EXTENSIONS) {
+                File(cacheDirectory, "$cacheKey.$extension").delete()
+            }
+        }
+        AUDIO_EXTENSIONS.forEach { File(cacheDirectory, "$cacheKey.$it").delete() }
+        metadataFile.delete()
+    }
+
+    private fun pronunciationAudioCacheDirectory(): File = File(File(cacheDirectory, "mining"), "pronunciation-audio-cache")
+
+    private fun StringBuilder.appendCachePart(value: String) {
+        append(value.length).append(':').append(value)
+    }
+
+    private fun audioExtension(mime: String): String? =
+        when (mime) {
+            "audio/mpeg" -> "mp3"
+            "audio/ogg" -> "ogg"
+            "audio/wav" -> "wav"
+            "audio/mp4" -> "m4a"
+            else -> null
+        }
+
+    private fun loadSources(): List<Source> {
+        val saved =
+            database.readSetting("audio.pronunciationSources") as? JSONArray
+                ?: return defaultSources
+        if (saved.length() == 0) return emptyList()
+
+        val defaultByKey = PronunciationAudioPresets.defaults.associateBy { it.id to it.kind }
+        val sources =
+            (0 until saved.length()).mapNotNull { index ->
+                val item = saved.optJSONObject(index) ?: return@mapNotNull null
+                val id = item.optString("id").trim()
+                val kind = item.optString("kind").trim()
+                if (id.isEmpty() || kind.isEmpty()) {
+                    null
+                } else {
+                    val preset = defaultByKey[id to kind]
+                    Source(
+                        id = id,
+                        kind = kind,
+                        enabled = item.optBoolean("enabled", preset != null),
+                        urlTemplate =
+                            item.optString("urlTemplate").takeIf(String::isNotBlank)
+                                ?: preset?.url,
+                    )
+                }
+            }
+        val legacyDefault =
+            sources.size == 3 &&
+                sources.all { it.enabled && it.urlTemplate.isNullOrBlank() } &&
+                sources.map { it.id to it.kind }.toSet() ==
+                setOf(
+                    "jpod101" to "jpod101",
+                    "language-pod-101" to "language-pod-101",
+                    "jisho" to "jisho",
+                )
         return when {
             legacyDefault -> defaultSources
             sources.isEmpty() -> defaultSources
@@ -144,125 +434,173 @@ class PronunciationAudioClient(
         }
     }
 
-    private fun resolveSource(source: Source, term: String, reading: String, language: String): ByteArray? {
+    private fun resolveSourceUrls(
+        source: Source,
+        term: String,
+        reading: String,
+        language: String,
+    ): List<String> {
         return when (source.kind) {
             "jpod101" -> {
                 val endpoint = "https://assets.languagepod101.com/dictionary/japanese/audiomp3.php"
                 val query = ArrayList<String>(2)
                 if (!(isKana(term) && term == reading)) query += "kanji=${encode(term)}"
                 if (reading.isNotEmpty()) query += "kana=${encode(reading)}"
-                if (query.isEmpty()) null else download("$endpoint?${query.joinToString("&")}")
+                if (query.isEmpty()) emptyList() else listOf("$endpoint?${query.joinToString("&")}")
             }
+
             "language-pod-101" -> {
-                if (!language.equals("ja", ignoreCase = true)) return null
+                if (!language.equals("ja", ignoreCase = true)) return emptyList()
                 val endpoint = "https://www.japanesepod101.com/learningcenter/reference/dictionary_post"
-                val body = listOf(
-                    "post=dictionary_reference",
-                    "match_type=exact",
-                    "search_query=${encode(term)}",
-                    "vulgar=true",
-                ).joinToString("&")
-                val page = request(endpoint, "POST", body, "application/x-www-form-urlencoded") ?: return null
-                if (page.status !in 200..299) return null
+                val body =
+                    listOf(
+                        "post=dictionary_reference",
+                        "match_type=exact",
+                        "search_query=${encode(term)}",
+                        "vulgar=true",
+                    ).joinToString("&")
+                val page = request(endpoint, "POST", body, "application/x-www-form-urlencoded") ?: return emptyList()
+                if (page.status !in 200..299) return emptyList()
                 val html = page.bytes.toString(Charsets.UTF_8)
-                val rowStarts = Regex("(?is)<[^>]+class=[\"'][^\"']*\\bdc-result-row\\b[^\"']*[\"'][^>]*>")
-                    .findAll(html).toList()
+                val rowStarts =
+                    Regex("(?is)<[^>]+class=[\"'][^\"']*\\bdc-result-row\\b[^\"']*[\"'][^>]*>")
+                        .findAll(html)
+                        .toList()
+                val urls = ArrayList<String>(rowStarts.size)
                 for ((index, start) in rowStarts.withIndex()) {
                     val end = rowStarts.getOrNull(index + 1)?.range?.first ?: html.length
                     val row = html.substring(start.range.last + 1, end)
                     if (reading != term) {
-                        val kana = Regex("(?is)class=[\"'][^\"']*\\bdc-vocab_kana\\b[^\"']*[\"'][^>]*>(.*?)</")
-                            .find(row)?.groupValues?.get(1)?.let(::plainText)?.trim()
+                        val kana =
+                            Regex("(?is)class=[\"'][^\"']*\\bdc-vocab_kana\\b[^\"']*[\"'][^>]*>(.*?)</")
+                                .find(row)
+                                ?.groupValues
+                                ?.get(1)
+                                ?.let(::plainText)
+                                ?.trim()
                         if (kana != reading) continue
                     }
-                    val src = Regex("(?is)<source\\b[^>]*\\bsrc=[\"']([^\"']+)[\"']")
-                        .find(row)?.groupValues?.get(1) ?: continue
+                    val src =
+                        Regex("(?is)<source\\b[^>]*\\bsrc=[\"']([^\"']+)[\"']")
+                            .find(row)
+                            ?.groupValues
+                            ?.get(1) ?: continue
                     val url = resolveUrl(endpoint, decodeEntities(src)) ?: continue
-                    download(url)?.let { return it }
+                    urls += url
                 }
-                null
+                urls
             }
+
             "jisho" -> {
                 val endpoint = "https://jisho.org/search/${encode(term)}"
-                val page = request(endpoint) ?: return null
-                if (page.status !in 200..299) return null
+                val page = request(endpoint) ?: return emptyList()
+                if (page.status !in 200..299) return emptyList()
                 val html = page.bytes.toString(Charsets.UTF_8)
-                val audioId = "audio_${term}:$reading"
-                val tag = Regex("(?is)<audio\\b[^>]*\\bid=[\"']${Regex.escape(audioId)}[\"'][^>]*>(.*?)</audio>")
-                    .find(html)?.groupValues?.get(1) ?: return null
-                val src = Regex("(?is)<source\\b[^>]*\\bsrc=[\"']([^\"']+)[\"']")
-                    .find(tag)?.groupValues?.get(1) ?: return null
-                download(resolveUrl(endpoint, decodeEntities(src)) ?: return null)
+                val audioId = "audio_$term:$reading"
+                val tag =
+                    Regex("(?is)<audio\\b[^>]*\\bid=[\"']${Regex.escape(audioId)}[\"'][^>]*>(.*?)</audio>")
+                        .find(html)
+                        ?.groupValues
+                        ?.get(1) ?: return emptyList()
+                val src =
+                    Regex("(?is)<source\\b[^>]*\\bsrc=[\"']([^\"']+)[\"']")
+                        .find(tag)
+                        ?.groupValues
+                        ?.get(1) ?: return emptyList()
+                listOfNotNull(resolveUrl(endpoint, decodeEntities(src)))
             }
-            "ajatt-index" -> resolveAjattIndex(source, term, reading)
+
+            "ajatt-index" -> {
+                resolveAjattIndexUrls(source, term, reading)
+            }
+
             "custom-url" -> {
-                val template = source.urlTemplate?.takeIf(String::isNotBlank) ?: return null
-                download(customUri(template, term, reading, language))
+                val template = source.urlTemplate?.takeIf(String::isNotBlank) ?: return emptyList()
+                listOf(customUri(template, term, reading, language))
             }
+
             "custom-json" -> {
-                val template = source.urlTemplate?.takeIf(String::isNotBlank) ?: return null
+                val template = source.urlTemplate?.takeIf(String::isNotBlank) ?: return emptyList()
                 val endpoint = customUri(template, term, reading, language)
-                val response = request(endpoint, accept = "application/json") ?: return null
-                if (response.status !in 200..299) return null
-                val sources = try {
-                    JSONObject(response.bytes.toString(Charsets.UTF_8)).optJSONArray("audioSources")
-                } catch (_: Exception) {
-                    null
-                } ?: return null
+                val response = request(endpoint, accept = "application/json") ?: return emptyList()
+                if (response.status !in 200..299) return emptyList()
+                val sources =
+                    try {
+                        JSONObject(response.bytes.toString(Charsets.UTF_8)).optJSONArray("audioSources")
+                    } catch (_: Exception) {
+                        null
+                    } ?: return emptyList()
+                val urls = ArrayList<String>(sources.length())
                 for (index in 0 until sources.length()) {
                     val raw = sources.optJSONObject(index) ?: continue
                     val candidate = raw.opt("url") as? String ?: continue
                     val resolved = resolveUrl(endpoint, candidate.trim()) ?: continue
-                    download(resolved)?.let { return it }
+                    urls += resolved
                 }
-                null
+                urls
             }
-            else -> null
+
+            else -> {
+                emptyList()
+            }
         }
     }
 
-    private fun resolveAjattIndex(source: Source, term: String, reading: String): ByteArray? {
-        val index = loadAjattIndex(source) ?: return null
+    private fun resolveAjattIndexUrls(
+        source: Source,
+        term: String,
+        reading: String,
+    ): List<String> {
+        val index = loadAjattIndex(source) ?: return emptyList()
         val normalizedReading = normalizeKana(reading)
-        val keys = buildList {
-            if (term.isNotBlank()) add(term)
-            if (reading.isNotBlank()) {
-                add(reading)
-                add(normalizedReading)
-                add(toKatakana(normalizedReading))
-            }
-        }.distinct()
+        val keys =
+            buildList {
+                if (term.isNotBlank()) add(term)
+                if (reading.isNotBlank()) {
+                    add(reading)
+                    add(normalizedReading)
+                    add(toKatakana(normalizedReading))
+                }
+            }.distinct()
         val candidateFiles = linkedSetOf<String>()
         for (key in keys) {
             val files = index.headwords.optJSONArray(key) ?: continue
             for (position in 0 until files.length()) {
-                val fileName = when (val value = files.opt(position)) {
-                    is String -> value
-                    is JSONObject -> value.optString("url").ifBlank { value.optString("file") }
-                    else -> ""
-                }.trim()
+                val fileName =
+                    when (val value = files.opt(position)) {
+                        is String -> value
+                        is JSONObject -> value.optString("url").ifBlank { value.optString("file") }
+                        else -> ""
+                    }.trim()
                 if (fileName.isNotBlank()) candidateFiles += fileName
             }
         }
 
-        val matchingReadings = candidateFiles.filter { fileName ->
-            val fileReading = index.files.optJSONObject(fileName)
-                ?.optString("kana_reading").orEmpty().trim()
-            normalizedReading.isBlank() || fileReading.isBlank() ||
-                normalizeKana(fileReading) == normalizedReading
-        }.toSet()
+        val matchingReadings =
+            candidateFiles
+                .filter { fileName ->
+                    val fileReading =
+                        index.files
+                            .optJSONObject(fileName)
+                            ?.optString("kana_reading")
+                            .orEmpty()
+                            .trim()
+                    normalizedReading.isBlank() || fileReading.isBlank() ||
+                        normalizeKana(fileReading) == normalizedReading
+                }.toSet()
         // AJT sources such as NHK use phonetic kana (for example, きょーく゚ー),
         // which may differ from the dictionary's standard spelling. Keep headword
         // matches as a fallback instead of rejecting every recording for that word.
         val orderedFiles = candidateFiles.sortedBy { if (it in matchingReadings) 0 else 1 }
+        val mediaUrls = ArrayList<String>(orderedFiles.size)
         for (fileName in orderedFiles) {
-            val path = fileName.trimStart('/').split('/').joinToString("/") {
-                URLEncoder.encode(it, "UTF-8").replace("+", "%20")
-            }
-            val mediaUrl = resolveUrl(index.mediaDirectory, path) ?: continue
-            download(mediaUrl)?.let { return it }
+            val path =
+                fileName.trimStart('/').split('/').joinToString("/") {
+                    URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+                }
+            resolveUrl(index.mediaDirectory, path)?.let(mediaUrls::add)
         }
-        return null
+        return mediaUrls
     }
 
     @android.annotation.SuppressLint("DirectSystemCurrentTimeMillisUsage")
@@ -276,19 +614,22 @@ class PronunciationAudioClient(
             val cacheName = sha256(archiveUrl)
             val compressedCacheFile = File(cacheDirectory, "$cacheName.json.gz")
             val legacyCacheFile = File(cacheDirectory, "$cacheName.json")
-            var cacheFile = listOf(compressedCacheFile, legacyCacheFile)
-                .filter(File::isFile)
-                .maxByOrNull { it.lastModified() }
-                ?: compressedCacheFile
-            val cacheIsFresh = cacheFile.isFile &&
-                System.currentTimeMillis() - cacheFile.lastModified() < INDEX_CACHE_TTL_MS
+            var cacheFile =
+                listOf(compressedCacheFile, legacyCacheFile)
+                    .filter(File::isFile)
+                    .maxByOrNull { it.lastModified() }
+                    ?: compressedCacheFile
+            val cacheIsFresh =
+                cacheFile.isFile &&
+                    System.currentTimeMillis() - cacheFile.lastModified() < INDEX_CACHE_TTL_MS
             if (!cacheIsFresh) {
                 val response = request(archiveUrl, maxBytes = MAX_INDEX_ARCHIVE_BYTES)
-                val indexBytes = if (response != null && response.status in 200..299) {
-                    unzipIndex(response.bytes)
-                } else {
-                    null
-                }
+                val indexBytes =
+                    if (response != null && response.status in 200..299) {
+                        unzipIndex(response.bytes)
+                    } else {
+                        null
+                    }
                 if (indexBytes != null) {
                     val fetchedAt = System.currentTimeMillis()
                     if (storeCompressedIndexCache(compressedCacheFile, indexBytes, fetchedAt)) {
@@ -298,26 +639,28 @@ class PronunciationAudioClient(
                 }
             }
 
-            val cacheCandidates = listOf(cacheFile, compressedCacheFile, legacyCacheFile)
-                .distinct()
-                .filter(File::isFile)
-                .sortedWith(
-                    compareByDescending<File> { it.lastModified() }
-                        .thenBy { if (it == compressedCacheFile) 0 else 1 },
-                )
+            val cacheCandidates =
+                listOf(cacheFile, compressedCacheFile, legacyCacheFile)
+                    .distinct()
+                    .filter(File::isFile)
+                    .sortedWith(
+                        compareByDescending<File> { it.lastModified() }
+                            .thenBy { if (it == compressedCacheFile) 0 else 1 },
+                    )
             var root: JSONObject? = null
             var rootBytes: ByteArray? = null
             var loadedFrom: File? = null
             for (candidate in cacheCandidates) {
-                val loaded = runCatching {
-                    val bytes = readCachedIndex(candidate)
-                    val parsed = JSONObject(bytes.toString(Charsets.UTF_8))
-                    if (parsed.optJSONObject("headwords") != null && parsed.optJSONObject("files") != null) {
-                        parsed to bytes.takeIf { candidate == legacyCacheFile }
-                    } else {
-                        null
-                    }
-                }.getOrNull() ?: continue
+                val loaded =
+                    runCatching {
+                        val bytes = readCachedIndex(candidate)
+                        val parsed = JSONObject(bytes.toString(Charsets.UTF_8))
+                        if (parsed.optJSONObject("headwords") != null && parsed.optJSONObject("files") != null) {
+                            parsed to bytes.takeIf { candidate == legacyCacheFile }
+                        } else {
+                            null
+                        }
+                    }.getOrNull() ?: continue
                 root = loaded.first
                 rootBytes = loaded.second
                 loadedFrom = candidate
@@ -335,15 +678,17 @@ class PronunciationAudioClient(
             val meta = indexRoot.optJSONObject("meta") ?: JSONObject()
             val headwords = indexRoot.optJSONObject("headwords") ?: return null
             val files = indexRoot.optJSONObject("files") ?: return null
-            val mediaDirectoryValue = meta.optString("media_dir_abs").ifBlank {
-                meta.optString("media_dir")
-            }
+            val mediaDirectoryValue =
+                meta.optString("media_dir_abs").ifBlank {
+                    meta.optString("media_dir")
+                }
             if (mediaDirectoryValue.isBlank()) return null
-            val mediaDirectory = if (isHttpUrl(mediaDirectoryValue)) {
-                mediaDirectoryValue
-            } else {
-                resolveUrl(archiveUrl, mediaDirectoryValue) ?: return null
-            }.let { if (it.endsWith('/')) it else "$it/" }
+            val mediaDirectory =
+                if (isHttpUrl(mediaDirectoryValue)) {
+                    mediaDirectoryValue
+                } else {
+                    resolveUrl(archiveUrl, mediaDirectoryValue) ?: return null
+                }.let { if (it.endsWith('/')) it else "$it/" }
             return AjattIndex(headwords, files, mediaDirectory).also {
                 cachedIndexSourceId = source.id
                 cachedIndex = it
@@ -360,11 +705,16 @@ class PronunciationAudioClient(
             }
         }
 
-    private fun storeCompressedIndexCache(file: File, bytes: ByteArray, timestamp: Long): Boolean {
+    private fun storeCompressedIndexCache(
+        file: File,
+        bytes: ByteArray,
+        timestamp: Long,
+    ): Boolean {
         val directory = file.parentFile ?: return false
         if (!directory.exists() && !directory.mkdirs()) return false
-        val temporary = runCatching { File.createTempFile("index-", ".tmp", directory) }.getOrNull()
-            ?: return false
+        val temporary =
+            runCatching { File.createTempFile("index-", ".tmp", directory) }.getOrNull()
+                ?: return false
         val backup = File(directory, file.name + ".bak")
         return try {
             if (!file.exists() && backup.exists()) {
@@ -398,10 +748,11 @@ class PronunciationAudioClient(
                 val entry = zip.nextEntry ?: return@use null
                 if (!entry.isDirectory && entry.name.endsWith(".json", ignoreCase = true)) {
                     val bytes = readBounded(zip, MAX_INDEX_JSON_BYTES)
-                    val isIndex = runCatching {
-                        val root = JSONObject(bytes.toString(Charsets.UTF_8))
-                        root.optJSONObject("headwords") != null && root.optJSONObject("files") != null
-                    }.getOrDefault(false)
+                    val isIndex =
+                        runCatching {
+                            val root = JSONObject(bytes.toString(Charsets.UTF_8))
+                            root.optJSONObject("headwords") != null && root.optJSONObject("files") != null
+                        }.getOrDefault(false)
                     if (isIndex) return@use bytes.takeIf { it.isNotEmpty() }
                 }
             }
@@ -420,16 +771,17 @@ class PronunciationAudioClient(
         var current = url
         for (redirect in 0..4) {
             if (!isHttpUrl(current)) return null
-            val connection = (URL(current).openConnection() as HttpURLConnection).apply {
-                requestMethod = method
-                instanceFollowRedirects = false
-                connectTimeout = connectTimeoutMs
-                readTimeout = readTimeoutMs
-                setRequestProperty("Accept", accept)
-                setRequestProperty("Cache-Control", "no-cache")
-                if (contentType != null) setRequestProperty("Content-Type", contentType)
-                if (body != null) doOutput = true
-            }
+            val connection =
+                (URL(current).openConnection() as HttpURLConnection).apply {
+                    requestMethod = method
+                    instanceFollowRedirects = false
+                    connectTimeout = connectTimeoutMs
+                    readTimeout = readTimeoutMs
+                    setRequestProperty("Accept", accept)
+                    setRequestProperty("Cache-Control", "no-cache")
+                    if (contentType != null) setRequestProperty("Content-Type", contentType)
+                    if (body != null) doOutput = true
+                }
             try {
                 if (body != null) connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                 val status = connection.responseCode
@@ -442,7 +794,15 @@ class PronunciationAudioClient(
                 }
                 val stream = if (status >= 400) connection.errorStream else connection.inputStream
                 val bytes = stream?.use { readBounded(it, maxBytes) } ?: ByteArray(0)
-                return Response(status, connection.contentType.orEmpty().substringBefore(';').trim().lowercase(Locale.ROOT), bytes)
+                return Response(
+                    status,
+                    connection.contentType
+                        .orEmpty()
+                        .substringBefore(';')
+                        .trim()
+                        .lowercase(Locale.ROOT),
+                    bytes,
+                )
             } finally {
                 connection.disconnect()
             }
@@ -458,7 +818,10 @@ class PronunciationAudioClient(
         return response.bytes.takeIf { sniffMime(it) != null }
     }
 
-    private fun readBounded(input: java.io.InputStream, limit: Int): ByteArray {
+    private fun readBounded(
+        input: java.io.InputStream,
+        limit: Int,
+    ): ByteArray {
         val output = ByteArrayOutputStream(minOf(limit, 32 * 1024))
         val buffer = ByteArray(16 * 1024)
         var total = 0
@@ -472,14 +835,26 @@ class PronunciationAudioClient(
         return output.toByteArray()
     }
 
-    private fun sniffMime(bytes: ByteArray): String? = when {
-        bytes.size >= 3 && bytes[0] == 'I'.code.toByte() && bytes[1] == 'D'.code.toByte() && bytes[2] == '3'.code.toByte() -> "audio/mpeg"
-        bytes.size >= 4 && bytes.copyOfRange(0, 4).contentEquals(byteArrayOf('O'.code.toByte(), 'g'.code.toByte(), 'g'.code.toByte(), 'S'.code.toByte())) -> "audio/ogg"
-        bytes.size >= 12 && bytes.copyOfRange(0, 4).contentEquals("RIFF".toByteArray()) && bytes.copyOfRange(8, 12).contentEquals("WAVE".toByteArray()) -> "audio/wav"
-        bytes.size >= 2 && (bytes[0].toInt() and 0xff) == 0xff && (bytes[1].toInt() and 0xe0) == 0xe0 -> "audio/mpeg"
-        bytes.size >= 12 && bytes.copyOfRange(4, 8).contentEquals("ftyp".toByteArray()) -> "audio/mp4"
-        else -> null
-    }
+    private fun sniffMime(bytes: ByteArray): String? =
+        when {
+            bytes.size >= 3 && bytes[0] == 'I'.code.toByte() && bytes[1] == 'D'.code.toByte() && bytes[2] == '3'.code.toByte() -> "audio/mpeg"
+
+            bytes.size >= 4 &&
+                bytes
+                    .copyOfRange(
+                        0,
+                        4,
+                    ).contentEquals(byteArrayOf('O'.code.toByte(), 'g'.code.toByte(), 'g'.code.toByte(), 'S'.code.toByte())) -> "audio/ogg"
+
+            bytes.size >= 12 && bytes.copyOfRange(0, 4).contentEquals("RIFF".toByteArray()) &&
+                bytes.copyOfRange(8, 12).contentEquals("WAVE".toByteArray()) -> "audio/wav"
+
+            bytes.size >= 2 && (bytes[0].toInt() and 0xff) == 0xff && (bytes[1].toInt() and 0xe0) == 0xe0 -> "audio/mpeg"
+
+            bytes.size >= 12 && bytes.copyOfRange(4, 8).contentEquals("ftyp".toByteArray()) -> "audio/mp4"
+
+            else -> null
+        }
 
     private fun normalizeKana(value: String): String {
         val compatible = Normalizer.normalize(value.trim(), Normalizer.Form.NFKC)
@@ -487,78 +862,111 @@ class PronunciationAudioClient(
             var index = 0
             while (index < compatible.length) {
                 val codePoint = compatible.codePointAt(index)
-                val hiraganaCodePoint = when (codePoint) {
-                    in 0x30A1..0x30F6 -> codePoint - 0x60
-                    in 0x30FD..0x30FE -> codePoint - 0x60
-                    else -> codePoint
-                }
+                val hiraganaCodePoint =
+                    when (codePoint) {
+                        in 0x30A1..0x30F6 -> codePoint - 0x60
+                        in 0x30FD..0x30FE -> codePoint - 0x60
+                        else -> codePoint
+                    }
                 appendCodePoint(hiraganaCodePoint)
                 index += Character.charCount(codePoint)
             }
         }
     }
 
-    private fun toKatakana(value: String): String = buildString {
-        var index = 0
-        while (index < value.length) {
-            val codePoint = value.codePointAt(index)
-            val katakanaCodePoint = when (codePoint) {
-                in 0x3041..0x3096 -> codePoint + 0x60
-                in 0x309D..0x309E -> codePoint + 0x60
-                else -> codePoint
+    private fun toKatakana(value: String): String =
+        buildString {
+            var index = 0
+            while (index < value.length) {
+                val codePoint = value.codePointAt(index)
+                val katakanaCodePoint =
+                    when (codePoint) {
+                        in 0x3041..0x3096 -> codePoint + 0x60
+                        in 0x309D..0x309E -> codePoint + 0x60
+                        else -> codePoint
+                    }
+                appendCodePoint(katakanaCodePoint)
+                index += Character.charCount(codePoint)
             }
-            appendCodePoint(katakanaCodePoint)
-            index += Character.charCount(codePoint)
         }
-    }
 
-    private fun isKana(value: String): Boolean = value.isNotEmpty() && value.all { c ->
-        c in '\u3040'..'\u30ff' || c in '\u31f0'..'\u31ff' || c in '\uff66'..'\uff9f'
-    }
+    private fun isKana(value: String): Boolean =
+        value.isNotEmpty() &&
+            value.all { c ->
+                c in '\u3040'..'\u30ff' || c in '\u31f0'..'\u31ff' || c in '\uff66'..'\uff9f'
+            }
 
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
-    private fun customUri(template: String, term: String, reading: String, language: String): String {
-        val interpolated = Regex("\\{(term|reading|language)\\}").replace(template) { match ->
-            val value = when (match.groupValues[1]) {
-                "term" -> term
-                "reading" -> reading
-                else -> language
+    private fun customUri(
+        template: String,
+        term: String,
+        reading: String,
+        language: String,
+    ): String {
+        val interpolated =
+            Regex("\\{(term|reading|language)\\}").replace(template) { match ->
+                val value =
+                    when (match.groupValues[1]) {
+                        "term" -> term
+                        "reading" -> reading
+                        else -> language
+                    }
+                encode(value).replace("+", "%20")
             }
-            encode(value).replace("+", "%20")
-        }
-        val uri = try { URI(interpolated) } catch (_: Exception) { null }
+        val uri =
+            try {
+                URI(interpolated)
+            } catch (_: Exception) {
+                null
+            }
         if (uri == null || !isHttpUrl(uri)) {
             throw IllegalArgumentException("Pronunciation source URL must be HTTP or HTTPS.")
         }
         return uri.toASCIIString()
     }
 
-    private fun isHttpUrl(value: String): Boolean = try {
-        isHttpUrl(URI(value))
-    } catch (_: Exception) { false }
+    private fun isHttpUrl(value: String): Boolean =
+        try {
+            isHttpUrl(URI(value))
+        } catch (_: Exception) {
+            false
+        }
 
     private fun isHttpUrl(uri: URI): Boolean =
         uri.isAbsolute && uri.scheme?.lowercase(Locale.ROOT) in setOf("http", "https") &&
             !uri.host.isNullOrBlank()
 
-    private fun resolveUrl(base: String, relative: String): String? = try {
-        URI(base).resolve(relative).takeIf(::isHttpUrl)?.toString()
-    } catch (_: Exception) { null }
-    @Suppress("DEPRECATION")
-    private fun decodeEntities(value: String): String = if (Build.VERSION.SDK_INT >= 24) {
-        Html.fromHtml(value, Html.FROM_HTML_MODE_LEGACY).toString()
-    } else {
-        Html.fromHtml(value).toString()
-    }
+    private fun resolveUrl(
+        base: String,
+        relative: String,
+    ): String? =
+        try {
+            URI(base).resolve(relative).takeIf(::isHttpUrl)?.toString()
+        } catch (_: Exception) {
+            null
+        }
 
     @Suppress("DEPRECATION")
-    private fun plainText(value: String): String = if (Build.VERSION.SDK_INT >= 24) {
-        Html.fromHtml(value, Html.FROM_HTML_MODE_LEGACY).toString()
-    } else {
-        Html.fromHtml(value).toString()
-    }
-    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+    private fun decodeEntities(value: String): String =
+        if (Build.VERSION.SDK_INT >= 24) {
+            Html.fromHtml(value, Html.FROM_HTML_MODE_LEGACY).toString()
+        } else {
+            Html.fromHtml(value).toString()
+        }
+
+    @Suppress("DEPRECATION")
+    private fun plainText(value: String): String =
+        if (Build.VERSION.SDK_INT >= 24) {
+            Html.fromHtml(value, Html.FROM_HTML_MODE_LEGACY).toString()
+        } else {
+            Html.fromHtml(value).toString()
+        }
+
+    private fun sha256(value: String): String =
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") {
+            "%02x".format(it)
+        }
 
     private data class Source(
         val id: String,
@@ -566,19 +974,35 @@ class PronunciationAudioClient(
         val enabled: Boolean,
         val urlTemplate: String? = null,
     )
+
     private data class AjattIndex(
         val headwords: JSONObject,
         val files: JSONObject,
         val mediaDirectory: String,
     )
-    private data class Response(val status: Int, val mimeType: String, val bytes: ByteArray)
+
+    private data class Response(
+        val status: Int,
+        val mimeType: String,
+        val bytes: ByteArray,
+    )
+
+    private data class AudioCacheEntry(
+        val metadataFile: File,
+        val audioFile: File,
+        val lastUsedAt: Long,
+    )
 
     private companion object {
         const val MAX_INDEX_ARCHIVE_BYTES = 64 * 1024 * 1024
         const val MAX_INDEX_JSON_BYTES = 64 * 1024 * 1024
         const val INDEX_CACHE_TTL_MS = 7L * 24L * 60L * 60L * 1000L
-        val defaultSources = PronunciationAudioPresets.defaults.map {
-            Source(it.id, it.kind, true, it.url)
-        }
+        const val AUDIO_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
+        const val MAX_AUDIO_CACHE_BYTES = 32L * 1024L * 1024L
+        val AUDIO_EXTENSIONS = setOf("mp3", "ogg", "wav", "m4a")
+        val defaultSources =
+            PronunciationAudioPresets.defaults.map {
+                Source(it.id, it.kind, true, it.url)
+            }
     }
 }

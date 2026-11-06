@@ -3,25 +3,25 @@ package com.nekoplayer.app.ui
 import android.content.Context
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.SystemClock
+import android.view.LayoutInflater
 import android.view.TextureView
 import android.view.View
-import android.view.LayoutInflater
 import android.widget.FrameLayout
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -29,7 +29,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.MoreVert
@@ -39,22 +42,19 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.automirrored.filled.VolumeOff
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -87,8 +87,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -98,7 +98,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
-import androidx.media3.common.text.CueGroup
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
@@ -106,13 +105,12 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -121,8 +119,6 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.nekoplayer.app.MainActivity
 import com.nekoplayer.app.data.AppDatabase
-import eu.kanade.tachiyomi.animesource.model.ChapterType
-import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import com.nekoplayer.app.data.DictionaryEntry
 import com.nekoplayer.app.data.DictionaryRepository
 import com.nekoplayer.app.library.AniListClient
@@ -137,25 +133,31 @@ import com.nekoplayer.app.mining.AnkiDroidClient
 import com.nekoplayer.app.mining.AnkiDroidMiningWorkflow
 import com.nekoplayer.app.mining.PlaybackAudioCapture
 import com.nekoplayer.app.mining.PronunciationAudioClient
-import com.nekoplayer.app.player.JimakuSubtitleDialog
+import com.nekoplayer.app.mining.PronunciationPlaybackSource
 import com.nekoplayer.app.player.AutomaticJimakuSubtitleStore
+import com.nekoplayer.app.player.JimakuSubtitleDialog
+import eu.kanade.tachiyomi.animesource.model.ChapterType
+import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.hypot
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.security.MessageDigest
-import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import androidx.compose.material3.Text as Material3Text
 
 private val PlayerOverlaySurface = Color(0xE6111415)
 private val PlayerOverlayText = Color(0xFFDEE7EC)
@@ -168,15 +170,18 @@ private fun formatAnkiInfo(
     episodeName: String?,
     episodeNumber: Int?,
 ): String {
-    val title = seriesTitle?.trim()?.takeIf(String::isNotEmpty)
-        ?: alternateSeriesTitle?.trim()?.takeIf(String::isNotEmpty)
-        ?: return displayName.trim()
+    val title =
+        seriesTitle?.trim()?.takeIf(String::isNotEmpty)
+            ?: alternateSeriesTitle?.trim()?.takeIf(String::isNotEmpty)
+            ?: return displayName.trim()
     val episodeTitle = episodeName?.trim()?.takeIf(String::isNotEmpty)
-    val episodeInfo = buildList {
-        episodeNumber?.takeIf { it > 0 }?.let { add("Episode $it") }
-        episodeTitle?.takeUnless { episodeNumber != null && it.equals("Episode $episodeNumber", ignoreCase = true) }
-            ?.let(::add)
-    }.joinToString(": ")
+    val episodeInfo =
+        buildList {
+            episodeNumber?.takeIf { it > 0 }?.let { add("Episode $it") }
+            episodeTitle
+                ?.takeUnless { episodeNumber != null && it.equals("Episode $episodeNumber", ignoreCase = true) }
+                ?.let(::add)
+        }.joinToString(": ")
     return listOf(title, episodeInfo).filter(String::isNotBlank).joinToString(" · ")
 }
 
@@ -209,51 +214,64 @@ fun PlayerScreen(
     val scope = rememberCoroutineScope()
     val playbackAudioCapture = remember(uri, requestHeaders) { PlaybackAudioCapture() }
     val playbackClockMs = remember(uri, requestHeaders) { AtomicLong(0L) }
-    val player = remember(uri, requestHeaders, playbackAudioCapture, playbackClockMs) {
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setDefaultRequestProperties(requestHeaders)
-        val dataSourceFactory = DefaultDataSource.Factory(activity, httpDataSourceFactory)
-        val audioProcessor = PlaybackAudioCapture.Processor(playbackAudioCapture) {
-            playbackClockMs.get()
-        }
-        val renderersFactory = object : DefaultRenderersFactory(activity) {
-            override fun buildAudioSink(
-                context: Context,
-                enableFloatOutput: Boolean,
-                enableAudioOutputPlaybackParams: Boolean,
-            ): AudioSink = DefaultAudioSink.Builder(context)
-                .setAudioProcessors(arrayOf(audioProcessor))
-                .setEnableFloatOutput(enableFloatOutput)
-                .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
-                .build()
-        }
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-        ExoPlayer.Builder(activity, renderersFactory)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .build()
-            .apply {
-                if (audioUri != null) {
-                    val videoItem = MediaItem.Builder()
-                        .setUri(uri)
-                        .setMimeType(videoMimeType ?: "video/mp4")
-                        .build()
-                    val audioItem = MediaItem.Builder()
-                        .setUri(audioUri)
-                        .setMimeType(audioMimeType ?: "audio/webm")
-                        .build()
-                    setMediaSource(
-                        MergingMediaSource(
-                            mediaSourceFactory.createMediaSource(videoItem),
-                            mediaSourceFactory.createMediaSource(audioItem),
-                        ),
-                    )
-                } else {
-                    setMediaItem(MediaItem.fromUri(uri))
+    val player =
+        remember(uri, requestHeaders, playbackAudioCapture, playbackClockMs) {
+            val httpDataSourceFactory =
+                DefaultHttpDataSource
+                    .Factory()
+                    .setDefaultRequestProperties(requestHeaders)
+            val dataSourceFactory = DefaultDataSource.Factory(activity, httpDataSourceFactory)
+            val audioProcessor =
+                PlaybackAudioCapture.Processor(playbackAudioCapture) {
+                    playbackClockMs.get()
                 }
-                prepare()
-            }
-    }
+            val renderersFactory =
+                object : DefaultRenderersFactory(activity) {
+                    override fun buildAudioSink(
+                        context: Context,
+                        enableFloatOutput: Boolean,
+                        enableAudioOutputPlaybackParams: Boolean,
+                    ): AudioSink =
+                        DefaultAudioSink
+                            .Builder(context)
+                            .setAudioProcessors(arrayOf(audioProcessor))
+                            .setEnableFloatOutput(enableFloatOutput)
+                            .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+                            .build()
+                }
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+            ExoPlayer
+                .Builder(activity, renderersFactory)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .build()
+                .apply {
+                    if (audioUri != null) {
+                        val videoItem =
+                            MediaItem
+                                .Builder()
+                                .setUri(uri)
+                                .setMimeType(videoMimeType ?: "video/mp4")
+                                .build()
+                        val audioItem =
+                            MediaItem
+                                .Builder()
+                                .setUri(audioUri)
+                                .setMimeType(audioMimeType ?: "audio/webm")
+                                .build()
+                        setMediaSource(
+                            MergingMediaSource(
+                                mediaSourceFactory.createMediaSource(videoItem),
+                                mediaSourceFactory.createMediaSource(audioItem),
+                            ),
+                        )
+                    } else {
+                        setMediaItem(MediaItem.fromUri(uri))
+                    }
+                    prepare()
+                }
+        }
     val playerScreenActive = remember(player) { AtomicBoolean(true) }
+    val pendingWatchTimeMs = remember(player, sourceProgressIdentity) { AtomicLong(0L) }
     val playerView = remember(player) { mutableStateOf<PlayerView?>(null) }
     var positionMs by remember(uri) { mutableLongStateOf(0L) }
     var durationMs by remember(uri) { mutableLongStateOf(0L) }
@@ -267,16 +285,19 @@ fun PlayerScreen(
     var userSelectedSubtitle by remember(uri, sourceProgressIdentity) { mutableStateOf(false) }
     var useExternalSubtitle by remember(uri, sourceProgressIdentity) { mutableStateOf(false) }
     var embeddedSubtitlesEnabled by remember(uri, sourceProgressIdentity) { mutableStateOf(true) }
-    val subtitleAnimeName = seriesTitle?.takeIf(String::isNotBlank)
-        ?: alternateSeriesTitle?.takeIf(String::isNotBlank)
-    val subtitleAnimeIdentity = remember(sourceProgressIdentity, subtitleAnimeName, uri) {
-        sourceProgressIdentity?.let { "source:${it.sourceId}:${it.seriesAnimeUrl.trim()}" }
-            ?: subtitleAnimeName?.trim()?.lowercase(Locale.ROOT)?.let { "title:$it" }
-            ?: "uri:${uri.normalizeScheme()}"
-    }
-    val subtitleOffsetSettingKey = remember(subtitleAnimeIdentity) {
-        subtitleOffsetSettingsKeyFor(subtitleAnimeIdentity)
-    }
+    val subtitleAnimeName =
+        seriesTitle?.takeIf(String::isNotBlank)
+            ?: alternateSeriesTitle?.takeIf(String::isNotBlank)
+    val subtitleAnimeIdentity =
+        remember(sourceProgressIdentity, subtitleAnimeName, uri) {
+            sourceProgressIdentity?.let { "source:${it.sourceId}:${it.seriesAnimeUrl.trim()}" }
+                ?: subtitleAnimeName?.trim()?.lowercase(Locale.ROOT)?.let { "title:$it" }
+                ?: "uri:${uri.normalizeScheme()}"
+        }
+    val subtitleOffsetSettingKey =
+        remember(subtitleAnimeIdentity) {
+            subtitleOffsetSettingsKeyFor(subtitleAnimeIdentity)
+        }
     var subtitleOffsetMs by remember(database, subtitleOffsetSettingKey) {
         mutableLongStateOf(database.readNumber(subtitleOffsetSettingKey).toLong())
     }
@@ -292,33 +313,48 @@ fun PlayerScreen(
     var dismissedSkipPoint by remember(uri) { mutableStateOf<PlaybackSkipPoint?>(null) }
     val autoPlayNext = remember(database) { database.readBoolean("playback.autoPlayNext", false) }
     val skipPointsEnabled = remember(database) { database.readBoolean("playback.skipPointsEnabled", true) }
-    val sourceSkipPoints = remember(sourceSkipTimestamps) {
-        sourceSkipTimestamps.mapNotNull { it.toPlaybackSkipPointOrNull() }.sortedBy { it.startMs }
-    }
-    val sourceSkipPointsForDuration = remember(sourceSkipPoints, durationMs) {
-        if (durationMs <= 0L) {
-            sourceSkipPoints
-        } else {
-            sourceSkipPoints.mapNotNull { point ->
-                if (point.startMs >= durationMs) {
-                    null
-                } else {
-                    point.copy(endMs = point.endMs.coerceAtMost(durationMs))
-                        .takeIf { it.endMs > it.startMs }
+    val sourceSkipPoints =
+        remember(sourceSkipTimestamps) {
+            sourceSkipTimestamps.mapNotNull { it.toPlaybackSkipPointOrNull() }.sortedBy { it.startMs }
+        }
+    val sourceSkipPointsForDuration =
+        remember(sourceSkipPoints, durationMs) {
+            if (durationMs <= 0L) {
+                sourceSkipPoints
+            } else {
+                sourceSkipPoints.mapNotNull { point ->
+                    if (point.startMs >= durationMs) {
+                        null
+                    } else {
+                        point
+                            .copy(endMs = point.endMs.coerceAtMost(durationMs))
+                            .takeIf { it.endMs > it.startMs }
+                    }
                 }
             }
         }
-    }
-    val timelineSkipPoints = remember(sourceSkipPointsForDuration) {
-        sourceSkipPointsForDuration.filter {
-            it.type == ChapterType.Opening || it.type == ChapterType.Ending
+    val timelineSkipPoints =
+        remember(sourceSkipPointsForDuration) {
+            sourceSkipPointsForDuration.filter {
+                it.type == ChapterType.Opening || it.type == ChapterType.Ending
+            }
         }
-    }
+    val endingSkipEndMs =
+        sourceSkipPoints
+            .filter {
+                it.type == ChapterType.Ending && (durationMs <= 0L || it.endMs <= durationMs)
+            }.maxOfOrNull { it.endMs }
+    val latestCompletionPositionMs =
+        rememberUpdatedState(
+            episodeCompletionThresholdMs(durationMs, endingSkipEndMs) ?: 0L,
+        )
     val latestOnPlayNextEpisode = rememberUpdatedState(onPlayNextEpisode)
     var subtitleOffsetInput by remember(uri) { mutableStateOf("0") }
     var selectedSpeed by remember(uri) { mutableFloatStateOf(1f) }
     var volume by remember(uri) { mutableFloatStateOf(database.readNumber("player.volume", 1.0).toFloat().coerceIn(0f, 1f)) }
-    var lastNonMutedVolume by remember(uri) { mutableFloatStateOf(database.readNumber("player.lastNonMutedVolume", 1.0).toFloat().coerceIn(0.01f, 1f)) }
+    var lastNonMutedVolume by remember(uri) {
+        mutableFloatStateOf(database.readNumber("player.lastNonMutedVolume", 1.0).toFloat().coerceIn(0.01f, 1f))
+    }
     var seekDrag by remember(uri) { mutableFloatStateOf(-1f) }
     var subtitleLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var subtitleCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -343,89 +379,107 @@ fun PlayerScreen(
     var dictionaryPopupSize by remember(database) {
         mutableFloatStateOf(DictionaryPopupSize.load(database))
     }
+    var pronunciationRequestId by remember(player) { mutableIntStateOf(0) }
     var pronunciationPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var pronunciationFile by remember { mutableStateOf<File?>(null) }
     val pronunciationClient = remember(database) { PronunciationAudioClient(database, context.cacheDir) }
     val aniListClient = remember(context) { AniListClient(context) }
     val jimakuClient = remember(context) { JimakuSubtitleClient(context.cacheDir) }
-    val automaticJimakuSubtitleStore = remember(context, aniListClient, jimakuClient) {
-        AutomaticJimakuSubtitleStore(context, aniListClient, jimakuClient)
-    }
-    val fallbackSourceEpisodeIdentity = if (
-        !subtitleEpisodeName.isNullOrBlank() &&
-        (!seriesTitle.isNullOrBlank() || !alternateSeriesTitle.isNullOrBlank())
-    ) {
-        listOf(
-            "source-episode",
-            (seriesTitle?.takeIf(String::isNotBlank) ?: alternateSeriesTitle).orEmpty().trim().lowercase(Locale.ROOT),
-            (subtitleEpisodeNumber ?: sourceProgressIdentity?.episodeNumber)?.toString().orEmpty(),
-            subtitleEpisodeName.trim().lowercase(Locale.ROOT),
-        ).joinToString("\u0000")
-    } else {
-        null
-    }
-    val latestSubtitlePlaybackIdentity = rememberUpdatedState(
-        sourceProgressIdentity?.key?.let { "source:$it" }
-            ?: fallbackSourceEpisodeIdentity?.let { "source:$it" }
-            ?: "local:$uri",
-    )
+    val automaticJimakuSubtitleStore =
+        remember(context, aniListClient, jimakuClient) {
+            AutomaticJimakuSubtitleStore(context, aniListClient, jimakuClient)
+        }
+    val fallbackSourceEpisodeIdentity =
+        if (
+            !subtitleEpisodeName.isNullOrBlank() &&
+            (!seriesTitle.isNullOrBlank() || !alternateSeriesTitle.isNullOrBlank())
+        ) {
+            listOf(
+                "source-episode",
+                (seriesTitle?.takeIf(String::isNotBlank) ?: alternateSeriesTitle).orEmpty().trim().lowercase(Locale.ROOT),
+                (subtitleEpisodeNumber ?: sourceProgressIdentity?.episodeNumber)?.toString().orEmpty(),
+                subtitleEpisodeName.trim().lowercase(Locale.ROOT),
+            ).joinToString("\u0000")
+        } else {
+            null
+        }
+    val latestSubtitlePlaybackIdentity =
+        rememberUpdatedState(
+            sourceProgressIdentity?.key?.let { "source:$it" }
+                ?: fallbackSourceEpisodeIdentity?.let { "source:$it" }
+                ?: "local:$uri",
+        )
     val selectedExternalTrack = externalSubtitleTracks.firstOrNull { it.id == selectedExternalSubtitleId }
     val externalSubtitle = selectedExternalTrack.takeIf { useExternalSubtitle }
     val subtitlePositionMs = positionMs.saturatedMinus(subtitleOffsetMs)
     val latestExternalSubtitle = rememberUpdatedState(externalSubtitle)
-    val activeSubtitleCueIndices = externalSubtitle?.let {
-        SubtitleCueIndex.activeCueIndices(it, subtitlePositionMs)
-    }.orEmpty()
-    val activeSubtitleCues = externalSubtitle?.let { track ->
-        activeSubtitleCueIndices.mapNotNull(track.cues::getOrNull)
-    }.orEmpty()
+    val activeSubtitleCueIndices =
+        externalSubtitle
+            ?.let {
+                SubtitleCueIndex.activeCueIndices(it, subtitlePositionMs)
+            }.orEmpty()
+    val activeSubtitleCues =
+        externalSubtitle
+            ?.let { track ->
+                activeSubtitleCueIndices.mapNotNull(track.cues::getOrNull)
+            }.orEmpty()
     val externalCueIndex = activeSubtitleCueIndices.lastOrNull()
-    val previousSubtitleCueIndex = externalSubtitle?.let {
-        SubtitleCueIndex.previousCueIndex(it, subtitlePositionMs)
-    }
-    val nextSubtitleCueIndex = externalSubtitle?.let {
-        SubtitleCueIndex.nextCueIndex(it, subtitlePositionMs)
-    }
+    val previousSubtitleCueIndex =
+        externalSubtitle?.let {
+            SubtitleCueIndex.previousCueIndex(it, subtitlePositionMs)
+        }
+    val nextSubtitleCueIndex =
+        externalSubtitle?.let {
+            SubtitleCueIndex.nextCueIndex(it, subtitlePositionMs)
+        }
     val activeCue: SubtitleCue? = activeSubtitleCues.lastOrNull()
-    val subtitleText = activeSubtitleCues.joinToString("\n") { it.plainText }
-        .ifBlank { embeddedSubtitle }
-    val currentSkipPoint = if (skipPointsEnabled) {
-        sourceSkipPointsForDuration.firstOrNull { point ->
-            positionMs in point.startMs until point.endMs
+    val subtitleText =
+        activeSubtitleCues
+            .joinToString("\n") { it.plainText }
+            .ifBlank { embeddedSubtitle }
+    val currentSkipPoint =
+        if (skipPointsEnabled) {
+            sourceSkipPointsForDuration.firstOrNull { point ->
+                positionMs in point.startMs until point.endMs
+            }
+        } else {
+            null
         }
-    } else {
-        null
-    }
-    val activeSkipButton = currentSkipPoint
-        ?.takeUnless { it == dismissedSkipPoint }
-        ?.let { point ->
-            val label = if (point.type == ChapterType.Opening) "Skip opening" else "Skip ending"
-            point to label
-        }
+    val activeSkipButton =
+        currentSkipPoint
+            ?.takeUnless { it == dismissedSkipPoint }
+            ?.let { point ->
+                val label = if (point.type == ChapterType.Opening) "Skip opening" else "Skip ending"
+                point to label
+            }
     LaunchedEffect(positionMs, dismissedSkipPoint) {
         val dismissed = dismissedSkipPoint ?: return@LaunchedEffect
         if (positionMs >= dismissed.endMs) {
             dismissedSkipPoint = null
         }
     }
-    val canSkipToNext = autoPlayNext && latestOnPlayNextEpisode.value != null &&
-        durationMs > 0L && !isSwitchingEpisode &&
-        (nextEpisodeFailed || (positionMs < durationMs && durationMs - positionMs <= 30_000L))
+    val canSkipToNext =
+        autoPlayNext && latestOnPlayNextEpisode.value != null &&
+            durationMs > 0L && !isSwitchingEpisode &&
+            (nextEpisodeFailed || (positionMs < durationMs && durationMs - positionMs <= 30_000L))
     val subtitleFont = remember(database) { database.readNumber("subtitles.fontSize", 32.0).toFloat().coerceIn(14f, 48f) }
     val subtitleAlpha = remember(database) { database.readNumber("subtitles.backgroundOpacity", 0.72).toFloat().coerceIn(0f, 1f) }
-    val subtitleShadowStyle = remember(database) {
-        database.readString("subtitles.shadowStyle", "").takeIf { it in setOf("Off", "Soft", "Strong", "Hard") }
-            ?: if (database.readBoolean("subtitles.shadowEnabled", true)) "Soft" else "Off"
-    }
-    val subtitleOutlineEnabled = remember(database) {
-        database.readBoolean("subtitles.outlineEnabled", true)
-    }
+    val subtitleShadowStyle =
+        remember(database) {
+            database.readString("subtitles.shadowStyle", "").takeIf { it in setOf("Off", "Soft", "Strong", "Hard") }
+                ?: if (database.readBoolean("subtitles.shadowEnabled", true)) "Soft" else "Off"
+        }
+    val subtitleOutlineEnabled =
+        remember(database) {
+            database.readBoolean("subtitles.outlineEnabled", true)
+        }
     val subtitleVignette = remember(database) { database.readNumber("subtitles.vignette", 0.0).toFloat().coerceIn(0f, 1f) }
     val subtitleBottom = remember(database) { database.readNumber("subtitles.bottomInsetPx", 112.0).toFloat().coerceIn(0f, 240f) }
     val pauseOnDictionaryLookup = remember(database) { database.readBoolean("playback.autoPause", false) }
-    val keepLookupOpenAfterMining = remember(database) {
-        database.readBoolean("playback.keepLookupOpenAfterMining", true)
-    }
+    val keepLookupOpenAfterMining =
+        remember(database) {
+            database.readBoolean("playback.keepLookupOpenAfterMining", true)
+        }
     val autoFetchJimaku = remember(database) { database.readBoolean("jimaku.autoFetch", true) }
 
     LaunchedEffect(subtitleText, activeCue?.id) {
@@ -464,33 +518,42 @@ fun PlayerScreen(
         }
     }
 
-    DisposableEffect(player, autoPlayNext) {
-        val listener = object : Player.Listener {
-            override fun onVideoSizeChanged(videoSize: VideoSize) {
-                if (videoSize.width > 0 && videoSize.height > 0) {
-                    videoAspect = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
-                }
-            }
-            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                isBuffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
-                if (playbackState == Player.STATE_READY) durationMs = player.duration.coerceAtLeast(0L)
-                if (playbackState == Player.STATE_ENDED && autoPlayNext && !automaticNextStarted) {
-                    if (latestOnPlayNextEpisode.value != null) {
-                        automaticNextStarted = true
-                        requestNextEpisode()
+    DisposableEffect(player, autoPlayNext, sourceProgressIdentity, pendingWatchTimeMs) {
+        val listener =
+            object : Player.Listener {
+                override fun onVideoSizeChanged(videoSize: VideoSize) {
+                    if (videoSize.width > 0 && videoSize.height > 0) {
+                        videoAspect = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
                     }
                 }
+
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    playing = isPlaying
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    isBuffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
+                    if (playbackState == Player.STATE_READY) durationMs = player.duration.coerceAtLeast(0L)
+                    if (playbackState == Player.STATE_ENDED && autoPlayNext && !automaticNextStarted) {
+                        if (latestOnPlayNextEpisode.value != null) {
+                            automaticNextStarted = true
+                            requestNextEpisode()
+                        }
+                    }
+                }
+
+                override fun onCues(cueGroup: CueGroup) {
+                    val nextText =
+                        cueGroup.cues
+                            .mapNotNull { cue -> cue.text?.toString()?.takeIf(String::isNotBlank) }
+                            .joinToString("\n")
+                    embeddedSubtitle = nextText
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    errorMessage = "This video could not be played. Try another file or check its format."
+                }
             }
-            override fun onCues(cueGroup: CueGroup) {
-                val nextText = cueGroup.cues.mapNotNull { cue -> cue.text?.toString()?.takeIf(String::isNotBlank) }
-                    .joinToString("\n")
-                embeddedSubtitle = nextText
-            }
-            override fun onPlayerError(error: PlaybackException) {
-                errorMessage = "This video could not be played. Try another file or check its format."
-            }
-        }
         player.addListener(listener)
         player.volume = volume
         onDispose {
@@ -499,10 +562,18 @@ fun PlayerScreen(
             playerView.value?.player = null
             val currentPosition = player.currentPosition.coerceAtLeast(0L)
             val currentDuration = player.duration.takeIf { it > 0L } ?: 0L
+            val unwrittenWatchTimeMs = pendingWatchTimeMs.getAndSet(0L)
             scope.launch(Dispatchers.IO) {
                 database.saveProgress(uri.toString(), currentPosition, currentDuration)
                 sourceProgressIdentity?.let {
-                    database.saveSourceEpisodeProgress(it, uri.toString(), currentPosition, currentDuration)
+                    database.saveSourceEpisodeProgress(
+                        it,
+                        uri.toString(),
+                        currentPosition,
+                        currentDuration,
+                        latestCompletionPositionMs.value,
+                    )
+                    database.recordAnimeWatchTime(it, unwrittenWatchTimeMs)
                 }
             }
             player.release()
@@ -510,16 +581,18 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(player, uri, sourceProgressIdentity) {
-        val (recent, sourceProgress) = withContext(Dispatchers.IO) {
-            val recent = database.listRecent().firstOrNull { it.uri == uri.toString() }
-            val sourceProgress = sourceProgressIdentity?.let(database::sourceEpisodeProgress)
-            database.recordOpened(uri, displayName)
-            recent to sourceProgress
-        }
-        val knownDuration = player.duration.takeIf { it > 0L }
-            ?: sourceProgress?.durationMs
-            ?: recent?.durationMs
-            ?: 0L
+        val (recent, sourceProgress) =
+            withContext(Dispatchers.IO) {
+                val recent = database.listRecent().firstOrNull { it.uri == uri.toString() }
+                val sourceProgress = sourceProgressIdentity?.let(database::sourceEpisodeProgress)
+                database.recordOpened(uri, displayName)
+                recent to sourceProgress
+            }
+        val knownDuration =
+            player.duration.takeIf { it > 0L }
+                ?: sourceProgress?.durationMs
+                ?: recent?.durationMs
+                ?: 0L
         val saved = sourceProgress?.positionMs ?: recent?.positionMs ?: 0L
         val resumePosition = if (knownDuration > 0 && saved >= knownDuration - 10_000L) 0L else saved
         if (resumePosition > 0L) player.seekTo(resumePosition)
@@ -534,9 +607,10 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(database) {
-        dictionaryPopupExpansion = withContext(Dispatchers.IO) {
-            DictionaryPopupExpansion.load(database)
-        }
+        dictionaryPopupExpansion =
+            withContext(Dispatchers.IO) {
+                DictionaryPopupExpansion.load(database)
+            }
     }
 
     LaunchedEffect(miningSuccessVersion) {
@@ -552,25 +626,43 @@ fun PlayerScreen(
         lookupWordAlreadyMined = false
         val activeLookup = lookup ?: return@LaunchedEffect
         val activeEntry = activeLookup.entries.firstOrNull() ?: return@LaunchedEffect
-        val terms = listOf(activeEntry.expression, activeEntry.reading, activeLookup.surfaceText)
-            .filter(String::isNotBlank)
-            .distinct()
-        val deckName = withContext(Dispatchers.IO) {
-            database.readString("anki.deck", "Japanese::Mining").trim()
-        }
+        val terms =
+            listOf(activeEntry.expression, activeEntry.reading, activeLookup.surfaceText)
+                .filter(String::isNotBlank)
+                .distinct()
+        val deckName =
+            withContext(Dispatchers.IO) {
+                database.readString("anki.deck", "Japanese::Mining").trim()
+            }
         val status = withContext(Dispatchers.IO) { anki.status() }
         if (!status.installed || !status.apiEnabled || !status.permissionGranted) return@LaunchedEffect
-        lookupWordAlreadyMined = try {
-            withContext(Dispatchers.IO) { anki.hasWordInDeck(deckName, terms) }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            false
-        }
+        lookupWordAlreadyMined =
+            try {
+                withContext(Dispatchers.IO) { anki.hasWordInDeck(deckName, terms) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                false
+            }
     }
 
-    LaunchedEffect(player) {
+    LaunchedEffect(player, sourceProgressIdentity, pendingWatchTimeMs) {
+        var lastWatchSampleAtMs = SystemClock.elapsedRealtime()
         while (true) {
+            val sampleAtMs = SystemClock.elapsedRealtime()
+            val elapsedMs = (sampleAtMs - lastWatchSampleAtMs).coerceIn(0L, 1_000L)
+            lastWatchSampleAtMs = sampleAtMs
+            if (sourceProgressIdentity != null && player.isPlaying && elapsedMs > 0L) {
+                pendingWatchTimeMs.addAndGet(elapsedMs)
+            }
+            if (pendingWatchTimeMs.get() >= 10_000L) {
+                val watchedBatchMs = pendingWatchTimeMs.getAndSet(0L)
+                sourceProgressIdentity?.let { identity ->
+                    withContext(Dispatchers.IO) {
+                        database.recordAnimeWatchTime(identity, watchedBatchMs)
+                    }
+                }
+            }
             positionMs = player.currentPosition.coerceAtLeast(0L)
             playbackClockMs.set(positionMs)
             durationMs = player.duration.takeIf { it > 0L } ?: durationMs
@@ -581,7 +673,13 @@ fun PlayerScreen(
                 withContext(Dispatchers.IO) {
                     database.saveProgress(uri.toString(), savedPosition, savedDuration)
                     sourceProgressIdentity?.let {
-                        database.saveSourceEpisodeProgress(it, uri.toString(), savedPosition, savedDuration)
+                        database.saveSourceEpisodeProgress(
+                            it,
+                            uri.toString(),
+                            savedPosition,
+                            savedDuration,
+                            latestCompletionPositionMs.value,
+                        )
                     }
                 }
             }
@@ -605,51 +703,144 @@ fun PlayerScreen(
         }
     }
 
-    fun playPronunciation(entry: DictionaryEntry) {
-        scope.launch {
-            val asset = pronunciationClient.resolve(entry, destinationField = "Pronunciation Audio")
-            if (asset == null) {
-                onNotify("No pronunciation audio is available for this word.")
-                return@launch
-            }
-            pronunciationPlayer?.release()
-            pronunciationFile?.delete()
-            val nextPlayer = MediaPlayer()
-            pronunciationPlayer = nextPlayer
-            pronunciationFile = asset.attachment.file
-            try {
-                nextPlayer.setDataSource(asset.attachment.file.absolutePath)
-                nextPlayer.setOnPreparedListener { prepared -> prepared.start() }
-                nextPlayer.setOnCompletionListener { completed ->
-                    completed.release()
-                    if (pronunciationPlayer === completed) {
-                        pronunciationPlayer = null
-                        pronunciationFile?.delete()
-                        pronunciationFile = null
-                    }
-                }
-                nextPlayer.setOnErrorListener { failed, _, _ ->
-                    failed.release()
-                    if (pronunciationPlayer === failed) {
-                        pronunciationPlayer = null
-                        pronunciationFile?.delete()
-                        pronunciationFile = null
-                    }
-                    onNotify("Pronunciation audio could not be played.")
-                    true
-                }
-                nextPlayer.prepareAsync()
-            } catch (_: Exception) {
-                nextPlayer.release()
-                pronunciationFile?.delete()
+    fun startPronunciationPlayback(
+        entry: DictionaryEntry,
+        dataSource: String,
+        localFile: File?,
+        requestId: Int,
+        allowDownloadFallback: Boolean,
+    ) {
+        if (requestId != pronunciationRequestId) {
+            localFile?.delete()
+            return
+        }
+        pronunciationPlayer?.release()
+        pronunciationFile?.delete()
+        val nextPlayer = MediaPlayer()
+        pronunciationPlayer = nextPlayer
+        pronunciationFile = localFile
+
+        fun clearCurrentPlayer() {
+            if (pronunciationPlayer === nextPlayer) {
                 pronunciationPlayer = null
+                pronunciationFile?.delete()
                 pronunciationFile = null
+            }
+        }
+
+        fun fallBackToDownloadedAudio() {
+            scope.launch {
+                val asset = pronunciationClient.resolve(entry, destinationField = "Pronunciation Audio")
+                if (requestId != pronunciationRequestId) {
+                    asset?.attachment?.file?.delete()
+                    return@launch
+                }
+                if (asset == null) {
+                    onNotify("No pronunciation audio is available for this word.")
+                } else {
+                    startPronunciationPlayback(
+                        entry = entry,
+                        dataSource = asset.attachment.file.absolutePath,
+                        localFile = asset.attachment.file,
+                        requestId = requestId,
+                        allowDownloadFallback = false,
+                    )
+                }
+            }
+        }
+
+        nextPlayer.setOnPreparedListener { preparedPlayer ->
+            if (requestId != pronunciationRequestId || pronunciationPlayer !== preparedPlayer) {
+                preparedPlayer.release()
+                return@setOnPreparedListener
+            }
+            preparedPlayer.start()
+        }
+        nextPlayer.setOnCompletionListener { completed ->
+            completed.release()
+            if (pronunciationPlayer === completed) {
+                pronunciationPlayer = null
+                pronunciationFile?.delete()
+                pronunciationFile = null
+            }
+        }
+        nextPlayer.setOnErrorListener { failed, _, _ ->
+            val isCurrent = pronunciationPlayer === failed
+            failed.release()
+            if (isCurrent) {
+                clearCurrentPlayer()
+                if (allowDownloadFallback && requestId == pronunciationRequestId) {
+                    fallBackToDownloadedAudio()
+                } else if (requestId == pronunciationRequestId) {
+                    onNotify("Pronunciation audio could not be played.")
+                }
+            }
+            true
+        }
+        try {
+            nextPlayer.setDataSource(dataSource)
+            nextPlayer.prepareAsync()
+        } catch (_: Exception) {
+            nextPlayer.release()
+            clearCurrentPlayer()
+            if (allowDownloadFallback) {
+                fallBackToDownloadedAudio()
+            } else if (requestId == pronunciationRequestId) {
                 onNotify("Pronunciation audio could not be played.")
             }
         }
     }
 
-    fun selectTrack(type: Int, group: Tracks.Group, index: Int) {
+    fun playPronunciation(entry: DictionaryEntry) {
+        val requestId = pronunciationRequestId + 1
+        pronunciationRequestId = requestId
+        scope.launch {
+            val source =
+                pronunciationClient.resolveForPlayback(
+                    entry,
+                    destinationField = "Pronunciation Audio",
+                )
+            if (requestId != pronunciationRequestId) {
+                (source as? PronunciationPlaybackSource.CachedFile)
+                    ?.audio
+                    ?.attachment
+                    ?.file
+                    ?.delete()
+                return@launch
+            }
+            if (source == null) {
+                onNotify("No pronunciation audio is available for this word.")
+                return@launch
+            }
+            when (source) {
+                is PronunciationPlaybackSource.CachedFile -> {
+                    startPronunciationPlayback(
+                        entry = entry,
+                        dataSource = source.audio.attachment.file.absolutePath,
+                        localFile = source.audio.attachment.file,
+                        requestId = requestId,
+                        allowDownloadFallback = false,
+                    )
+                }
+
+                is PronunciationPlaybackSource.RemoteUrl -> {
+                    startPronunciationPlayback(
+                        entry = entry,
+                        dataSource = source.url,
+                        localFile = null,
+                        requestId = requestId,
+                        allowDownloadFallback = true,
+                    )
+                }
+            }
+        }
+    }
+
+    fun selectTrack(
+        type: Int,
+        group: Tracks.Group,
+        index: Int,
+    ) {
         if (type == C.TRACK_TYPE_TEXT) {
             userSelectedSubtitle = true
             useExternalSubtitle = false
@@ -657,20 +848,27 @@ fun PlayerScreen(
             embeddedSubtitlesEnabled = true
         }
         val current = player.trackSelectionParameters
-        player.trackSelectionParameters = current.buildUpon()
-            .setTrackTypeDisabled(type, false)
-            .clearOverridesOfType(type)
-            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(index)))
-            .build()
+        player.trackSelectionParameters =
+            current
+                .buildUpon()
+                .setTrackTypeDisabled(type, false)
+                .clearOverridesOfType(type)
+                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(index)))
+                .build()
         showTracks = null
     }
 
-    fun toggleEmbeddedSubtitles(enabled: Boolean, manualChoice: Boolean = true) {
+    fun toggleEmbeddedSubtitles(
+        enabled: Boolean,
+        manualChoice: Boolean = true,
+    ) {
         if (manualChoice) userSelectedSubtitle = true
         embeddedSubtitlesEnabled = enabled
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enabled)
-            .build()
+        player.trackSelectionParameters =
+            player.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enabled)
+                .build()
         if (enabled) {
             useExternalSubtitle = false
             preferExternalSubtitles = false
@@ -713,17 +911,20 @@ fun PlayerScreen(
             player.pause()
         }
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                scanYomitanSubtitle(tappedText, offset, dictionaries)
-            }
-            if (requestId != lookupRequestId) return@launch
-            val resultMetadata = if (result == null) {
-                emptyList()
-            } else {
+            val result =
                 withContext(Dispatchers.IO) {
-                    loadYomitanMetadata(result, dictionaries)
+                    sourceProgressIdentity?.let(database::recordAnimeLookup)
+                    scanYomitanSubtitle(tappedText, offset, dictionaries)
                 }
-            }
+            if (requestId != lookupRequestId) return@launch
+            val resultMetadata =
+                if (result == null) {
+                    emptyList()
+                } else {
+                    withContext(Dispatchers.IO) {
+                        loadYomitanMetadata(result, dictionaries)
+                    }
+                }
             if (requestId != lookupRequestId) return@launch
             lookupAnchor = tappedAnchor
             if (result != null &&
@@ -748,35 +949,43 @@ fun PlayerScreen(
         subtitleUri: Uri,
         name: String,
         source: SubtitleTrackSource = SubtitleTrackSource.MANUAL,
-    ): SubtitleTrack = withContext(Dispatchers.IO) {
-        val output = ByteArrayOutputStream()
-        val input = context.contentResolver.openInputStream(subtitleUri)
-            ?: throw IllegalArgumentException("Could not open this subtitle file.")
-        input.use { stream ->
-            val buffer = ByteArray(16 * 1024)
-            var total = 0
-            while (true) {
-                val count = stream.read(buffer)
-                if (count < 0) break
-                total += count
-                if (total > SubtitleParser.MAX_FILE_BYTES) throw IllegalArgumentException("Subtitle files must be 20 MiB or smaller.")
-                output.write(buffer, 0, count)
+    ): SubtitleTrack =
+        withContext(Dispatchers.IO) {
+            val output = ByteArrayOutputStream()
+            val input =
+                context.contentResolver.openInputStream(subtitleUri)
+                    ?: throw IllegalArgumentException("Could not open this subtitle file.")
+            input.use { stream ->
+                val buffer = ByteArray(16 * 1024)
+                var total = 0
+                while (true) {
+                    val count = stream.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > SubtitleParser.MAX_FILE_BYTES) throw IllegalArgumentException("Subtitle files must be 20 MiB or smaller.")
+                    output.write(buffer, 0, count)
+                }
+            }
+            val parsed = SubtitleParser.parse(output.toByteArray(), name)
+            if (source == SubtitleTrackSource.MANUAL) {
+                parsed
+            } else {
+                val sourcePrefix = "${source.name.lowercase(Locale.ROOT)}-"
+                parsed.copy(
+                    id = sourcePrefix + parsed.id,
+                    cues =
+                        parsed.cues.map { cue ->
+                            cue.copy(id = sourcePrefix + cue.id, trackId = sourcePrefix + cue.trackId)
+                        },
+                    source = source,
+                )
             }
         }
-        val parsed = SubtitleParser.parse(output.toByteArray(), name)
-        if (source == SubtitleTrackSource.MANUAL) parsed else {
-            val sourcePrefix = "${source.name.lowercase(Locale.ROOT)}-"
-            parsed.copy(
-                id = sourcePrefix + parsed.id,
-                cues = parsed.cues.map { cue ->
-                    cue.copy(id = sourcePrefix + cue.id, trackId = sourcePrefix + cue.trackId)
-                },
-                source = source,
-            )
-        }
-    }
 
-    fun applyExternalSubtitle(track: SubtitleTrack, manualChoice: Boolean = true) {
+    fun applyExternalSubtitle(
+        track: SubtitleTrack,
+        manualChoice: Boolean = true,
+    ) {
         externalSubtitleTracks = externalSubtitleTracks.filterNot { it.id == track.id } + track
         selectedExternalSubtitleId = track.id
         useExternalSubtitle = true
@@ -812,27 +1021,42 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(uri, displayName, seriesTitle, subtitleEpisodeName, subtitleEpisodeNumber, sourceProgressIdentity, alternateSeriesTitle, jimakuApiKey, autoFetchJimaku, userSelectedSubtitle) {
+    LaunchedEffect(
+        uri,
+        displayName,
+        seriesTitle,
+        subtitleEpisodeName,
+        subtitleEpisodeNumber,
+        sourceProgressIdentity,
+        alternateSeriesTitle,
+        jimakuApiKey,
+        autoFetchJimaku,
+        userSelectedSubtitle,
+    ) {
         if (!autoFetchJimaku || userSelectedSubtitle || latestExternalSubtitle.value != null) return@LaunchedEffect
 
         val requestedPlaybackIdentity = latestSubtitlePlaybackIdentity.value
-        val episodeName = subtitleEpisodeName?.takeIf(String::isNotBlank)
-            ?: sourceProgressIdentity?.episodeName?.takeIf(String::isNotBlank)
-            ?: displayName
+        val episodeName =
+            subtitleEpisodeName?.takeIf(String::isNotBlank)
+                ?: sourceProgressIdentity?.episodeName?.takeIf(String::isNotBlank)
+                ?: displayName
         val episodeNumber = subtitleEpisodeNumber ?: sourceProgressIdentity?.episodeNumber
-        val showName = seriesTitle?.takeIf(String::isNotBlank)
-            ?: alternateSeriesTitle?.takeIf(String::isNotBlank)
-            ?: displayName
+        val showName =
+            seriesTitle?.takeIf(String::isNotBlank)
+                ?: alternateSeriesTitle?.takeIf(String::isNotBlank)
+                ?: displayName
 
-        val track = automaticJimakuSubtitleStore.loadOrFetch(
-            identity = requestedPlaybackIdentity,
-            showName = showName,
-            episodeFileName = episodeName,
-            apiKey = jimakuApiKey,
-            episodeNumber = episodeNumber,
-            alternateShowNames = listOfNotNull(alternateSeriesTitle, seriesTitle)
-                .filterNot { it.equals(showName, ignoreCase = true) },
-        ) ?: return@LaunchedEffect
+        val track =
+            automaticJimakuSubtitleStore.loadOrFetch(
+                identity = requestedPlaybackIdentity,
+                showName = showName,
+                episodeFileName = episodeName,
+                apiKey = jimakuApiKey,
+                episodeNumber = episodeNumber,
+                alternateShowNames =
+                    listOfNotNull(alternateSeriesTitle, seriesTitle)
+                        .filterNot { it.equals(showName, ignoreCase = true) },
+            ) ?: return@LaunchedEffect
 
         if (
             requestedPlaybackIdentity != latestSubtitlePlaybackIdentity.value ||
@@ -856,19 +1080,23 @@ fun PlayerScreen(
         // positionMs is refreshed on a UI ticker, so calculate the cue from the
         // player's live position. This matters after a seek and when tapping
         // through short subtitle cues quickly.
-        val currentSubtitlePositionMs = player.currentPosition
-            .coerceAtLeast(0L)
-            .saturatedMinus(subtitleOffsetMs)
-        val index = if (next) {
-            SubtitleCueIndex.nextCueIndex(track, currentSubtitlePositionMs)
-        } else {
-            SubtitleCueIndex.previousCueIndex(track, currentSubtitlePositionMs)
-        }
+        val currentSubtitlePositionMs =
+            player.currentPosition
+                .coerceAtLeast(0L)
+                .saturatedMinus(subtitleOffsetMs)
+        val index =
+            if (next) {
+                SubtitleCueIndex.nextCueIndex(track, currentSubtitlePositionMs)
+            } else {
+                SubtitleCueIndex.previousCueIndex(track, currentSubtitlePositionMs)
+            }
         val cue = index?.let(track.cues::getOrNull) ?: return
-        val target = SubtitleCueIndex.seekPositionMs(track, cue, durationMs)
-            .saturatedPlus(subtitleOffsetMs)
-            .coerceAtLeast(0L)
-            .let { if (durationMs > 0L) it.coerceAtMost(durationMs) else it }
+        val target =
+            SubtitleCueIndex
+                .seekPositionMs(track, cue, durationMs)
+                .saturatedPlus(subtitleOffsetMs)
+                .coerceAtLeast(0L)
+                .let { if (durationMs > 0L) it.coerceAtMost(durationMs) else it }
         seekToPosition(target)
     }
 
@@ -878,7 +1106,10 @@ fun PlayerScreen(
         showTracks = null
     }
 
-    fun setVolume(value: Float, persist: Boolean = false) {
+    fun setVolume(
+        value: Float,
+        persist: Boolean = false,
+    ) {
         volume = value.coerceIn(0f, 1f)
         player.volume = volume
         if (volume > 0f) lastNonMutedVolume = volume
@@ -891,77 +1122,99 @@ fun PlayerScreen(
     }
 
     BoxWithConstraints(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { showControls = !showControls }
-            .pointerInput(lookup != null || lookupMessage != null, playerRootCoordinates, subtitleCoordinates) {
-                if (lookup != null || lookupMessage != null) {
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val down = event.changes.firstOrNull { it.pressed && !it.previousPressed }
-                                ?: continue
-                            var movedBeyondSlop = false
+        modifier =
+            modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable(
+                    indication = null,
+                    interactionSource =
+                        remember {
+                            androidx.compose.foundation.interaction
+                                .MutableInteractionSource()
+                        },
+                ) {
+                    showControls =
+                        !showControls
+                }.pointerInput(lookup != null || lookupMessage != null, playerRootCoordinates, subtitleCoordinates) {
+                    if (lookup != null || lookupMessage != null) {
+                        awaitPointerEventScope {
                             while (true) {
-                                val change = awaitPointerEvent(PointerEventPass.Initial)
-                                    .changes.firstOrNull { it.id == down.id }
-                                    ?: break
-                                if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
-                                    movedBeyondSlop = true
-                                }
-                                if (!change.pressed) {
-                                    if (!movedBeyondSlop) {
-                                        val rootPosition = playerRootCoordinates?.localToRoot(change.position)
-                                        val tappedSubtitle = rootPosition != null &&
-                                            subtitleCoordinates?.boundsInRoot()?.contains(rootPosition) == true
-                                        if (!tappedSubtitle) dismissLookup()
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val down =
+                                    event.changes.firstOrNull { it.pressed && !it.previousPressed }
+                                        ?: continue
+                                var movedBeyondSlop = false
+                                while (true) {
+                                    val change =
+                                        awaitPointerEvent(PointerEventPass.Initial)
+                                            .changes
+                                            .firstOrNull { it.id == down.id }
+                                            ?: break
+                                    if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                                        movedBeyondSlop = true
                                     }
-                                    break
+                                    if (!change.pressed) {
+                                        if (!movedBeyondSlop) {
+                                            val rootPosition = playerRootCoordinates?.localToRoot(change.position)
+                                            val tappedSubtitle =
+                                                rootPosition != null &&
+                                                    subtitleCoordinates?.boundsInRoot()?.contains(rootPosition) == true
+                                            if (!tappedSubtitle) dismissLookup()
+                                        }
+                                        break
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }
-            .onGloballyPositioned { playerRootCoordinates = it },
+                }.onGloballyPositioned { playerRootCoordinates = it },
     ) {
         val pictureHeight = minOf(maxHeight, maxWidth / videoAspect.coerceAtLeast(0.1f))
         val pictureBottomInset = (maxHeight - pictureHeight) / 2
         val configuredSubtitleInset = with(LocalDensity.current) { subtitleBottom.toDp() }
-        val captionBottomInset = maxOf(
-            pictureBottomInset + configuredSubtitleInset.coerceAtMost(pictureHeight / 4),
-            if (showControls) 160.dp else 0.dp,
-        )
+        // The compact layout stacks transport and option controls, while the
+        // wide layout keeps them on one row. Keep captions just above either
+        // layout instead of applying the compact inset to both.
+        val controlsSubtitleInset = if (maxWidth >= 600.dp) 112.dp else 160.dp
+        val captionBottomInset =
+            maxOf(
+                pictureBottomInset + configuredSubtitleInset.coerceAtMost(pictureHeight / 4),
+                if (showControls) controlsSubtitleInset else 0.dp,
+            )
         val selectionHighlight = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-        val highlightedSubtitle = remember(subtitleText, lookup, lookupSourceText, selectionHighlight) {
-            buildAnnotatedString {
-                val match = lookup?.takeIf { lookupSourceText == subtitleText }
-                val start = match?.startUtf16Offset ?: -1
-                val end = match?.endUtf16Offset ?: -1
-                if (start in subtitleText.indices && end in (start + 1)..subtitleText.length) {
-                    append(subtitleText.substring(0, start))
-                    pushStyle(SpanStyle(background = selectionHighlight))
-                    append(subtitleText.substring(start, end))
-                    pop()
-                    append(subtitleText.substring(end))
-                } else {
-                    append(subtitleText)
+        val highlightedSubtitle =
+            remember(subtitleText, lookup, lookupSourceText, selectionHighlight) {
+                buildAnnotatedString {
+                    val match = lookup?.takeIf { lookupSourceText == subtitleText }
+                    val start = match?.startUtf16Offset ?: -1
+                    val end = match?.endUtf16Offset ?: -1
+                    if (start in subtitleText.indices && end in (start + 1)..subtitleText.length) {
+                        append(subtitleText.substring(0, start))
+                        pushStyle(SpanStyle(background = selectionHighlight))
+                        append(subtitleText.substring(start, end))
+                        pop()
+                        append(subtitleText.substring(end))
+                    } else {
+                        append(subtitleText)
+                    }
                 }
             }
-        }
         val density = LocalDensity.current
-        val subtitleShadow = remember(subtitleShadowStyle, density) {
-            subtitleShadowForStyle(subtitleShadowStyle, density)
-        }
+        val subtitleShadow =
+            remember(subtitleShadowStyle, density) {
+                subtitleShadowForStyle(subtitleShadowStyle, density)
+            }
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { viewContext ->
-                (LayoutInflater.from(viewContext).inflate(
-                    com.nekoplayer.app.R.layout.player_view,
-                    FrameLayout(viewContext),
-                    false,
-                ) as PlayerView).apply {
+                (
+                    LayoutInflater.from(viewContext).inflate(
+                        com.nekoplayer.app.R.layout.player_view,
+                        FrameLayout(viewContext),
+                        false,
+                    ) as PlayerView
+                ).apply {
                     useController = false
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     keepScreenOn = true
@@ -978,15 +1231,17 @@ fun PlayerScreen(
             Canvas(
                 Modifier.fillMaxSize().drawWithCache {
                     val center = Offset(size.width / 2f, size.height / 2f)
-                    val vignetteBrush = Brush.radialGradient(
-                        colorStops = arrayOf(
-                            0f to Color.Transparent,
-                            0.55f to Color.Transparent,
-                            1f to Color.Black.copy(alpha = subtitleVignette),
-                        ),
-                        center = center,
-                        radius = hypot(center.x, center.y).coerceAtLeast(1f),
-                    )
+                    val vignetteBrush =
+                        Brush.radialGradient(
+                            colorStops =
+                                arrayOf(
+                                    0f to Color.Transparent,
+                                    0.55f to Color.Transparent,
+                                    1f to Color.Black.copy(alpha = subtitleVignette),
+                                ),
+                            center = center,
+                            radius = hypot(center.x, center.y).coerceAtLeast(1f),
+                        )
                     onDrawBehind { drawRect(brush = vignetteBrush) }
                 },
             ) {}
@@ -994,20 +1249,22 @@ fun PlayerScreen(
         if (subtitleText.isNotBlank()) {
             SubtitleCaptionText(
                 text = highlightedSubtitle,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = captionBottomInset)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.Black.copy(alpha = subtitleAlpha.coerceIn(0f, 1f)))
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                modifier =
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 20.dp)
+                        .padding(bottom = captionBottomInset)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = subtitleAlpha.coerceIn(0f, 1f)))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
                 fontSize = subtitleFont.sp,
                 lineHeight = (subtitleFont * 1.25f).sp,
                 shadow = subtitleShadow,
                 outlineEnabled = subtitleOutlineEnabled,
-                foregroundModifier = Modifier
-                    .onGloballyPositioned { subtitleCoordinates = it }
-                    .pointerInput(subtitleText) { detectTapGestures { latestSubtitleTap.value(it) } },
+                foregroundModifier =
+                    Modifier
+                        .onGloballyPositioned { subtitleCoordinates = it }
+                        .pointerInput(subtitleText) { detectTapGestures { latestSubtitleTap.value(it) } },
                 onTextLayout = { subtitleLayout = it },
             )
         }
@@ -1086,8 +1343,18 @@ fun PlayerScreen(
                     Modifier.fillMaxWidth().background(PlayerOverlaySurface).padding(horizontal = 8.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = localizeUiText("Close player"), tint = PlayerOverlayText) }
-                    Text(displayName, Modifier.weight(1f), color = PlayerOverlayText, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    IconButton(
+                        onClick = onClose,
+                    ) { Icon(Icons.Default.Close, contentDescription = localizeUiText("Close player"), tint = PlayerOverlayText) }
+                    Text(
+                        displayName,
+                        Modifier.weight(1f),
+                        color = PlayerOverlayText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
                     Box {
                         IconButton(onClick = { showPlayerMenu = true }) {
                             Icon(Icons.Default.MoreVert, contentDescription = localizeUiText("Player options"), tint = PlayerOverlayText)
@@ -1114,21 +1381,48 @@ fun PlayerScreen(
                             HorizontalDivider()
                             DropdownMenuItem(
                                 text = { Text("Audio tracks", style = MaterialTheme.typography.bodyMedium) },
-                                onClick = { showPlayerMenu = false; showTracks = "audio" },
+                                onClick = {
+                                    showPlayerMenu = false
+                                    showTracks = "audio"
+                                },
                             )
                         }
                     }
                 }
                 Column(Modifier.fillMaxWidth().background(PlayerOverlaySurface).padding(horizontal = 12.dp, vertical = 4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(formatTime(if (seekDrag >= 0f) seekDrag.roundToLong() else positionMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            formatTime(
+                                if (seekDrag >=
+                                    0f
+                                ) {
+                                    seekDrag.roundToLong()
+                                } else {
+                                    positionMs
+                                },
+                            ),
+                            modifier = Modifier.width(44.dp),
+                            textAlign = TextAlign.Center,
+                            color = PlayerOverlayText,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                         Box(
-                            Modifier.weight(1f)
+                            Modifier
+                                .weight(1f)
                                 .padding(horizontal = 10.dp)
                                 .height(48.dp),
                         ) {
                             Slider(
-                                value = (if (seekDrag >= 0f) seekDrag else positionMs.toFloat()).coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
+                                value =
+                                    (
+                                        if (seekDrag >=
+                                            0f
+                                        ) {
+                                            seekDrag
+                                        } else {
+                                            positionMs.toFloat()
+                                        }
+                                    ).coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
                                 onValueChange = { seekDrag = it },
                                 onValueChangeFinished = {
                                     if (seekDrag >= 0f) seekToPosition(seekDrag.roundToLong())
@@ -1177,7 +1471,10 @@ fun PlayerScreen(
                                                         val tickCorner = CornerRadius(markerWidth / 2f, markerWidth / 2f)
                                                         if (playbackFraction <= startFraction) {
                                                             val startTickLeft =
-                                                                (startX - markerWidth / 2f).coerceIn(0f, (size.width - markerWidth).coerceAtLeast(0f))
+                                                                (startX - markerWidth / 2f).coerceIn(
+                                                                    0f,
+                                                                    (size.width - markerWidth).coerceAtLeast(0f),
+                                                                )
                                                             drawRoundRect(
                                                                 color = markerColor,
                                                                 topLeft = Offset(startTickLeft, tickTop),
@@ -1186,7 +1483,10 @@ fun PlayerScreen(
                                                             )
                                                         }
                                                         val endTickLeft =
-                                                            (endX - markerWidth / 2f).coerceIn(0f, (size.width - markerWidth).coerceAtLeast(0f))
+                                                            (endX - markerWidth / 2f).coerceIn(
+                                                                0f,
+                                                                (size.width - markerWidth).coerceAtLeast(0f),
+                                                            )
                                                         drawRoundRect(
                                                             color = markerColor,
                                                             topLeft = Offset(endTickLeft, tickTop),
@@ -1201,7 +1501,13 @@ fun PlayerScreen(
                                 },
                             )
                         }
-                        Text(formatTime(durationMs), modifier = Modifier.width(44.dp), textAlign = TextAlign.Center, color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            formatTime(durationMs),
+                            modifier = Modifier.width(44.dp),
+                            textAlign = TextAlign.Center,
+                            color = PlayerOverlayText,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
                         val volumeControls: @Composable () -> Unit = {
@@ -1228,28 +1534,49 @@ fun PlayerScreen(
                         val transportControls: @Composable () -> Unit = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { seekToPosition((player.currentPosition - 10_000L).coerceAtLeast(0L)) }) {
-                                    Icon(Icons.Default.Replay10, contentDescription = localizeUiText("Back 10 seconds"), tint = PlayerOverlayText)
+                                    Icon(
+                                        Icons.Default.Replay10,
+                                        contentDescription = localizeUiText("Back 10 seconds"),
+                                        tint = PlayerOverlayText,
+                                    )
                                 }
                                 IconButton(
                                     onClick = { seekSubtitleCue(next = false) },
                                     enabled = previousSubtitleCueIndex != null,
                                 ) {
-                                    Icon(Icons.Default.SkipPrevious, contentDescription = localizeUiText("Previous subtitle"), tint = PlayerOverlayText)
+                                    Icon(
+                                        Icons.Default.SkipPrevious,
+                                        contentDescription = localizeUiText("Previous subtitle"),
+                                        tint = PlayerOverlayText,
+                                    )
                                 }
                                 IconButton(onClick = {
                                     resumePlaybackAfterLookupDismiss = false
                                     if (player.isPlaying) player.pause() else player.play()
                                 }) {
-                                    Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = localizeUiText(if (playing) "Pause" else "Play"), tint = PlayerOverlayText, modifier = Modifier.size(28.dp))
+                                    Icon(
+                                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = localizeUiText(if (playing) "Pause" else "Play"),
+                                        tint = PlayerOverlayText,
+                                        modifier = Modifier.size(28.dp),
+                                    )
                                 }
                                 IconButton(
                                     onClick = { seekSubtitleCue(next = true) },
                                     enabled = nextSubtitleCueIndex != null,
                                 ) {
-                                    Icon(Icons.Default.SkipNext, contentDescription = localizeUiText("Next subtitle"), tint = PlayerOverlayText)
+                                    Icon(
+                                        Icons.Default.SkipNext,
+                                        contentDescription = localizeUiText("Next subtitle"),
+                                        tint = PlayerOverlayText,
+                                    )
                                 }
                                 IconButton(onClick = { seekToPosition((player.currentPosition + 10_000L).coerceAtMost(durationMs)) }) {
-                                    Icon(Icons.Default.Forward10, contentDescription = localizeUiText("Forward 10 seconds"), tint = PlayerOverlayText)
+                                    Icon(
+                                        Icons.Default.Forward10,
+                                        contentDescription = localizeUiText("Forward 10 seconds"),
+                                        tint = PlayerOverlayText,
+                                    )
                                 }
                             }
                         }
@@ -1260,7 +1587,13 @@ fun PlayerScreen(
                                     modifier = Modifier.width(58.dp).heightIn(min = 48.dp),
                                     contentPadding = PaddingValues(horizontal = 2.dp),
                                 ) {
-                                    Text("${selectedSpeed}×", color = PlayerOverlayText, style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false)
+                                    Text(
+                                        "$selectedSpeed×",
+                                        color = PlayerOverlayText,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
                                 }
                                 TextButton(
                                     onClick = {
@@ -1274,7 +1607,12 @@ fun PlayerScreen(
                                 ) {
                                     Text(
                                         "Sub ${formatSubtitleOffset(subtitleOffsetMs)}",
-                                        color = if (externalSubtitle != null) PlayerOverlayAccent else PlayerOverlayText.copy(alpha = 0.58f),
+                                        color =
+                                            if (externalSubtitle != null) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f)
+                                            },
                                         style = MaterialTheme.typography.labelSmall,
                                         maxLines = 1,
                                         softWrap = false,
@@ -1282,22 +1620,45 @@ fun PlayerScreen(
                                 }
                                 Box {
                                     IconButton(onClick = { showSubtitleMenu = true }) {
-                                        Icon(Icons.Default.Subtitles, contentDescription = localizeUiText("Subtitle options"), tint = PlayerOverlayText, modifier = Modifier.size(20.dp))
+                                        Icon(
+                                            Icons.Default.Subtitles,
+                                            contentDescription = localizeUiText("Subtitle options"),
+                                            tint = PlayerOverlayText,
+                                            modifier = Modifier.size(20.dp),
+                                        )
                                     }
                                     DropdownMenu(expanded = showSubtitleMenu, onDismissRequest = { showSubtitleMenu = false }) {
                                         DropdownMenuItem(
                                             text = { Text("Subtitle tracks", style = MaterialTheme.typography.bodyMedium) },
-                                            onClick = { showSubtitleMenu = false; showTracks = "subtitle" },
+                                            onClick = {
+                                                showSubtitleMenu = false
+                                                showTracks = "subtitle"
+                                            },
                                         )
                                         DropdownMenuItem(
-                                            text = { Text(if (useExternalSubtitle || embeddedSubtitlesEnabled) "Turn subtitles off" else "Turn subtitles on") },
+                                            text = {
+                                                Text(
+                                                    if (useExternalSubtitle ||
+                                                        embeddedSubtitlesEnabled
+                                                    ) {
+                                                        "Turn subtitles off"
+                                                    } else {
+                                                        "Turn subtitles on"
+                                                    },
+                                                )
+                                            },
                                             onClick = {
                                                 if (useExternalSubtitle || embeddedSubtitlesEnabled) {
                                                     useExternalSubtitle = false
                                                     toggleEmbeddedSubtitles(false)
                                                 } else {
-                                                    if (preferExternalSubtitles && selectedExternalTrack != null) applyExternalSubtitle(selectedExternalTrack)
-                                                    else toggleEmbeddedSubtitles(true)
+                                                    if (preferExternalSubtitles &&
+                                                        selectedExternalTrack != null
+                                                    ) {
+                                                        applyExternalSubtitle(selectedExternalTrack)
+                                                    } else {
+                                                        toggleEmbeddedSubtitles(true)
+                                                    }
                                                 }
                                                 showSubtitleMenu = false
                                             },
@@ -1305,7 +1666,10 @@ fun PlayerScreen(
                                         selectedExternalTrack?.takeIf { it.source == SubtitleTrackSource.MANUAL }?.let { track ->
                                             DropdownMenuItem(
                                                 text = { Text("Remove ${track.name}") },
-                                                onClick = { removeExternalSubtitle(track); showSubtitleMenu = false },
+                                                onClick = {
+                                                    removeExternalSubtitle(track)
+                                                    showSubtitleMenu = false
+                                                },
                                             )
                                         }
                                     }
@@ -1345,16 +1709,18 @@ fun PlayerScreen(
             title = { Text("Subtitle timing") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(formatSubtitleOffset(subtitleOffsetDraft), style = MaterialTheme.typography.titleMedium)
-                    Slider(
+                    SettingSlider(
+                        label = "Offset",
+                        valueLabel = formatSubtitleOffset(subtitleOffsetDraft),
                         value = subtitleOffsetDraft.coerceIn(-10_000L, 10_000L).toFloat(),
-                        onValueChange = { value ->
-                            val snapped = ((value / 100f).roundToInt() * 100L).coerceIn(-10_000L, 10_000L)
+                        range = -10_000f..10_000f,
+                        onChange = { value ->
+                            val snapped = value.roundToInt().toLong()
                             subtitleOffsetDraft = snapped
                             subtitleOffsetInput = snapped.toString()
                         },
-                        valueRange = -10_000f..10_000f,
-                        modifier = Modifier.padding(horizontal = 10.dp),
+                        snapStep = 100f,
+                        onFinished = {},
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("−10 s", style = MaterialTheme.typography.labelSmall)
@@ -1398,36 +1764,45 @@ fun PlayerScreen(
 
     showTracks?.let { kind ->
         when (kind) {
-            "speed" -> AlertDialog(
-                onDismissRequest = { showTracks = null },
-                title = { Text("Playback speed") },
-                text = {
-                    Column {
-                        listOf(0.5f, 0.75f, 1f, 1.5f, 2f).forEach { speed ->
-                            TextButton(onClick = { setSpeed(speed) }, modifier = Modifier.fillMaxWidth()) {
-                                Text(if (speed == selectedSpeed) "✓  ${speed}×" else "${speed}×", modifier = Modifier.fillMaxWidth())
+            "speed" -> {
+                AlertDialog(
+                    onDismissRequest = { showTracks = null },
+                    title = { Text("Playback speed") },
+                    text = {
+                        Column {
+                            listOf(0.5f, 0.75f, 1f, 1.5f, 2f).forEach { speed ->
+                                TextButton(onClick = { setSpeed(speed) }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(if (speed == selectedSpeed) "✓  $speed×" else "$speed×", modifier = Modifier.fillMaxWidth())
+                                }
                             }
                         }
-                    }
-                },
-                confirmButton = { TextButton(onClick = { showTracks = null }) { Text("Done") } },
-            )
-            else -> TrackDialog(
-                title = if (kind == "audio") "Audio tracks" else "Subtitle tracks",
-                tracks = player.currentTracks,
-                kind = kind,
-                externalTracks = externalSubtitleTracks,
-                selectedExternalTrackId = selectedExternalTrack?.id.takeIf { useExternalSubtitle },
-                useExternal = useExternalSubtitle,
-                embeddedEnabled = embeddedSubtitlesEnabled,
-                onExternal = { track ->
-                    applyExternalSubtitle(track)
-                    showTracks = null
-                },
-                onSelect = { type, group, index -> selectTrack(type, group, index) },
-                onOff = { useExternalSubtitle = false; toggleEmbeddedSubtitles(false); showTracks = null },
-                onDismiss = { showTracks = null },
-            )
+                    },
+                    confirmButton = { TextButton(onClick = { showTracks = null }) { Text("Done") } },
+                )
+            }
+
+            else -> {
+                TrackDialog(
+                    title = if (kind == "audio") "Audio tracks" else "Subtitle tracks",
+                    tracks = player.currentTracks,
+                    kind = kind,
+                    externalTracks = externalSubtitleTracks,
+                    selectedExternalTrackId = selectedExternalTrack?.id.takeIf { useExternalSubtitle },
+                    useExternal = useExternalSubtitle,
+                    embeddedEnabled = embeddedSubtitlesEnabled,
+                    onExternal = { track ->
+                        applyExternalSubtitle(track)
+                        showTracks = null
+                    },
+                    onSelect = { type, group, index -> selectTrack(type, group, index) },
+                    onOff = {
+                        useExternalSubtitle = false
+                        toggleEmbeddedSubtitles(false)
+                        showTracks = null
+                    },
+                    onDismiss = { showTracks = null },
+                )
+            }
         }
     }
 
@@ -1450,22 +1825,27 @@ fun PlayerScreen(
                     val mineRequestId = lookupRequestId
                     val sentence = subtitleText
                     val externalOffsetMs = externalSubtitle?.offsetMs ?: 0L
-                    val cueStart = activeSubtitleCues.minOfOrNull { it.startMs }
-                        ?.saturatedPlus(externalOffsetMs)
-                        ?.saturatedPlus(subtitleOffsetMs)
-                        ?.coerceAtLeast(0L)
-                        ?: positionMs
-                    val cueEnd = activeSubtitleCues.maxOfOrNull { it.endMs }
-                        ?.saturatedPlus(externalOffsetMs)
-                        ?.saturatedPlus(subtitleOffsetMs)
-                        ?.coerceAtLeast(cueStart)
-                        ?: cueStart.saturatedPlus(1_500L)
+                    val cueStart =
+                        activeSubtitleCues
+                            .minOfOrNull { it.startMs }
+                            ?.saturatedPlus(externalOffsetMs)
+                            ?.saturatedPlus(subtitleOffsetMs)
+                            ?.coerceAtLeast(0L)
+                            ?: positionMs
+                    val cueEnd =
+                        activeSubtitleCues
+                            .maxOfOrNull { it.endMs }
+                            ?.saturatedPlus(externalOffsetMs)
+                            ?.saturatedPlus(subtitleOffsetMs)
+                            ?.coerceAtLeast(cueStart)
+                            ?: cueStart.saturatedPlus(1_500L)
                     val related = lookupResult.entries + lookupResult.relatedEntries
                     val allEntries = (listOf(entry) + related).distinctBy { it.dictionaryId to it.id }
-                    val sourceCapture = sourceProgressIdentity != null ||
-                        uri.scheme.equals("http", ignoreCase = true) ||
-                        uri.scheme.equals("https", ignoreCase = true) ||
-                        requestHeaders.isNotEmpty()
+                    val sourceCapture =
+                        sourceProgressIdentity != null ||
+                            uri.scheme.equals("http", ignoreCase = true) ||
+                            uri.scheme.equals("https", ignoreCase = true) ||
+                            requestHeaders.isNotEmpty()
                     val captureDurationMs = durationMs.takeIf { it > 0L }
 
                     activity.miningScope.launch {
@@ -1474,28 +1854,31 @@ fun PlayerScreen(
                                 onNotify("Select a subtitle cue before mining a card.")
                                 return@launch
                             }
-                            val permission = try {
-                                awaitAnkiWritePermission(anki)
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (error: Exception) {
-                                onNotify(
-                                    error.message?.takeIf(String::isNotBlank)
-                                        ?: "AnkiDroid access could not be requested.",
-                                )
-                                return@launch
-                            }
+                            val permission =
+                                try {
+                                    awaitAnkiWritePermission(anki)
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (error: Exception) {
+                                    onNotify(
+                                        error.message?.takeIf(String::isNotBlank)
+                                            ?: "AnkiDroid access could not be requested.",
+                                    )
+                                    return@launch
+                                }
                             if (!permission) {
                                 onNotify("AnkiDroid access was denied.")
                                 return@launch
                             }
 
-                            val pronunciation = pronunciationClient.resolve(
-                                entry,
-                                destinationField = "Pronunciation Audio",
-                            )
-                            val sourceEpisodeName = subtitleEpisodeName?.takeIf(String::isNotBlank)
-                                ?: sourceProgressIdentity?.episodeName?.takeIf(String::isNotBlank)
+                            val pronunciation =
+                                pronunciationClient.resolve(
+                                    entry,
+                                    destinationField = "Pronunciation Audio",
+                                )
+                            val sourceEpisodeName =
+                                subtitleEpisodeName?.takeIf(String::isNotBlank)
+                                    ?: sourceProgressIdentity?.episodeName?.takeIf(String::isNotBlank)
                             val sourceEpisodeNumber = subtitleEpisodeNumber ?: sourceProgressIdentity?.episodeNumber
                             AnkiDroidMiningWorkflow(context, database, anki, dictionaries = dictionaries).mine(
                                 uri = uri,
@@ -1506,32 +1889,39 @@ fun PlayerScreen(
                                 allEntries = allEntries,
                                 metadata = pageMetadata,
                                 surfaceText = lookupResult.surfaceText,
-                                info = formatAnkiInfo(
-                                    displayName = displayName,
-                                    seriesTitle = seriesTitle,
-                                    alternateSeriesTitle = alternateSeriesTitle,
-                                    episodeName = sourceEpisodeName,
-                                    episodeNumber = sourceEpisodeNumber,
-                                ),
+                                info =
+                                    formatAnkiInfo(
+                                        displayName = displayName,
+                                        seriesTitle = seriesTitle,
+                                        alternateSeriesTitle = alternateSeriesTitle,
+                                        episodeName = sourceEpisodeName,
+                                        episodeNumber = sourceEpisodeNumber,
+                                    ),
                                 pronunciationAttachment = pronunciation?.attachment,
                                 mediaDurationMs = captureDurationMs,
                                 requestHeaders = requestHeaders,
                                 playbackAudioCapture = playbackAudioCapture,
-                                renderedFrameProvider = if (sourceCapture) {
-                                    {
-                                        withContext(Dispatchers.Main.immediate) {
-                                            if (playerScreenActive.get()) {
-                                                (playerView.value?.videoSurfaceView as? TextureView)?.bitmap
-                                            } else {
-                                                null
+                                renderedFrameProvider =
+                                    if (sourceCapture) {
+                                        {
+                                            withContext(Dispatchers.Main.immediate) {
+                                                if (playerScreenActive.get()) {
+                                                    (playerView.value?.videoSurfaceView as? TextureView)?.bitmap
+                                                } else {
+                                                    null
+                                                }
                                             }
                                         }
-                                    }
-                                } else {
-                                    null
-                                },
+                                    } else {
+                                        null
+                                    },
                                 preferPlaybackCapture = sourceCapture,
                             )
+                            sourceProgressIdentity?.let { identity ->
+                                withContext(Dispatchers.IO) {
+                                    database.recordAnimeCardAdded(identity)
+                                }
+                            }
 
                             miningSuccessVersion++
                             if (mineRequestId == lookupRequestId) {
@@ -1555,7 +1945,7 @@ fun PlayerScreen(
                         }
                     }
                 }
-            }
+            },
         )
     }
 
@@ -1583,9 +1973,10 @@ fun PlayerScreen(
             contentAlignment = Alignment.TopCenter,
         ) {
             Surface(
-                modifier = Modifier
-                    .padding(top = 28.dp)
-                    .semantics { liveRegion = LiveRegionMode.Polite },
+                modifier =
+                    Modifier
+                        .padding(top = 28.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
                 shape = RoundedCornerShape(50),
                 color = MaterialTheme.colorScheme.inverseSurface,
                 contentColor = MaterialTheme.colorScheme.inverseOnSurface,
@@ -1597,10 +1988,11 @@ fun PlayerScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary),
+                        modifier =
+                            Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary),
                         contentAlignment = Alignment.Center,
                     ) {
                         Material3Text(
@@ -1625,8 +2017,11 @@ private fun formatTime(timeMs: Long): String {
     val seconds = totalSeconds % 60
     val minutes = (totalSeconds / 60) % 60
     val hours = totalSeconds / 3600
-    return if (hours > 0) String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
-    else String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
+    return if (hours > 0) {
+        String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
+    }
 }
 
 private suspend fun awaitAnkiWritePermission(anki: AnkiDroidClient): Boolean =

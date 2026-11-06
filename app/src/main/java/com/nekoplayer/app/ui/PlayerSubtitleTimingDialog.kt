@@ -4,11 +4,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -33,15 +31,17 @@ internal fun PlayerSubtitleTimingDialog(
         title = { Text("Subtitle timing") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(formatSubtitleOffset(offsetDraft), style = MaterialTheme.typography.titleMedium)
-                Slider(
+                SettingSlider(
+                    label = "Offset",
+                    valueLabel = formatSubtitleOffset(offsetDraft),
                     value = offsetDraft.coerceIn(-10_000L, 10_000L).toFloat(),
-                    onValueChange = { value ->
-                        val snapped = ((value / 100f).roundToInt() * 100L).coerceIn(-10_000L, 10_000L)
+                    range = -10_000f..10_000f,
+                    onChange = { value ->
+                        val snapped = value.roundToInt().toLong()
                         onOffsetChange(snapped, snapped.toString())
                     },
-                    valueRange = -10_000f..10_000f,
-                    modifier = Modifier.padding(horizontal = 10.dp),
+                    snapStep = 100f,
+                    onFinished = {},
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("−10 s", style = MaterialTheme.typography.labelSmall)

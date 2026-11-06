@@ -3,7 +3,6 @@ package com.nekoplayer.app.ui
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.LruCache
-
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,7 +49,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -61,21 +60,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-
+import androidx.compose.ui.unit.sp
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.library.AniListAiringEpisode
 import com.nekoplayer.app.library.AniListClient
 import com.nekoplayer.app.library.AnimeLibraryEpisode
-
-import java.net.URL
-
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.net.URL
+import androidx.compose.material3.Text as Material3Text
 
 @Composable
 internal fun EmptyLibraryCard(
@@ -169,21 +168,25 @@ internal fun ShowDetailScreen(
                 }
             }
         }
+
         fun openEpisodeAt(index: Int) {
             val episode = episodes.getOrNull(index) ?: return
-            val nextEpisode = if (index < episodes.lastIndex) {
-                { onFinished: (Boolean) -> Unit ->
-                    openEpisodeAt(index + 1)
-                    onFinished(true)
+            val nextEpisode =
+                if (index < episodes.lastIndex) {
+                    { onFinished: (Boolean) -> Unit ->
+                        openEpisodeAt(index + 1)
+                        onFinished(true)
+                    }
+                } else {
+                    null
                 }
-            } else {
-                null
-            }
             onOpenVideo(episode, nextEpisode)
         }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
+            contentPadding =
+                androidx.compose.foundation.layout
+                    .PaddingValues(bottom = 24.dp),
         ) {
             items(episodes, key = { it.uri.toString() }) { episode ->
                 val saved = recent.firstOrNull { it.uri == episode.uri.toString() }
@@ -223,12 +226,20 @@ internal fun GroupAssignmentMenuItems(
                         )
                         Icon(
                             if (assigned) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
-                            contentDescription = localizeUiText(
-                                if (assigned) "Remove $groupName from this title"
-                                else "Add this title to $groupName",
-                            ),
-                            tint = if (assigned) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            contentDescription =
+                                localizeUiText(
+                                    if (assigned) {
+                                        "Remove $groupName from this title"
+                                    } else {
+                                        "Add this title to $groupName"
+                                    },
+                                ),
+                            tint =
+                                if (assigned) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -269,47 +280,66 @@ internal fun ShowCard(
     onRemoveCover: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val coverKey = remember(showName, coverSource, episodeNames) {
-        coverCacheKey(coverSource, showName, episodeNames)
-    }
+    val coverKey =
+        remember(showName, coverSource, episodeNames) {
+            coverCacheKey(coverSource, showName, episodeNames)
+        }
     var loadedBitmap by remember(coverKey) { mutableStateOf(artworkCache[coverKey]) }
     LaunchedEffect(coverKey) {
         if (loadedBitmap == null) {
-            loadedBitmap = withContext(Dispatchers.IO) {
-                loadCachedCover(context, coverSource, client, showName, episodeNames, artworkCache)
-            }
+            loadedBitmap =
+                withContext(Dispatchers.IO) {
+                    loadCachedCover(context, coverSource, client, showName, episodeNames, artworkCache)
+                }
         }
     }
     val imageBitmap = remember(loadedBitmap) { loadedBitmap?.asImageBitmap() }
     val cardShape = RoundedCornerShape(16.dp)
     Column(
-        modifier.fillMaxWidth()
+        modifier
+            .fillMaxWidth()
             .clip(cardShape)
             .then(
-                if (selected) Modifier.background(
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                    cardShape,
-                ) else Modifier,
-            )
-            .then(
-                if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
-                else Modifier,
-            )
-            .combinedClickable(
+                if (selected) {
+                    Modifier.background(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        cardShape,
+                    )
+                } else {
+                    Modifier
+                },
+            ).then(
+                if (selected) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
+                } else {
+                    Modifier
+                },
+            ).combinedClickable(
                 onClick = if (selectionMode) onToggleSelected else onToggle,
                 onLongClick = onLongPress,
             ),
     ) {
         Box(
-            Modifier.fillMaxWidth()
+            Modifier
+                .fillMaxWidth()
                 .clip(cardShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
             if (imageBitmap != null) {
-                Image(imageBitmap, contentDescription = localizeUiText("$showName artwork"), modifier = Modifier.fillMaxWidth().aspectRatio(0.78f), contentScale = ContentScale.Crop)
+                Image(
+                    imageBitmap,
+                    contentDescription = localizeUiText("$showName artwork"),
+                    modifier = Modifier.fillMaxWidth().aspectRatio(0.78f),
+                    contentScale = ContentScale.Crop,
+                )
             } else {
                 Box(Modifier.fillMaxWidth().aspectRatio(0.78f), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.VideoLibrary, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp))
+                    Icon(
+                        Icons.Default.VideoLibrary,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(42.dp),
+                    )
                 }
             }
             if (newEpisodeAvailable) {
@@ -324,18 +354,24 @@ internal fun ShowCard(
                     modifier = Modifier.align(Alignment.TopEnd),
                 ) {
                     Box(
-                        Modifier.size(32.dp)
+                        Modifier
+                            .size(32.dp)
                             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             if (selected) Icons.Default.CheckCircle else Icons.Default.CheckBoxOutlineBlank,
-                            contentDescription = localizeUiText(
-                                if (selected) "Deselect $showName" else "Select $showName",
-                            ),
+                            contentDescription =
+                                localizeUiText(
+                                    if (selected) "Deselect $showName" else "Select $showName",
+                                ),
                             modifier = Modifier.size(18.dp),
-                            tint = if (selected) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface,
+                            tint =
+                                if (selected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
                         )
                     }
                 }
@@ -356,15 +392,40 @@ internal fun ShowCard(
                             onToggleGroup = onToggleGroup,
                             onDismissMenu = onDismissMenu,
                         )
-                        DropdownMenuItem(text = { Text("Set image URL") }, onClick = { onDismissMenu(); onSetUrl() })
-                        DropdownMenuItem(text = { Text("Choose local image") }, onClick = { onDismissMenu(); onPickLocal() })
-                        if (coverSource != null) DropdownMenuItem(text = { Text("Use AniList artwork") }, onClick = { onDismissMenu(); onRemoveCover() })
+                        DropdownMenuItem(text = { Text("Set image URL") }, onClick = {
+                            onDismissMenu()
+                            onSetUrl()
+                        })
+                        DropdownMenuItem(text = { Text("Choose local image") }, onClick = {
+                            onDismissMenu()
+                            onPickLocal()
+                        })
+                        if (coverSource !=
+                            null
+                        ) {
+                            DropdownMenuItem(text = { Text("Use AniList artwork") }, onClick = {
+                                onDismissMenu()
+                                onRemoveCover()
+                            })
+                        }
                     }
                 }
             }
         }
-        Material3Text(showName, Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text("$episodeCount episodes", Modifier.padding(start = 2.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Material3Text(
+            showName,
+            Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            "$episodeCount episodes",
+            Modifier.padding(start = 2.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         subtitleStatus?.let { status ->
             SubtitleAvailabilityBadge(status, Modifier.padding(top = 4.dp, start = 2.dp))
         }
@@ -392,40 +453,49 @@ internal fun SourceLibraryCard(
     onToggleSelected: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val coverKey = remember(entry.key, entry.thumbnailUrl) {
-        coverCacheKey(entry.thumbnailUrl, entry.title, emptyList())
-    }
+    val coverKey =
+        remember(entry.key, entry.thumbnailUrl) {
+            coverCacheKey(entry.thumbnailUrl, entry.title, emptyList())
+        }
     var loadedBitmap by remember(coverKey) { mutableStateOf(artworkCache[coverKey]) }
     LaunchedEffect(coverKey) {
         if (loadedBitmap == null) {
-            loadedBitmap = withContext(Dispatchers.IO) {
-                loadCachedCover(context, entry.thumbnailUrl, client, entry.title, emptyList(), artworkCache)
-            }
+            loadedBitmap =
+                withContext(Dispatchers.IO) {
+                    loadCachedCover(context, entry.thumbnailUrl, client, entry.title, emptyList(), artworkCache)
+                }
         }
     }
     val imageBitmap = remember(loadedBitmap) { loadedBitmap?.asImageBitmap() }
 
     val cardShape = RoundedCornerShape(16.dp)
     Column(
-        modifier.fillMaxWidth()
+        modifier
+            .fillMaxWidth()
             .clip(cardShape)
             .then(
-                if (selected) Modifier.background(
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                    cardShape,
-                ) else Modifier,
-            )
-            .then(
-                if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
-                else Modifier,
-            )
-            .combinedClickable(
+                if (selected) {
+                    Modifier.background(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        cardShape,
+                    )
+                } else {
+                    Modifier
+                },
+            ).then(
+                if (selected) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, cardShape)
+                } else {
+                    Modifier
+                },
+            ).combinedClickable(
                 onClick = if (selectionMode) onToggleSelected else onOpen,
                 onLongClick = onLongPress,
             ),
     ) {
         Box(
-            Modifier.fillMaxWidth()
+            Modifier
+                .fillMaxWidth()
                 .aspectRatio(0.78f)
                 .clip(cardShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
@@ -458,7 +528,8 @@ internal fun SourceLibraryCard(
                     modifier = Modifier.align(Alignment.TopEnd),
                 ) {
                     Box(
-                        Modifier.size(32.dp)
+                        Modifier
+                            .size(32.dp)
                             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -476,7 +547,8 @@ internal fun SourceLibraryCard(
                         onClick = onMenu,
                     ) {
                         Box(
-                            Modifier.size(32.dp)
+                            Modifier
+                                .size(32.dp)
                                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -533,9 +605,13 @@ internal fun SourceLibraryCard(
 }
 
 @Composable
-private fun NewEpisodeIndicator(title: String, modifier: Modifier = Modifier) {
+private fun NewEpisodeIndicator(
+    title: String,
+    modifier: Modifier = Modifier,
+) {
     Box(
-        modifier.size(36.dp)
+        modifier
+            .size(36.dp)
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f), CircleShape),
         contentAlignment = Alignment.Center,
     ) {
@@ -546,7 +622,8 @@ private fun NewEpisodeIndicator(title: String, modifier: Modifier = Modifier) {
             tint = MaterialTheme.colorScheme.primary,
         )
         Box(
-            Modifier.align(Alignment.TopEnd)
+            Modifier
+                .align(Alignment.TopEnd)
                 .padding(2.dp)
                 .size(9.dp)
                 .background(MaterialTheme.colorScheme.error, CircleShape)
@@ -556,64 +633,145 @@ private fun NewEpisodeIndicator(title: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun SubtitleAvailabilityBadge(status: LibrarySubtitleStatus, modifier: Modifier = Modifier) {
-    val label = when (status.state) {
-        LibrarySubtitleState.AVAILABLE -> "Subs ${status.episodeNumber}/${status.episodeNumber}"
-        LibrarySubtitleState.MISSING -> "Subs ${(status.latestAvailableEpisode ?: 0).coerceAtMost(status.episodeNumber)}/${status.episodeNumber}"
-        LibrarySubtitleState.NO_MATCH -> "No Jimaku match"
-        LibrarySubtitleState.CHECKING -> "Checking EP${status.episodeNumber}"
-        LibrarySubtitleState.RATE_LIMITED -> "Rate limited"
-        LibrarySubtitleState.ERROR -> Regex("""HTTP\s+\d{3}""", RegexOption.IGNORE_CASE)
-            .find(status.errorMessage.orEmpty())?.value?.uppercase()
-            ?: if (status.errorMessage.orEmpty().contains("connection", ignoreCase = true)) "Offline" else status.state.label
-        else -> status.state.label
-    }
-    val earlierSubsFound = status.state == LibrarySubtitleState.MISSING && status.latestAvailableEpisode != null
-    val hasAvailableSubtitles = status.state == LibrarySubtitleState.AVAILABLE || earlierSubsFound
-    val icon = when (status.state) {
-        LibrarySubtitleState.AVAILABLE -> Icons.Default.CheckCircle
-        LibrarySubtitleState.MISSING -> if (earlierSubsFound) Icons.Default.CheckCircle else Icons.Default.Close
-        LibrarySubtitleState.MATCHING,
-        LibrarySubtitleState.CHECKING -> Icons.Default.Schedule
-        LibrarySubtitleState.NO_MATCH,
-        LibrarySubtitleState.ANI_LIST_ERROR,
-        LibrarySubtitleState.KEY_REQUIRED,
-        LibrarySubtitleState.KEY_REJECTED,
-        LibrarySubtitleState.RATE_LIMITED,
-        LibrarySubtitleState.ERROR -> Icons.Default.Info
-    }
-    val tint = when (status.state) {
-        LibrarySubtitleState.MATCHING,
-        LibrarySubtitleState.AVAILABLE,
-        LibrarySubtitleState.CHECKING -> MaterialTheme.colorScheme.primary
-        LibrarySubtitleState.MISSING -> if (earlierSubsFound) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.onSurfaceVariant
-        LibrarySubtitleState.ANI_LIST_ERROR,
-        LibrarySubtitleState.KEY_REJECTED,
-        LibrarySubtitleState.RATE_LIMITED,
-        LibrarySubtitleState.ERROR -> MaterialTheme.colorScheme.error
-        LibrarySubtitleState.NO_MATCH,
-        LibrarySubtitleState.KEY_REQUIRED -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
+private fun SubtitleAvailabilityBadge(
+    status: LibrarySubtitleStatus,
+    modifier: Modifier = Modifier,
+) {
+    val label =
+        when (status.state) {
+            LibrarySubtitleState.AVAILABLE -> {
+                "Subs ${status.episodeNumber}/${status.episodeNumber}"
+            }
+
+            LibrarySubtitleState.MISSING -> {
+                status.latestAvailableEpisode
+                    ?.takeIf { it > 0 }
+                    ?.let { "Subs ${it.coerceAtMost(status.episodeNumber)}/${status.episodeNumber}" }
+                    ?: "No subs"
+            }
+
+            LibrarySubtitleState.NO_MATCH -> {
+                "No subs"
+            }
+
+            LibrarySubtitleState.CHECKING -> {
+                "Checking EP${status.episodeNumber}"
+            }
+
+            LibrarySubtitleState.RATE_LIMITED -> {
+                "Rate limited"
+            }
+
+            LibrarySubtitleState.ERROR -> {
+                Regex("""HTTP\s+\d{3}""", RegexOption.IGNORE_CASE)
+                    .find(status.errorMessage.orEmpty())
+                    ?.value
+                    ?.uppercase()
+                    ?: if (status.errorMessage.orEmpty().contains("connection", ignoreCase = true)) "Offline" else status.state.label
+            }
+
+            else -> {
+                status.state.label
+            }
+        }
+    val earlierSubsFound =
+        status.state == LibrarySubtitleState.MISSING &&
+            status.latestAvailableEpisode != null && status.latestAvailableEpisode < status.episodeNumber
+    val hasAvailableSubtitles = status.state == LibrarySubtitleState.AVAILABLE
+    val noSubtitles =
+        status.state == LibrarySubtitleState.NO_MATCH ||
+            (status.state == LibrarySubtitleState.MISSING && !earlierSubsFound)
+    val icon =
+        when (status.state) {
+            LibrarySubtitleState.AVAILABLE -> Icons.Default.CheckCircle
+
+            LibrarySubtitleState.MISSING,
+            LibrarySubtitleState.NO_MATCH,
+            -> Icons.Default.Close
+
+            LibrarySubtitleState.MATCHING,
+            LibrarySubtitleState.CHECKING,
+            -> Icons.Default.Schedule
+
+            LibrarySubtitleState.ANI_LIST_ERROR,
+            LibrarySubtitleState.KEY_REQUIRED,
+            LibrarySubtitleState.KEY_REJECTED,
+            LibrarySubtitleState.RATE_LIMITED,
+            LibrarySubtitleState.ERROR,
+            -> Icons.Default.Info
+        }
+    val tint =
+        when (status.state) {
+            LibrarySubtitleState.MATCHING,
+            LibrarySubtitleState.AVAILABLE,
+            LibrarySubtitleState.CHECKING,
+            -> {
+                MaterialTheme.colorScheme.primary
+            }
+
+            LibrarySubtitleState.MISSING -> {
+                if (earlierSubsFound) {
+                    Color(0xFFFFC857)
+                } else {
+                    MaterialTheme.colorScheme.error
+                }
+            }
+
+            LibrarySubtitleState.NO_MATCH -> {
+                MaterialTheme.colorScheme.error
+            }
+
+            LibrarySubtitleState.ANI_LIST_ERROR,
+            LibrarySubtitleState.KEY_REJECTED,
+            LibrarySubtitleState.RATE_LIMITED,
+            LibrarySubtitleState.ERROR,
+            -> {
+                MaterialTheme.colorScheme.error
+            }
+
+            LibrarySubtitleState.KEY_REQUIRED -> {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        }
     Row(
-        modifier = modifier
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-            .padding(horizontal = 8.dp, vertical = 5.dp),
+        modifier =
+            modifier
+                .offset(y = (-0.5).dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+                .padding(horizontal = 8.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (hasAvailableSubtitles) {
+        if (hasAvailableSubtitles || earlierSubsFound || noSubtitles) {
             Box(
                 Modifier.size(14.dp).background(tint, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = null,
-                    modifier = Modifier.size(9.dp),
-                    tint = MaterialTheme.colorScheme.surface,
-                )
+                if (hasAvailableSubtitles) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(9.dp).offset(y = (-0.25).dp),
+                        tint = MaterialTheme.colorScheme.surface,
+                    )
+                } else if (earlierSubsFound) {
+                    Material3Text(
+                        "−",
+                        color = Color(0xFF302400),
+                        fontSize = 12.sp,
+                        lineHeight = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                if (noSubtitles) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(9.dp).offset(y = (-0.5).dp),
+                        tint = MaterialTheme.colorScheme.onError,
+                    )
+                }
             }
         } else {
             Icon(
@@ -632,16 +790,36 @@ private fun SubtitleAvailabilityBadge(status: LibrarySubtitleStatus, modifier: M
 }
 
 @Composable
-private fun EpisodeRow(episode: AnimeLibraryEpisode, saved: AppDatabase.RecentMedia?, onClick: () -> Unit) {
+private fun EpisodeRow(
+    episode: AnimeLibraryEpisode,
+    saved: AppDatabase.RecentMedia?,
+    onClick: () -> Unit,
+) {
     val progress = saved?.durationMs?.takeIf { it > 0 }?.let { (saved.positionMs.toFloat() / it).coerceIn(0f, 1f) }
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(7.dp))
         Column(Modifier.weight(1f)) {
             Material3Text(episode.displayName, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
             if (progress != null) LinearProgressIndicator(progress = { progress }, Modifier.fillMaxWidth().padding(top = 4.dp))
         }
-        if ((saved != null) && (saved.positionMs > 0)) Text(formatTime(saved.positionMs), Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if ((saved != null) &&
+            (saved.positionMs > 0)
+        ) {
+            Text(
+                formatTime(saved.positionMs),
+                Modifier.padding(start = 8.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

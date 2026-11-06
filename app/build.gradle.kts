@@ -6,18 +6,20 @@ plugins {
 }
 
 val releaseSigningPropertiesFile = rootProject.file("keystore.properties")
-val releaseSigningProperties = Properties().apply {
-    if (releaseSigningPropertiesFile.isFile) {
-        releaseSigningPropertiesFile.inputStream().use { load(it) }
+val releaseSigningProperties =
+    Properties().apply {
+        if (releaseSigningPropertiesFile.isFile) {
+            releaseSigningPropertiesFile.inputStream().use { load(it) }
+        }
     }
-}
 val releaseKeystorePath = releaseSigningProperties.getProperty("storeFile")?.takeIf(String::isNotBlank)
 val releaseKeystoreFile = releaseKeystorePath?.let(rootProject::file)
 val releaseStorePassword = releaseSigningProperties.getProperty("storePassword")?.takeIf(String::isNotBlank)
 val releaseKeyAlias = releaseSigningProperties.getProperty("keyAlias")?.takeIf(String::isNotBlank)
 val releaseKeyPassword = releaseSigningProperties.getProperty("keyPassword")?.takeIf(String::isNotBlank)
-val releaseSigningReady = releaseKeystoreFile?.isFile == true &&
-    releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
+val releaseSigningReady =
+    releaseKeystoreFile?.isFile == true &&
+        releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
 
 android {
     namespace = "com.nekoplayer.app"
@@ -28,8 +30,8 @@ android {
         applicationId = "com.nekoplayer.app"
         minSdk = 23
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.5.3"
+        versionCode = 14
+        versionName = "0.6.0"
 
         externalNativeBuild {
             cmake {
@@ -78,23 +80,25 @@ android {
     }
 }
 
-val validateReleaseSigning = tasks.register("validateReleaseSigning") {
-    group = "verification"
-    doLast {
-        if (!releaseSigningReady) {
-            val expectedKeystore = releaseKeystoreFile?.absolutePath ?: "<storeFile is missing>"
-            throw GradleException(
-                "Release signing is not ready (keystore not found or signing properties are incomplete: " +
-                    "$expectedKeystore). Fill in ${releaseSigningPropertiesFile.absolutePath} and make sure its keystore exists."
-            )
+val validateReleaseSigning =
+    tasks.register("validateReleaseSigning") {
+        group = "verification"
+        doLast {
+            if (!releaseSigningReady) {
+                val expectedKeystore = releaseKeystoreFile?.absolutePath ?: "<storeFile is missing>"
+                throw GradleException(
+                    "Release signing is not ready (keystore not found or signing properties are incomplete: " +
+                        "$expectedKeystore). Fill in ${releaseSigningPropertiesFile.absolutePath} and make sure its keystore exists.",
+                )
+            }
         }
     }
-}
 
-val copyReleaseApkToReleaseDirectory = tasks.register<Copy>("copyReleaseApkToReleaseDirectory") {
-    from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
-    into(rootProject.layout.projectDirectory.dir("app/release"))
-}
+val copyReleaseApkToReleaseDirectory =
+    tasks.register<Copy>("copyReleaseApkToReleaseDirectory") {
+        from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
+        into(rootProject.layout.projectDirectory.dir("app/release"))
+    }
 
 tasks.configureEach {
     when (name) {

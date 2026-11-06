@@ -5,32 +5,16 @@ import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.material.icons.filled.VideoLibrary
-import okhttp3.Request
-import java.net.HttpURLConnection
-import java.net.URI
-import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,17 +22,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -56,21 +49,19 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text as Material3Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.core.net.toUri
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,9 +69,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.extensions.ExtensionManager
 import com.nekoplayer.app.library.AniListAiringEpisode
@@ -95,8 +91,8 @@ import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -105,6 +101,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import okhttp3.Request
+import java.net.HttpURLConnection
+import java.net.URI
+import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import androidx.compose.material3.Text as Material3Text
 
 private const val MAX_PARALLEL_STREAM_HOSTERS = 3
 
@@ -122,6 +126,7 @@ internal fun VideoSourceBrowser(
     aniList: AniListClient,
     initialAnime: SAnime?,
     initialAiringEpisode: AniListAiringEpisode?,
+    onLibraryChanged: () -> Unit,
     onBack: () -> Unit,
     onPlayVideo: (
         android.net.Uri,
@@ -159,6 +164,9 @@ internal fun VideoSourceBrowser(
     var savedSourceProgresses by remember(source.id, initialAnime?.url) {
         mutableStateOf<List<AppDatabase.SourceEpisodeProgress>>(emptyList())
     }
+    var animeActivityStats by remember(source.id, initialAnime?.url) {
+        mutableStateOf(AppDatabase.AnimeActivityStats())
+    }
     var pendingContinueProgress by remember(source.id, initialAnime?.url) {
         mutableStateOf<AppDatabase.SourceEpisodeProgress?>(null)
     }
@@ -178,44 +186,60 @@ internal fun VideoSourceBrowser(
     var streamRequestId by remember(source.id) { mutableIntStateOf(0) }
     var busy by remember(source.id) { mutableStateOf(false) }
     var error by remember(source.id) { mutableStateOf<String?>(null) }
-    val visibleEpisodes = remember(episodes, episodeQuery, episodeSortOrder) {
-        val normalizedQuery = episodeQuery.trim()
-        val matchingEpisodes = episodes.filter { episode ->
-            normalizedQuery.isEmpty() ||
-                episode.name.contains(normalizedQuery, ignoreCase = true) ||
-                episode.sortingNumber()?.toString()?.removeSuffix(".0")
-                    ?.contains(normalizedQuery, ignoreCase = true) == true
-        }
-        when (episodeSortOrder) {
-            EpisodeSortOrder.NumberAscending -> matchingEpisodes.sortedWith(
-                compareBy<SEpisode> { it.sortingNumber() == null }
-                    .thenBy { it.sortingNumber() ?: Float.MAX_VALUE },
-            )
-            EpisodeSortOrder.NumberDescending -> matchingEpisodes.sortedWith(
-                compareBy<SEpisode> { it.sortingNumber() == null }
-                    .thenByDescending { it.sortingNumber() ?: Float.MIN_VALUE },
-            )
-        }
+    var preferredVideoStreams by remember(database) { mutableStateOf(readPreferredVideoStreams(database)) }
+    var autoPlayPreferredStream by remember(database) {
+        mutableStateOf(database.readBoolean(AUTO_PLAY_PREFERRED_STREAM_SETTING_KEY, false))
     }
+    val visibleEpisodes =
+        remember(episodes, episodeQuery, episodeSortOrder) {
+            val normalizedQuery = episodeQuery.trim()
+            val matchingEpisodes =
+                episodes.filter { episode ->
+                    normalizedQuery.isEmpty() ||
+                        episode.name.contains(normalizedQuery, ignoreCase = true) ||
+                        episode
+                            .sortingNumber()
+                            ?.toString()
+                            ?.removeSuffix(".0")
+                            ?.contains(normalizedQuery, ignoreCase = true) == true
+                }
+            when (episodeSortOrder) {
+                EpisodeSortOrder.NumberAscending -> {
+                    matchingEpisodes.sortedWith(
+                        compareBy<SEpisode> { it.sortingNumber() == null }
+                            .thenBy { it.sortingNumber() ?: Float.MAX_VALUE },
+                    )
+                }
+
+                EpisodeSortOrder.NumberDescending -> {
+                    matchingEpisodes.sortedWith(
+                        compareBy<SEpisode> { it.sortingNumber() == null }
+                            .thenByDescending { it.sortingNumber() ?: Float.MIN_VALUE },
+                    )
+                }
+            }
+        }
 
     LaunchedEffect(aniList, details?.url, details?.title, initialAiringEpisode) {
         val title = details?.title?.takeIf(String::isNotBlank)
-        nextAiringEpisode = if (
-            initialAiringEpisode != null &&
-            initialAnime?.url == details?.url
-        ) {
-            initialAiringEpisode
-        } else if (title == null) {
-            null
-        } else {
-            val lookup = AniListAiringLookup(
-                key = "source:${source.id}:${details?.url.orEmpty()}",
-                showName = title,
-            )
-            withContext(Dispatchers.IO) {
-                aniList.findNextAiringEpisodes(listOf(lookup))[lookup.key]
+        nextAiringEpisode =
+            if (
+                initialAiringEpisode != null &&
+                initialAnime?.url == details?.url
+            ) {
+                initialAiringEpisode
+            } else if (title == null) {
+                null
+            } else {
+                val lookup =
+                    AniListAiringLookup(
+                        key = "source:${source.id}:${details?.url.orEmpty()}",
+                        showName = title,
+                    )
+                withContext(Dispatchers.IO) {
+                    aniList.findNextAiringEpisodes(listOf(lookup))[lookup.key]
+                }
             }
-        }
     }
 
     fun loadPage(reset: Boolean) {
@@ -225,13 +249,14 @@ internal fun VideoSourceBrowser(
             error = null
             try {
                 val next = if (reset) 1 else page + 1
-                val (animes, hasMore) = withContext(Dispatchers.IO) {
-                    when {
-                        query.isNotBlank() -> source.getSearchAnime(next, query, filterList)
-                        mode == 1 && source.supportsLatest -> source.getLatestUpdates(next)
-                        else -> source.getPopularAnime(next)
+                val (animes, hasMore) =
+                    withContext(Dispatchers.IO) {
+                        when {
+                            query.isNotBlank() -> source.getSearchAnime(next, query, filterList)
+                            mode == 1 && source.supportsLatest -> source.getLatestUpdates(next)
+                            else -> source.getPopularAnime(next)
+                        }
                     }
-                }
                 results = if (reset) animes else results + animes
                 page = next
                 hasNextPage = hasMore
@@ -245,14 +270,18 @@ internal fun VideoSourceBrowser(
         }
     }
 
-    fun openAnime(anime: SAnime, loadCatalogueAfter: Boolean = false) {
+    fun openAnime(
+        anime: SAnime,
+        loadCatalogueAfter: Boolean = false,
+    ) {
         if (selectedAnime == null) {
             sourceProgressAnimeUrl = anime.url
             sourceProgressAnimeTitle = anime.title
         }
         selectedAnime = anime
-        selectedAnimeArtworkUrl = anime.thumbnail_url
-            ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+        selectedAnimeArtworkUrl =
+            anime.thumbnail_url
+                ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
         selectedAnimeUrl = anime.url
         details = null
         seasons = emptyList()
@@ -267,27 +296,31 @@ internal fun VideoSourceBrowser(
             busy = true
             error = null
             try {
-                val (detail, seasonList, episodeList) = withContext(Dispatchers.IO) {
-                    val detail = if (anime.initialized) anime else source.getAnimeDetails(anime)
-                    val seasonList = if (item.extension.libVersion >= 16.0) {
-                        runCatching { source.getSeasonList(detail) }.getOrDefault(emptyList())
-                    } else {
-                        emptyList()
-                    }
-                    val episodeList = if (detail.fetch_type == FetchType.Seasons) {
-                        emptyList()
-                    } else {
-                        source.getEpisodeList(detail)
-                    }
-                    if (episodeList.isNotEmpty()) {
-                        runCatching {
-                            database.listSourceLibraryEntries()
-                                .firstOrNull { it.sourceId == source.id && it.animeUrl == anime.url }
-                                ?.let { database.saveSourceLibraryEntry(it.copy(episodeCount = episodeList.size)) }
+                val (detail, seasonList, episodeList) =
+                    withContext(Dispatchers.IO) {
+                        val detail = if (anime.initialized) anime else source.getAnimeDetails(anime)
+                        val seasonList =
+                            if (item.extension.libVersion >= 16.0) {
+                                runCatching { source.getSeasonList(detail) }.getOrDefault(emptyList())
+                            } else {
+                                emptyList()
+                            }
+                        val episodeList =
+                            if (detail.fetch_type == FetchType.Seasons) {
+                                emptyList()
+                            } else {
+                                source.getEpisodeList(detail)
+                            }
+                        if (episodeList.isNotEmpty()) {
+                            runCatching {
+                                database
+                                    .listSourceLibraryEntries()
+                                    .firstOrNull { it.sourceId == source.id && it.animeUrl == anime.url }
+                                    ?.let { database.saveSourceLibraryEntry(it.copy(episodeCount = episodeList.size)) }
+                            }
                         }
+                        Triple(detail, seasonList, episodeList)
                     }
-                    Triple(detail, seasonList, episodeList)
-                }
                 details = detail
                 seasons = seasonList
                 episodes = episodeList
@@ -315,29 +348,32 @@ internal fun VideoSourceBrowser(
             return false
         }
         val sourceHeaders = choice.video.headers
-        val headers = buildMap {
-            sourceHeaders?.let { sourceHeaders ->
-                for (headerIndex in 0 until sourceHeaders.size) {
-                    put(sourceHeaders.name(headerIndex), sourceHeaders.value(headerIndex))
+        val headers =
+            buildMap {
+                sourceHeaders?.let { sourceHeaders ->
+                    for (headerIndex in 0 until sourceHeaders.size) {
+                        put(sourceHeaders.name(headerIndex), sourceHeaders.value(headerIndex))
+                    }
                 }
             }
-        }
-        val episodeNumber = episode.episode_number
-            .takeIf { it.isFinite() && it >= 1f && it % 1f == 0f }
-            ?.toInt()
+        val episodeNumber =
+            episode.episode_number
+                .takeIf { it.isFinite() && it >= 1f && it % 1f == 0f }
+                ?.toInt()
         val detailAnimeUrl = selectedAnimeUrl ?: selectedAnime?.url.orEmpty()
-        val progressIdentity = sourceProgressAnimeUrl
-            ?.takeIf(String::isNotBlank)
-            ?.let { seriesAnimeUrl ->
-                AppDatabase.SourceProgressIdentity(
-                    sourceId = source.id,
-                    seriesAnimeUrl = seriesAnimeUrl,
-                    detailAnimeUrl = detailAnimeUrl.ifBlank { seriesAnimeUrl },
-                    episodeUrl = episode.url,
-                    episodeName = episode.name,
-                    episodeNumber = episodeNumber,
-                )
-            }
+        val progressIdentity =
+            sourceProgressAnimeUrl
+                ?.takeIf(String::isNotBlank)
+                ?.let { seriesAnimeUrl ->
+                    AppDatabase.SourceProgressIdentity(
+                        sourceId = source.id,
+                        seriesAnimeUrl = seriesAnimeUrl,
+                        detailAnimeUrl = detailAnimeUrl.ifBlank { seriesAnimeUrl },
+                        episodeUrl = episode.url,
+                        episodeName = episode.name,
+                        episodeNumber = episodeNumber,
+                    )
+                }
         onPlayVideo(
             url.toUri(),
             choice.label.ifBlank { episode.name },
@@ -365,161 +401,216 @@ internal fun VideoSourceBrowser(
         episode: SEpisode,
         autoPlayFirst: Boolean = false,
         preferredStream: StreamIdentity? = null,
+        fallbackToStreamChooserIfUnavailable: Boolean = false,
         onAutoPlayFinished: ((Boolean) -> Unit)? = null,
     ) {
         selectedEpisode = episode
         streamChoices = emptyList()
         streamDiscoveryJob?.cancel()
         val requestId = ++streamRequestId
-        streamDiscoveryJob = scope.launch {
-            busy = true
-            error = null
-            try {
-                val choices = withContext(Dispatchers.IO) {
-                    val httpSource = source as? AnimeHttpSource
-                    suspend fun directVideoHoster() = listOf(
-                        Hoster(
-                            hosterName = Hoster.NO_HOSTER_LIST,
-                            videoList = source.getVideoList(episode),
-                        ),
-                    )
-                    val hosters = if (item.extension.libVersion >= 16.0) {
-                        try {
-                            source.getHosterList(episode)
-                        } catch (_: UnsupportedOperationException) {
-                            directVideoHoster()
-                        }
-                    } else {
-                        directVideoHoster()
-                    }
-                    val sortedHosters = httpSource?.run { hosters.sortHosters() } ?: hosters
-                    val hosterRequests = sortedHosters.mapIndexed { index, hoster ->
-                        val hosterLabel = hoster.hosterName
-                            .takeUnless { it == Hoster.NO_HOSTER_LIST }
-                            .orEmpty()
-                        Triple(index, hoster, hosterLabel)
-                    }
+        streamDiscoveryJob =
+            scope.launch {
+                busy = true
+                error = null
+                try {
+                    val (choices, shouldAutoPlay) =
+                        withContext(Dispatchers.IO) {
+                            val httpSource = source as? AnimeHttpSource
 
-                    if (autoPlayFirst) {
-                        val resolvedChoices = mutableListOf<StreamChoice>()
-                        for ((_, hoster, hosterLabel) in hosterRequests) {
-                            val choice = resolveHosterStreamChoices(
-                                source = source,
-                                hoster = hoster,
-                                hosterLabel = hosterLabel,
-                                preferredStream = preferredStream,
-                                firstPlayableOnly = true,
-                            ).firstOrNull()
-                            if (choice != null) {
-                                resolvedChoices += choice
-                                break
-                            }
-                        }
-                        resolvedChoices
-                    } else {
-                        val choicesByHoster = arrayOfNulls<List<StreamChoice>>(sortedHosters.size)
-                        if (hosterRequests.isNotEmpty()) {
-                            val updates = Channel<HosterStreamUpdate>(Channel.UNLIMITED)
-                            val parallelHosters = Semaphore(MAX_PARALLEL_STREAM_HOSTERS)
-                            coroutineScope {
-                                val jobs = hosterRequests.map { (index, hoster, hosterLabel) ->
-                                    launch(Dispatchers.IO) {
-                                        val hosterChoices = try {
-                                            parallelHosters.withPermit {
-                                                resolveHosterStreamChoices(
-                                                    source = source,
-                                                    hoster = hoster,
-                                                    hosterLabel = hosterLabel,
-                                                    preferredStream = preferredStream,
-                                                    firstPlayableOnly = false,
-                                                    onChoicesUpdated = { partialChoices ->
-                                                        updates.trySend(
-                                                            HosterStreamUpdate(index, partialChoices, isComplete = false),
-                                                        )
-                                                    },
-                                                )
-                                            }
-                                        } catch (cancelled: CancellationException) {
-                                            throw cancelled
-                                        } catch (_: Exception) {
-                                            emptyList()
-                                        }
-                                        updates.send(HosterStreamUpdate(index, hosterChoices, isComplete = true))
-                                    }
-                                }
-                                var completedHosters = 0
-                                while (completedHosters < jobs.size) {
-                                    val update = updates.receive()
-                                    choicesByHoster[update.hosterIndex] = update.choices
-                                    if (update.isComplete) completedHosters++
-                                    val partialChoices = choicesByHoster.filterNotNull().flatten()
-                                    withContext(Dispatchers.Main.immediate) {
-                                        if (requestId == streamRequestId && selectedEpisode?.url == episode.url) {
-                                            streamChoices = partialChoices
-                                        }
-                                    }
-                                }
-                                jobs.joinAll()
-                            }
-                            updates.close()
-                        }
-                        choicesByHoster.filterNotNull().flatten()
-                    }
-                }
-                if (requestId == streamRequestId && selectedEpisode?.url == episode.url) {
-                    streamChoices = choices
-                }
-                if (autoPlayFirst) {
-                    val choice = choices.firstOrNull()
-                    if (choice == null) {
-                        error = if (preferredStream == null) {
-                            "This episode has no playable video streams."
-                        } else {
-                            "The selected video stream is unavailable for this episode."
-                        }
-                        onAutoPlayFinished?.invoke(false)
-                    } else {
-                        val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
-                        val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
-                        val nextAction: NextEpisodeAction? = nextEpisode?.let { next ->
-                            { onFinished ->
-                                openEpisode(
-                                    next,
-                                    autoPlayFirst = true,
-                                    preferredStream = choice.identity,
-                                    onAutoPlayFinished = onFinished,
+                            suspend fun directVideoHoster() =
+                                listOf(
+                                    Hoster(
+                                        hosterName = Hoster.NO_HOSTER_LIST,
+                                        videoList = source.getVideoList(episode),
+                                    ),
                                 )
+                            val hosters =
+                                if (item.extension.libVersion >= 16.0) {
+                                    try {
+                                        source.getHosterList(episode)
+                                    } catch (_: UnsupportedOperationException) {
+                                        directVideoHoster()
+                                    }
+                                } else {
+                                    directVideoHoster()
+                                }
+                            val sortedHosters = httpSource?.run { hosters.sortHosters() } ?: hosters
+                            val hosterRequests =
+                                sortedHosters.mapIndexed { index, hoster ->
+                                    val hosterLabel =
+                                        hoster.hosterName
+                                            .takeUnless { it == Hoster.NO_HOSTER_LIST }
+                                            .orEmpty()
+                                    Triple(index, hoster, hosterLabel)
+                                }
+
+                            suspend fun discoverAllChoices(streamIdentity: StreamIdentity?): List<StreamChoice> {
+                                val choicesByHoster = arrayOfNulls<List<StreamChoice>>(sortedHosters.size)
+                                if (hosterRequests.isNotEmpty()) {
+                                    val updates = Channel<HosterStreamUpdate>(Channel.UNLIMITED)
+                                    val parallelHosters = Semaphore(MAX_PARALLEL_STREAM_HOSTERS)
+                                    coroutineScope {
+                                        val jobs =
+                                            hosterRequests.map { (index, hoster, hosterLabel) ->
+                                                launch(Dispatchers.IO) {
+                                                    val hosterChoices =
+                                                        try {
+                                                            parallelHosters.withPermit {
+                                                                resolveHosterStreamChoices(
+                                                                    source = source,
+                                                                    hoster = hoster,
+                                                                    hosterLabel = hosterLabel,
+                                                                    preferredStream = streamIdentity,
+                                                                    firstPlayableOnly = false,
+                                                                    onChoicesUpdated = { partialChoices ->
+                                                                        updates.trySend(
+                                                                            HosterStreamUpdate(index, partialChoices, isComplete = false),
+                                                                        )
+                                                                    },
+                                                                )
+                                                            }
+                                                        } catch (cancelled: CancellationException) {
+                                                            throw cancelled
+                                                        } catch (_: Exception) {
+                                                            emptyList()
+                                                        }
+                                                    updates.send(HosterStreamUpdate(index, hosterChoices, isComplete = true))
+                                                }
+                                            }
+                                        var completedHosters = 0
+                                        while (completedHosters < jobs.size) {
+                                            val update = updates.receive()
+                                            choicesByHoster[update.hosterIndex] = update.choices
+                                            if (update.isComplete) completedHosters++
+                                            val partialChoices = choicesByHoster.filterNotNull().flatten()
+                                            withContext(Dispatchers.Main.immediate) {
+                                                if (requestId == streamRequestId && selectedEpisode?.url == episode.url) {
+                                                    streamChoices = partialChoices
+                                                }
+                                            }
+                                        }
+                                        jobs.joinAll()
+                                    }
+                                    updates.close()
+                                }
+                                return choicesByHoster.filterNotNull().flatten()
+                            }
+
+                            if (autoPlayFirst) {
+                                val resolvedChoices = mutableListOf<StreamChoice>()
+                                for ((_, hoster, hosterLabel) in hosterRequests) {
+                                    val choice =
+                                        resolveHosterStreamChoices(
+                                            source = source,
+                                            hoster = hoster,
+                                            hosterLabel = hosterLabel,
+                                            preferredStream = preferredStream,
+                                            firstPlayableOnly = true,
+                                        ).firstOrNull()
+                                    if (choice != null) {
+                                        resolvedChoices += choice
+                                        break
+                                    }
+                                }
+                                when {
+                                    resolvedChoices.isNotEmpty() -> resolvedChoices to true
+                                    fallbackToStreamChooserIfUnavailable -> discoverAllChoices(null) to false
+                                    else -> resolvedChoices to true
+                                }
+                            } else {
+                                discoverAllChoices(preferredStream) to false
                             }
                         }
-                        playVideoChoice(
-                            choice,
-                            episode,
-                            nextAction,
-                            onAutoPlayFinished,
-                        )
+                    if (requestId == streamRequestId && selectedEpisode?.url == episode.url) {
+                        streamChoices = choices
                     }
-                } else if (choices.isEmpty()) {
-                    error = "This episode has no playable video streams."
-                }
-            } catch (cancelled: CancellationException) {
-                onAutoPlayFinished?.invoke(false)
-                throw cancelled
-            } catch (linkage: LinkageError) {
-                if (requestId == streamRequestId) {
-                    error = linkage.toExtensionRuntimeMessage(item.extension.libVersion)
-                }
-                onAutoPlayFinished?.invoke(false)
-            } catch (_: Exception) {
-                if (requestId == streamRequestId) {
-                    error = "Couldn’t load video streams for ${episode.name}."
-                }
-                onAutoPlayFinished?.invoke(false)
-            } finally {
-                if (requestId == streamRequestId) {
-                    busy = false
-                    streamDiscoveryJob = null
+                    if (shouldAutoPlay) {
+                        val choice = choices.firstOrNull()
+                        if (choice == null) {
+                            error =
+                                if (preferredStream != null && !fallbackToStreamChooserIfUnavailable) {
+                                    "The selected video stream is unavailable for this episode."
+                                } else {
+                                    "This episode has no playable video streams."
+                                }
+                            onAutoPlayFinished?.invoke(false)
+                        } else {
+                            val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
+                            val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
+                            val nextAction: NextEpisodeAction? =
+                                nextEpisode?.let { next ->
+                                    { onFinished ->
+                                        openEpisode(
+                                            next,
+                                            autoPlayFirst = true,
+                                            preferredStream = choice.identity,
+                                            onAutoPlayFinished = onFinished,
+                                        )
+                                    }
+                                }
+                            playVideoChoice(
+                                choice,
+                                episode,
+                                nextAction,
+                                onAutoPlayFinished,
+                            )
+                        }
+                    } else if (choices.isEmpty()) {
+                        error = "This episode has no playable video streams."
+                    }
+                } catch (cancelled: CancellationException) {
+                    onAutoPlayFinished?.invoke(false)
+                    throw cancelled
+                } catch (linkage: LinkageError) {
+                    if (requestId == streamRequestId) {
+                        error = linkage.toExtensionRuntimeMessage(item.extension.libVersion)
+                    }
+                    onAutoPlayFinished?.invoke(false)
+                } catch (_: Exception) {
+                    if (requestId == streamRequestId) {
+                        error = "Couldn’t load video streams for ${episode.name}."
+                    }
+                    onAutoPlayFinished?.invoke(false)
+                } finally {
+                    if (requestId == streamRequestId) {
+                        busy = false
+                        streamDiscoveryJob = null
+                    }
                 }
             }
+    }
+
+    fun openEpisodeWithPreferredStream(
+        episode: SEpisode,
+        autoPlayFirst: Boolean = false,
+    ) {
+        val preference =
+            preferredVideoStreams[source.id.toString()]
+                ?: preferredVideoStreams[ALL_SOURCES_VIDEO_STREAM_KEY]
+        val activePreference = preference.takeIf { autoPlayPreferredStream }
+        openEpisode(
+            episode = episode,
+            autoPlayFirst = autoPlayFirst || activePreference != null,
+            preferredStream = activePreference?.identity,
+            fallbackToStreamChooserIfUnavailable = activePreference != null,
+        )
+    }
+
+    fun setPreferredVideoStream(choice: StreamChoice) {
+        val sourceId = source.id.toString()
+        val preference =
+            PreferredVideoStream(
+                sourceId = sourceId,
+                sourceName = source.name,
+                identity = choice.identity,
+                label = choice.label,
+            )
+        val updatedPreferences = preferredVideoStreams + (sourceId to preference)
+        preferredVideoStreams = updatedPreferences
+        autoPlayPreferredStream = true
+        scope.launch(Dispatchers.IO) {
+            writePreferredVideoStreams(database, updatedPreferences)
+            database.writeSetting(AUTO_PLAY_PREFERRED_STREAM_SETTING_KEY, true)
         }
     }
 
@@ -531,7 +622,11 @@ internal fun VideoSourceBrowser(
                 streamChoices = emptyList()
                 error = null
             }
-            selectedAnime != null && initialAnime != null -> onBack()
+
+            selectedAnime != null && initialAnime != null -> {
+                onBack()
+            }
+
             selectedAnime != null -> {
                 selectedAnime = null
                 selectedAnimeArtworkUrl = null
@@ -544,32 +639,40 @@ internal fun VideoSourceBrowser(
                 episodes = emptyList()
                 error = null
             }
-            else -> onBack()
+
+            else -> {
+                onBack()
+            }
         }
     }
 
     LaunchedEffect(source.id, sourceProgressAnimeUrl, progressRefreshKey) {
         val seriesUrl = sourceProgressAnimeUrl
-        savedSourceProgresses = if (seriesUrl.isNullOrBlank()) {
-            emptyList()
-        } else {
-            withContext(Dispatchers.IO) {
-                database.sourceEpisodeProgresses(source.id, seriesUrl)
+        val (progresses, stats) =
+            if (seriesUrl.isNullOrBlank()) {
+                emptyList<AppDatabase.SourceEpisodeProgress>() to AppDatabase.AnimeActivityStats()
+            } else {
+                withContext(Dispatchers.IO) {
+                    database.sourceEpisodeProgresses(source.id, seriesUrl) to
+                        database.animeActivityStats(source.id, seriesUrl)
+                }
             }
-        }
+        savedSourceProgresses = progresses
+        animeActivityStats = stats
     }
 
     LaunchedEffect(pendingContinueProgress, selectedAnimeUrl, episodes, busy) {
         val progress = pendingContinueProgress ?: return@LaunchedEffect
         if (progress.identity.detailAnimeUrl != selectedAnimeUrl) return@LaunchedEffect
-        val episode = episodes.firstOrNull { it.url == progress.identity.episodeUrl }
-            ?: episodes.firstOrNull {
-                progress.identity.episodeNumber != null &&
-                    it.sortingNumber() == progress.identity.episodeNumber.toFloat()
-            }
+        val episode =
+            episodes.firstOrNull { it.url == progress.identity.episodeUrl }
+                ?: episodes.firstOrNull {
+                    progress.identity.episodeNumber != null &&
+                        it.sortingNumber() == progress.identity.episodeNumber.toFloat()
+                }
         if (episode != null) {
             pendingContinueProgress = null
-            openEpisode(episode, autoPlayFirst = true)
+            openEpisodeWithPreferredStream(episode, autoPlayFirst = true)
         } else if (!busy && details != null) {
             pendingContinueProgress = null
             error = "The saved episode is no longer available from this source."
@@ -580,15 +683,16 @@ internal fun VideoSourceBrowser(
         if (busy) return
         val targetDetailUrl = progress.identity.detailAnimeUrl
         if (targetDetailUrl == selectedAnimeUrl) {
-            val episode = episodes.firstOrNull { it.url == progress.identity.episodeUrl }
-                ?: episodes.firstOrNull {
-                    progress.identity.episodeNumber != null &&
-                        it.sortingNumber() == progress.identity.episodeNumber.toFloat()
-                }
+            val episode =
+                episodes.firstOrNull { it.url == progress.identity.episodeUrl }
+                    ?: episodes.firstOrNull {
+                        progress.identity.episodeNumber != null &&
+                            it.sortingNumber() == progress.identity.episodeNumber.toFloat()
+                    }
             if (episode == null) {
                 error = "The saved episode is no longer available from this source."
             } else {
-                openEpisode(episode, autoPlayFirst = true)
+                openEpisodeWithPreferredStream(episode, autoPlayFirst = true)
             }
             return
         }
@@ -603,8 +707,11 @@ internal fun VideoSourceBrowser(
     }
 
     LaunchedEffect(source.id, initialAnime?.url) {
-        if (initialAnime != null) openAnime(initialAnime, loadCatalogueAfter = true)
-        else loadPage(reset = true)
+        if (initialAnime != null) {
+            openAnime(initialAnime, loadCatalogueAfter = true)
+        } else {
+            loadPage(reset = true)
+        }
     }
 
     Column(modifier.fillMaxSize()) {
@@ -620,7 +727,11 @@ internal fun VideoSourceBrowser(
                             selectedEpisode = null
                             streamChoices = emptyList()
                         }
-                        selectedAnime != null && initialAnime != null -> onBack()
+
+                        selectedAnime != null && initialAnime != null -> {
+                            onBack()
+                        }
+
                         selectedAnime != null -> {
                             selectedAnime = null
                             selectedAnimeArtworkUrl = null
@@ -632,7 +743,10 @@ internal fun VideoSourceBrowser(
                             details = null
                             episodes = emptyList()
                         }
-                        else -> onBack()
+
+                        else -> {
+                            onBack()
+                        }
                     }
                 },
             ) {
@@ -656,9 +770,15 @@ internal fun VideoSourceBrowser(
 
         if (selectedAnime == null) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = mode == 0, onClick = { mode = 0; loadPage(true) }, label = { Text("Popular") })
+                FilterChip(selected = mode == 0, onClick = {
+                    mode = 0
+                    loadPage(true)
+                }, label = { Text("Popular") })
                 if (source.supportsLatest) {
-                    FilterChip(selected = mode == 1, onClick = { mode = 1; loadPage(true) }, label = { Text("Latest") })
+                    FilterChip(selected = mode == 1, onClick = {
+                        mode = 1
+                        loadPage(true)
+                    }, label = { Text("Latest") })
                 }
                 IconButton(onClick = { showFilters = true }) {
                     Icon(Icons.Default.FilterList, contentDescription = localizeUiText("Search filters"))
@@ -738,10 +858,17 @@ internal fun VideoSourceBrowser(
         } else {
             val anime = details ?: selectedAnime
             val libraryAnimeUrl = selectedAnimeUrl ?: anime?.url
-            val animeArtworkUrl = selectedAnimeArtworkUrl
-                ?: anime?.thumbnail_url?.takeIf {
-                    it.isNotBlank() && !it.equals("null", ignoreCase = true)
+            val trackedEpisodes =
+                savedSourceProgresses.distinctBy {
+                    it.identity.detailAnimeUrl to it.identity.episodeUrl
                 }
+            val episodesStarted = trackedEpisodes.count { it.positionMs > 0L }
+            val episodesCompleted = trackedEpisodes.count { it.isCompletedForStats() }
+            val animeArtworkUrl =
+                selectedAnimeArtworkUrl
+                    ?: anime?.thumbnail_url?.takeIf {
+                        it.isNotBlank() && !it.equals("null", ignoreCase = true)
+                    }
             LazyColumn(
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
@@ -783,15 +910,15 @@ internal fun VideoSourceBrowser(
                                 if (!synopsis.isNullOrBlank()) {
                                     Text("Synopsis", style = MaterialTheme.typography.titleSmall)
                                     Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(136.dp)
-                                            .background(
-                                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f),
-                                                RoundedCornerShape(12.dp),
-                                            )
-                                            .verticalScroll(synopsisScrollState)
-                                            .padding(10.dp),
+                                        modifier =
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .height(136.dp)
+                                                .background(
+                                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f),
+                                                    RoundedCornerShape(12.dp),
+                                                ).verticalScroll(synopsisScrollState)
+                                                .padding(10.dp),
                                     ) {
                                         Material3Text(
                                             synopsis,
@@ -800,16 +927,21 @@ internal fun VideoSourceBrowser(
                                     }
                                 }
                                 anime?.genre?.takeIf(String::isNotBlank)?.let { genre ->
-                                    Material3Text(genre, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Material3Text(
+                                        genre,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                                 FilledTonalButton(
                                     onClick = {
                                         if (anime != null && !libraryActionBusy) {
                                             val currentAnimeUrl = libraryAnimeUrl ?: anime.url
-                                            val currentAnimeThumbnailUrl = selectedAnimeArtworkUrl
-                                                ?: anime.thumbnail_url?.takeIf {
-                                                    it.isNotBlank() && !it.equals("null", ignoreCase = true)
-                                                }
+                                            val currentAnimeThumbnailUrl =
+                                                selectedAnimeArtworkUrl
+                                                    ?: anime.thumbnail_url?.takeIf {
+                                                        it.isNotBlank() && !it.equals("null", ignoreCase = true)
+                                                    }
                                             libraryActionBusy = true
                                             scope.launch {
                                                 try {
@@ -824,10 +956,11 @@ internal fun VideoSourceBrowser(
                                                                     extensionName = item.extension.name,
                                                                     animeUrl = currentAnimeUrl,
                                                                     title = anime.title,
-                                                                    thumbnailUrl = resolveArtworkUrl(
-                                                                        currentAnimeThumbnailUrl,
-                                                                        (source as? AnimeHttpSource)?.baseUrl,
-                                                                    ) ?: currentAnimeThumbnailUrl,
+                                                                    thumbnailUrl =
+                                                                        resolveArtworkUrl(
+                                                                            currentAnimeThumbnailUrl,
+                                                                            (source as? AnimeHttpSource)?.baseUrl,
+                                                                        ) ?: currentAnimeThumbnailUrl,
                                                                     description = anime.description,
                                                                     episodeCount = episodes.size.takeIf { it > 0 },
                                                                 ),
@@ -835,6 +968,7 @@ internal fun VideoSourceBrowser(
                                                         }
                                                     }
                                                     savedToLibrary = !savedToLibrary
+                                                    onLibraryChanged()
                                                 } catch (_: Exception) {
                                                     error = "Couldn’t update your library."
                                                 } finally {
@@ -859,6 +993,14 @@ internal fun VideoSourceBrowser(
                     }
                 }
                 if (selectedEpisode == null) {
+                    item {
+                        AnimeActivityStatsCard(
+                            animeKey = "${source.id}:${sourceProgressAnimeUrl.orEmpty()}",
+                            stats = animeActivityStats,
+                            episodesStarted = episodesStarted,
+                            episodesCompleted = episodesCompleted,
+                        )
+                    }
                     val seasonsOnly = anime?.fetch_type == FetchType.Seasons
                     if (seasonsOnly) {
                         item { Text("Seasons", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
@@ -870,18 +1012,24 @@ internal fun VideoSourceBrowser(
                         item { Text("Seasons", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
                     }
                     items(seasons, key = { "${source.id}:season:${it.url}" }) { season ->
-                        val seasonProgress = savedSourceProgresses.asSequence()
-                            .filter { progress ->
-                                progress.identity.detailAnimeUrl == season.url &&
-                                    progress.positionMs > 0L &&
-                                    (progress.durationMs <= 0L || progress.positionMs <
-                                        progress.durationMs - AppDatabase.SOURCE_COMPLETION_TOLERANCE_MS)
-                            }
-                            .maxByOrNull { it.updatedAtMs }
+                        val seasonProgress =
+                            savedSourceProgresses
+                                .asSequence()
+                                .filter { progress ->
+                                    progress.identity.detailAnimeUrl == season.url &&
+                                        progress.positionMs > 0L &&
+                                        (
+                                            progress.durationMs <= 0L || progress.positionMs <
+                                                progress.durationMs - AppDatabase.SOURCE_COMPLETION_TOLERANCE_MS
+                                        )
+                                }.maxByOrNull { it.updatedAtMs }
                         Card(
                             onClick = {
-                                if (seasonProgress != null) continueSourceProgress(seasonProgress)
-                                else openAnime(season)
+                                if (seasonProgress != null) {
+                                    continueSourceProgress(seasonProgress)
+                                } else {
+                                    openAnime(season)
+                                }
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(18.dp),
@@ -904,7 +1052,7 @@ internal fun VideoSourceBrowser(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Column(
-                                    Modifier.weight(1f),
+                                    Modifier.weight(1f).padding(start = 16.dp),
                                     verticalArrangement = Arrangement.spacedBy(2.dp),
                                 ) {
                                     Text(
@@ -996,18 +1144,23 @@ internal fun VideoSourceBrowser(
                             item { EmptyCard("No matching episodes", "Try a different episode title or number.") }
                         }
                         items(visibleEpisodes, key = { "${source.id}:${it.url}" }) { episode ->
-                            val episodeProgress = savedSourceProgresses.asSequence()
-                                .filter { progress ->
-                                    progress.identity.detailAnimeUrl == selectedAnimeUrl &&
-                                        progress.positionMs > 0L &&
-                                        (progress.identity.episodeUrl == episode.url ||
-                                            (progress.identity.episodeNumber != null &&
-                                                episode.sortingNumber() == progress.identity.episodeNumber.toFloat()))
-                                }
-                                .maxByOrNull { it.updatedAtMs }
+                            val episodeProgress =
+                                savedSourceProgresses
+                                    .asSequence()
+                                    .filter { progress ->
+                                        progress.identity.detailAnimeUrl == selectedAnimeUrl &&
+                                            progress.positionMs > 0L &&
+                                            (
+                                                progress.identity.episodeUrl == episode.url ||
+                                                    (
+                                                        progress.identity.episodeNumber != null &&
+                                                            episode.sortingNumber() == progress.identity.episodeNumber.toFloat()
+                                                    )
+                                            )
+                                    }.maxByOrNull { it.updatedAtMs }
                             Card(
                                 onClick = {
-                                    openEpisode(episode, autoPlayFirst = episodeProgress != null)
+                                    openEpisodeWithPreferredStream(episode, autoPlayFirst = episodeProgress != null)
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(18.dp),
@@ -1024,16 +1177,19 @@ internal fun VideoSourceBrowser(
                                         )
                                         episodeProgress?.let { progress ->
                                             if (progress.durationMs > 0L) {
-                                                val fraction = (progress.positionMs.toFloat() / progress.durationMs)
-                                                    .coerceIn(0f, 1f)
+                                                val fraction =
+                                                    (progress.positionMs.toFloat() / progress.durationMs)
+                                                        .coerceIn(0f, 1f)
                                                 Box(
-                                                    Modifier.fillMaxWidth()
+                                                    Modifier
+                                                        .fillMaxWidth()
                                                         .height(4.dp)
                                                         .clip(RoundedCornerShape(4.dp))
                                                         .background(MaterialTheme.colorScheme.surfaceVariant),
                                                 ) {
                                                     Box(
-                                                        Modifier.fillMaxWidth(fraction)
+                                                        Modifier
+                                                            .fillMaxWidth(fraction)
                                                             .fillMaxSize()
                                                             .background(MaterialTheme.colorScheme.primary),
                                                     )
@@ -1041,7 +1197,9 @@ internal fun VideoSourceBrowser(
                                             }
                                             Text(
                                                 if (progress.durationMs > 0L) {
-                                                    "${formatProgressTime(progress.positionMs)} / ${formatProgressTime(progress.durationMs)}"
+                                                    "${formatProgressTime(
+                                                        progress.positionMs,
+                                                    )} / ${formatProgressTime(progress.durationMs)}"
                                                 } else {
                                                     formatProgressTime(progress.positionMs)
                                                 },
@@ -1066,35 +1224,63 @@ internal fun VideoSourceBrowser(
                     item { Text("Available streams", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
                     if (streamChoices.isEmpty() && busy) item { LoadingCard("Finding video streams…") }
                     items(streamChoices, key = { "${it.label}:${it.video.videoUrl}" }) { choice ->
-                        Card(
-                            onClick = {
-                                selectedEpisode?.let { episode ->
-                                    cancelStreamSearch()
-                                    val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
-                                    val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
-                                    val nextAction: NextEpisodeAction? = nextEpisode?.let { next ->
-                                        { onFinished: (Boolean) -> Unit ->
-                                            openEpisode(
-                                                next,
-                                                autoPlayFirst = true,
-                                                preferredStream = choice.identity,
-                                                onAutoPlayFinished = onFinished,
-                                            )
-                                        }
-                                    }
-                                    playVideoChoice(choice, episode, nextAction)
-                                }
-                            },
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Material3Text(choice.label.ifBlank { localizeUiText("Video stream") }, style = MaterialTheme.typography.titleSmall)
-                                    Text("Open in player", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Card(
+                                onClick = {
+                                    selectedEpisode?.let { episode ->
+                                        cancelStreamSearch()
+                                        val currentIndex = visibleEpisodes.indexOfFirst { it.url == episode.url }
+                                        val nextEpisode = visibleEpisodes.getOrNull(currentIndex + 1)
+                                        val nextAction: NextEpisodeAction? =
+                                            nextEpisode?.let { next ->
+                                                { onFinished: (Boolean) -> Unit ->
+                                                    openEpisode(
+                                                        next,
+                                                        autoPlayFirst = true,
+                                                        preferredStream = choice.identity,
+                                                        onAutoPlayFinished = onFinished,
+                                                    )
+                                                }
+                                            }
+                                        playVideoChoice(choice, episode, nextAction)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            ) {
+                                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Material3Text(
+                                            choice.label.ifBlank { localizeUiText("Video stream") },
+                                            style = MaterialTheme.typography.titleSmall,
+                                        )
+                                        Text(
+                                            "Open in player",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Text("Play", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                                 }
-                                Text("Play", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                            }
+                            TextButton(
+                                enabled = choice.identity.hosterName.isNotBlank() || choice.identity.videoTitle.isNotBlank(),
+                                onClick = { setPreferredVideoStream(choice) },
+                            ) {
+                                val currentSourceDefault = preferredVideoStreams[source.id.toString()]
+                                Text(
+                                    localizeUiText(
+                                        if (currentSourceDefault?.identity == choice.identity) {
+                                            "Default for this source"
+                                        } else {
+                                            "Set default"
+                                        },
+                                    ),
+                                )
                             }
                         }
                     }
@@ -1115,5 +1301,84 @@ internal fun VideoSourceBrowser(
                 loadPage(reset = true)
             },
         )
+    }
+}
+
+@Composable
+private fun AnimeActivityStatsCard(
+    animeKey: String,
+    stats: AppDatabase.AnimeActivityStats,
+    episodesStarted: Int,
+    episodesCompleted: Int,
+) {
+    var expanded by remember(animeKey) { mutableStateOf(false) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
+                        .clickable(role = Role.Button) { expanded = !expanded }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Stats", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                Icon(
+                    if (expanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
+                    contentDescription = localizeUiText(if (expanded) "Collapse stats" else "Expand stats"),
+                )
+            }
+            if (expanded) {
+                HorizontalDivider()
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    AnimeActivityStatRow("Watch time", formatAnimeWatchTime(stats.watchTimeMs))
+                    AnimeActivityStatRow("Episodes started", episodesStarted.toString())
+                    AnimeActivityStatRow("Episodes completed", episodesCompleted.toString())
+                    AnimeActivityStatRow("Subtitle lookups", stats.lookupCount.toString())
+                    AnimeActivityStatRow("Cards added to Anki", stats.ankiCardsAdded.toString())
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnimeActivityStatRow(
+    label: String,
+    value: String,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Material3Text(value, style = MaterialTheme.typography.titleSmall)
+    }
+}
+
+private fun formatAnimeWatchTime(watchedMs: Long): String {
+    val totalMinutes = watchedMs.coerceAtLeast(0L) / 60_000L
+    val hours = totalMinutes / 60L
+    val minutes = totalMinutes % 60L
+    return when {
+        hours > 0L -> "${hours}h ${minutes}m"
+        totalMinutes > 0L -> "${totalMinutes}m"
+        watchedMs > 0L -> "<1m"
+        else -> "0m"
     }
 }
