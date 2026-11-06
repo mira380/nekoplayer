@@ -4,24 +4,24 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
-
 import com.nekoplayer.app.data.AppDatabase
 import com.nekoplayer.app.library.AniListAiringEpisode
 import com.nekoplayer.app.library.AniListAiringLookup
 import com.nekoplayer.app.library.AniListLibraryMatch
 import com.nekoplayer.app.library.AnimeLibraryEpisode
 import com.nekoplayer.app.library.jimakuTitleKey
-
 import org.json.JSONArray
 import org.json.JSONObject
-
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-internal enum class LibraryShowSort(val title: String) {
+internal enum class LibraryShowSort(
+    val title: String,
+) {
     TITLE("Title A–Z"),
     RECENT("Recently watched"),
-    EPISODES("Most episodes");
+    EPISODES("Most episodes"),
+    ;
 
     companion object {
         fun fromStored(value: String): LibraryShowSort = entries.firstOrNull { it.name == value } ?: TITLE
@@ -48,15 +48,17 @@ internal fun moveLibraryGroup(
 internal fun normalizeLibraryGroupAssignments(
     assignments: Map<String, Set<String>>,
     groupPriority: List<String>,
-): Map<String, Set<String>> = buildMap {
-    assignments.forEach { (itemKey, assignedGroups) ->
-        if (itemKey.isBlank()) return@forEach
-        val selectedGroup = groupPriority.firstOrNull { groupName ->
-            assignedGroups.any { it.equals(groupName, ignoreCase = true) }
+): Map<String, Set<String>> =
+    buildMap {
+        assignments.forEach { (itemKey, assignedGroups) ->
+            if (itemKey.isBlank()) return@forEach
+            val selectedGroup =
+                groupPriority.firstOrNull { groupName ->
+                    assignedGroups.any { it.equals(groupName, ignoreCase = true) }
+                }
+            if (selectedGroup != null) put(itemKey, setOf(selectedGroup))
         }
-        if (selectedGroup != null) put(itemKey, setOf(selectedGroup))
     }
-}
 
 internal sealed interface LibraryShelfItem {
     val key: String
@@ -90,7 +92,9 @@ internal data class LibraryShelf(
     val entries: List<LibraryShelfItem>,
 )
 
-internal enum class LibrarySubtitleState(val label: String) {
+internal enum class LibrarySubtitleState(
+    val label: String,
+) {
     MATCHING("Matching"),
     NO_MATCH("No subs"),
     ANI_LIST_ERROR("AniList error"),
@@ -143,7 +147,10 @@ internal fun readLibrarySeenEpisodeCounts(database: AppDatabase): Map<String, In
     }
 }
 
-internal fun writeLibrarySeenEpisodeCounts(database: AppDatabase, counts: Map<String, Int>) {
+internal fun writeLibrarySeenEpisodeCounts(
+    database: AppDatabase,
+    counts: Map<String, Int>,
+) {
     val stored = JSONObject()
     counts.forEach { (key, count) ->
         if (key.isNotBlank() && count > 0) stored.put(key, count)
@@ -154,19 +161,33 @@ internal fun writeLibrarySeenEpisodeCounts(database: AppDatabase, counts: Map<St
 internal data class CachedAniListLibraryMatch(
     val signature: String,
     val match: AniListLibraryMatch,
+    val checkedAtMs: Long = 0L,
 )
 
-internal fun aniListLookupSignature(lookup: AniListAiringLookup): String = buildString {
-    append(normalizeAniListCacheText(lookup.showName))
-    lookup.episodeFileNames.map(::normalizeAniListCacheText).filter(String::isNotBlank).forEach { fileName ->
-        append('|').append(fileName)
-    }
-}
+internal const val LIBRARY_ANI_LIST_MATCH_CACHE_LIFETIME_MS = 30L * 60L * 1000L
 
-private fun normalizeAniListCacheText(value: String): String = value.trim().lowercase(Locale.ROOT)
-    .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
-    .replace(Regex("\\s+"), " ")
-    .trim()
+internal fun CachedAniListLibraryMatch.isFreshFor(
+    signature: String,
+    nowMs: Long,
+): Boolean =
+    this.signature == signature && checkedAtMs > 0L &&
+        nowMs - checkedAtMs in 0 until LIBRARY_ANI_LIST_MATCH_CACHE_LIFETIME_MS
+
+internal fun aniListLookupSignature(lookup: AniListAiringLookup): String =
+    buildString {
+        append(normalizeAniListCacheText(lookup.showName))
+        lookup.episodeFileNames.map(::normalizeAniListCacheText).filter(String::isNotBlank).forEach { fileName ->
+            append('|').append(fileName)
+        }
+    }
+
+private fun normalizeAniListCacheText(value: String): String =
+    value
+        .trim()
+        .lowercase(Locale.ROOT)
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 
 internal fun readAniListMatchCache(database: AppDatabase): Map<String, CachedAniListLibraryMatch> {
     val stored = database.readSetting(LIBRARY_ANI_LIST_MATCH_CACHE_KEY) as? JSONArray ?: return emptyMap()
@@ -179,12 +200,20 @@ internal fun readAniListMatchCache(database: AppDatabase): Map<String, CachedAni
             val nextEpisode = row.optInt("nextEpisode", 0).takeIf { it in 1..300 }
             val airingAt = row.optLong("airingAt", 0L).takeIf { it > 0L }
             val airingAniListId = row.optInt("airingAniListId", 0).takeIf { it > 0 } ?: aniListId
-            val nextAiring = if (nextEpisode != null && airingAt != null) {
-                AniListAiringEpisode(nextEpisode, airingAt, airingAniListId)
-            } else {
-                null
-            }
-            put(key, CachedAniListLibraryMatch(signature, AniListLibraryMatch(aniListId, nextAiring)))
+            val nextAiring =
+                if (nextEpisode != null && airingAt != null) {
+                    AniListAiringEpisode(nextEpisode, airingAt, airingAniListId)
+                } else {
+                    null
+                }
+            put(
+                key,
+                CachedAniListLibraryMatch(
+                    signature = signature,
+                    match = AniListLibraryMatch(aniListId, nextAiring),
+                    checkedAtMs = row.optLong("checkedAtMs", 0L),
+                ),
+            )
         }
     }
 }
@@ -204,7 +233,8 @@ internal fun writeAniListMatchCache(
                 .put("aniListId", cached.match.aniListId)
                 .put("nextEpisode", nextAiring?.episode ?: JSONObject.NULL)
                 .put("airingAt", nextAiring?.airingAtEpochSeconds ?: JSONObject.NULL)
-                .put("airingAniListId", nextAiring?.aniListId ?: JSONObject.NULL),
+                .put("airingAniListId", nextAiring?.aniListId ?: JSONObject.NULL)
+                .put("checkedAtMs", cached.checkedAtMs),
         )
     }
     database.writeSetting(LIBRARY_ANI_LIST_MATCH_CACHE_KEY, stored)
@@ -221,7 +251,11 @@ internal fun readManualJimakuMatchCache(database: AppDatabase): Map<String, Int>
     }
 }
 
-internal fun saveManualJimakuMatch(database: AppDatabase, title: String, entryId: Int) {
+internal fun saveManualJimakuMatch(
+    database: AppDatabase,
+    title: String,
+    entryId: Int,
+) {
     val titleKey = jimakuTitleKey(title)
     if (titleKey.isBlank() || entryId <= 0) return
     val updated = JSONObject()
@@ -248,8 +282,12 @@ internal fun readLibrarySubtitleStatusCache(database: AppDatabase): Map<String, 
                     state = state,
                     checkedAtMs = checkedAtMs,
                     apiKeyFingerprint = row.optInt("apiKeyFingerprint", 0),
-                    latestAvailableEpisode = if (row.isNull("latestAvailableEpisode")) null
-                    else row.optInt("latestAvailableEpisode", 0).takeIf { it in 1..300 },
+                    latestAvailableEpisode =
+                        if (row.isNull("latestAvailableEpisode")) {
+                            null
+                        } else {
+                            row.optInt("latestAvailableEpisode", 0).takeIf { it in 1..300 }
+                        },
                     aniListId = row.optInt("aniListId", 0).takeIf { it > 0 },
                     jimakuEntryId = row.optInt("jimakuEntryId", 0).takeIf { it > 0 },
                     titleMatchRevision = row.optInt("titleMatchRevision", 0),
@@ -282,52 +320,65 @@ internal fun writeLibrarySubtitleStatusCache(
     database.writeSetting(LIBRARY_SUBTITLE_STATUS_CACHE_KEY, stored)
 }
 
-private val PERSISTED_SUBTITLE_STATES = setOf(
-    LibrarySubtitleState.AVAILABLE,
-    LibrarySubtitleState.MISSING,
-    LibrarySubtitleState.NO_MATCH,
-)
+private val PERSISTED_SUBTITLE_STATES =
+    setOf(
+        LibrarySubtitleState.AVAILABLE,
+        LibrarySubtitleState.MISSING,
+        LibrarySubtitleState.NO_MATCH,
+    )
 
-internal fun LibraryShelfItem.toAiringLookup(): AniListAiringLookup = when (this) {
-    is LibraryShelfItem.LocalShow -> AniListAiringLookup(
-        key = key,
-        showName = showName,
-        episodeFileNames = episodes.take(2).map(AnimeLibraryEpisode::displayName),
-    )
-    is LibraryShelfItem.SourceTitle -> AniListAiringLookup(
-        key = key,
-        showName = entry.title,
-    )
-}
+internal fun LibraryShelfItem.toAiringLookup(): AniListAiringLookup =
+    when (this) {
+        is LibraryShelfItem.LocalShow -> {
+            AniListAiringLookup(
+                key = key,
+                showName = showName,
+                episodeFileNames = episodes.take(2).map(AnimeLibraryEpisode::displayName),
+            )
+        }
+
+        is LibraryShelfItem.SourceTitle -> {
+            AniListAiringLookup(
+                key = key,
+                showName = entry.title,
+            )
+        }
+    }
 
 internal fun LibraryShelfItem.toSubtitleCheckTarget(aniListId: Int? = null): LibrarySubtitleCheckTarget =
     when (this) {
-        is LibraryShelfItem.LocalShow -> LibrarySubtitleCheckTarget(
-            key = key,
-            title = showName,
-            sourceUrl = null,
-            episode = episodeCount,
-            aniListId = aniListId,
-            lookup = toAiringLookup(),
-        )
-        is LibraryShelfItem.SourceTitle -> LibrarySubtitleCheckTarget(
-            key = key,
-            title = entry.title,
-            sourceUrl = entry.animeUrl,
-            episode = episodeCount,
-            aniListId = aniListId,
-            lookup = toAiringLookup(),
-        )
+        is LibraryShelfItem.LocalShow -> {
+            LibrarySubtitleCheckTarget(
+                key = key,
+                title = showName,
+                sourceUrl = null,
+                episode = episodeCount,
+                aniListId = aniListId,
+                lookup = toAiringLookup(),
+            )
+        }
+
+        is LibraryShelfItem.SourceTitle -> {
+            LibrarySubtitleCheckTarget(
+                key = key,
+                title = entry.title,
+                sourceUrl = entry.animeUrl,
+                episode = episodeCount,
+                aniListId = aniListId,
+                lookup = toAiringLookup(),
+            )
+        }
     }
 
-internal fun sourceTitleSortKey(entry: AppDatabase.SourceLibraryEntry): String =
-    entry.title.lowercase()
+internal fun sourceTitleSortKey(entry: AppDatabase.SourceLibraryEntry): String = entry.title.lowercase()
 
-internal fun sourceEpisodeCount(entry: AppDatabase.SourceLibraryEntry): Int =
-    entry.episodeCount ?: 0
+internal fun sourceEpisodeCount(entry: AppDatabase.SourceLibraryEntry): Int = entry.episodeCount ?: 0
 
-internal fun String.toLibraryTimestampMs(): Long = runCatching {
-    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US)
-        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
-        .parse(this)?.time ?: 0L
-}.getOrDefault(0L)
+internal fun String.toLibraryTimestampMs(): Long =
+    runCatching {
+        java.text
+            .SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US)
+            .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+            .parse(this)
+            ?.time ?: 0L
+    }.getOrDefault(0L)

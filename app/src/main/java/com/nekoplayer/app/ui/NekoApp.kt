@@ -3,46 +3,45 @@ package com.nekoplayer.app.ui
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
-import androidx.core.net.toUri
 import android.os.Build
 import android.os.Process
-import android.util.Log
 import android.provider.OpenableColumns
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
-import androidx.compose.material3.Icon
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -61,12 +60,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import com.nekoplayer.app.MainActivity
 import com.nekoplayer.app.data.AppDatabase
@@ -89,7 +89,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 
-private enum class AppPage(val label: String) {
+private enum class AppPage(
+    val label: String,
+) {
     Library("Library"),
     Dictionaries("Dictionaries"),
     Extensions("Extensions"),
@@ -125,36 +127,39 @@ fun NekoApp(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val dictionaryRepository = remember(database) {
-        DictionaryRepository(database.sql, context.contentResolver, File(context.cacheDir, "dictionary-imports"))
-    }
+    val dictionaryRepository =
+        remember(database) {
+            DictionaryRepository(database.sql, context.contentResolver, File(context.cacheDir, "dictionary-imports"))
+        }
     val aniList = remember(context) { AniListClient(context) }
     val snackbar = remember { SnackbarHostState() }
     val extensionManager = remember(context, database) { ExtensionManager(context, database) }
     val appUpdateClient = remember(context) { AppUpdateClient(context) }
-    val appVersion = remember(context) {
-        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
-            .getOrNull() ?: "Unknown"
-    }
+    val appVersion =
+        remember(context) {
+            runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
+                .getOrNull() ?: "Unknown"
+        }
     var startupUpdateRelease by remember { mutableStateOf<AppUpdateRelease?>(null) }
     var startupUpdateError by remember { mutableStateOf<String?>(null) }
     var startupUpdateDownloading by remember { mutableStateOf(false) }
     var startupUpdateDownloadProgress by remember { mutableStateOf(0f) }
     var downloadedStartupUpdate by remember { mutableStateOf<File?>(null) }
-    val startupUpdateInstallPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) {
-        val apk = downloadedStartupUpdate
-        if (apk != null && appUpdateClient.canInstallUnknownApps()) {
-            runCatching { appUpdateClient.install(apk) }
-                .onFailure {
-                    startupUpdateError = (it as? AppUpdateException)?.message
-                        ?: "Couldn’t start the installer. Try again."
-                }
-        } else if (apk != null) {
-            startupUpdateError = "Allow NekoPlayer to install updates to continue."
+    val startupUpdateInstallPermissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult(),
+        ) {
+            val apk = downloadedStartupUpdate
+            if (apk != null && appUpdateClient.canInstallUnknownApps()) {
+                runCatching { appUpdateClient.install(apk) }
+                    .onFailure {
+                        startupUpdateError = (it as? AppUpdateException)?.message
+                            ?: "Couldn’t start the installer. Try again."
+                    }
+            } else if (apk != null) {
+                startupUpdateError = "Allow NekoPlayer to install updates to continue."
+            }
         }
-    }
 
     LaunchedEffect(database, dictionaryRepository) {
         withContext(Dispatchers.IO) {
@@ -204,11 +209,18 @@ fun NekoApp(
     var videoPermissionCallback by remember { mutableStateOf<(() -> Unit)?>(null) }
     var dictionaryImportStatus by remember { mutableStateOf<String?>(null) }
     var dictionaryImportBusy by remember { mutableStateOf(false) }
-    val videoPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val callback = videoPermissionCallback
-        videoPermissionCallback = null
-        if (granted) callback?.invoke() else scope.launch { snackbar.showSnackbar(localizeUiText("Allow video access to open this older file path.", language)) }
-    }
+    val videoPermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val callback = videoPermissionCallback
+            videoPermissionCallback = null
+            if (granted) {
+                callback?.invoke()
+            } else {
+                scope.launch {
+                    snackbar.showSnackbar(localizeUiText("Allow video access to open this older file path.", language))
+                }
+            }
+        }
 
     LaunchedEffect(Unit) {
         folderUri = withContext(Dispatchers.IO) { database.readSetting("library.folderPath") as? String }
@@ -217,16 +229,18 @@ fun NekoApp(
     }
 
     LaunchedEffect(appUpdateClient, appVersion, database) {
-        val dismissedVersion = withContext(Dispatchers.IO) {
-            database.readString(DISMISSED_UPDATE_VERSION_KEY)
-        }
-        val release = try {
-            appUpdateClient.latestRelease()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            return@LaunchedEffect
-        }
+        val dismissedVersion =
+            withContext(Dispatchers.IO) {
+                database.readString(DISMISSED_UPDATE_VERSION_KEY)
+            }
+        val release =
+            try {
+                appUpdateClient.latestRelease()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                return@LaunchedEffect
+            }
         if (
             AppUpdateClient.isNewerVersion(release.versionTag, appVersion) &&
             dismissedVersion != release.versionTag
@@ -273,9 +287,10 @@ fun NekoApp(
             startupUpdateDownloadProgress = 0f
             startupUpdateError = null
             try {
-                val apk = appUpdateClient.downloadApk(downloadUrl) { progress ->
-                    startupUpdateDownloadProgress = progress
-                }
+                val apk =
+                    appUpdateClient.downloadApk(downloadUrl) { progress ->
+                        startupUpdateDownloadProgress = progress
+                    }
                 downloadedStartupUpdate = apk
                 installStartupUpdate(apk)
             } catch (cancelled: CancellationException) {
@@ -302,11 +317,13 @@ fun NekoApp(
         libraryLoading = true
         libraryError = null
         try {
-            libraryEpisodes = withContext(Dispatchers.IO) {
-                val root = DocumentFile.fromTreeUri(context, selectedFolderUri.toUri())
-                    ?: error("The saved library folder is unavailable.")
-                AnimeLibraryScanner().scan(root)
-            }
+            libraryEpisodes =
+                withContext(Dispatchers.IO) {
+                    val root =
+                        DocumentFile.fromTreeUri(context, selectedFolderUri.toUri())
+                            ?: error("The saved library folder is unavailable.")
+                    AnimeLibraryScanner().scan(root)
+                }
         } catch (_: Exception) {
             libraryError = "Couldn’t scan this folder. Choose it again or pick another folder."
             libraryEpisodes = emptyList()
@@ -354,123 +371,139 @@ fun NekoApp(
     ) {
         val uri = if (sourceUri.scheme.isNullOrBlank()) Uri.fromFile(File(sourceUri.toString())) else sourceUri
         if (uri.scheme == "file") {
-            val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO
-            else Manifest.permission.READ_EXTERNAL_STORAGE
+            val permission =
+                if (Build.VERSION.SDK_INT >= 33) {
+                    Manifest.permission.READ_MEDIA_VIDEO
+                } else {
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                }
             if (ContextCompat.checkSelfPermission(activity, permission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 videoPermissionCallback = {
-                    activeVideo = VideoTarget(
-                        uri,
-                        name,
-                        seriesTitle,
-                        requestHeaders,
-                        videoMimeType,
-                        audioUri,
-                        audioMimeType,
-                        subtitleEpisodeName,
-                        subtitleEpisodeNumber,
-                        sourceProgressIdentity,
-                        alternateSeriesTitle,
-                        onPlayNextEpisode,
-                        sourceSkipTimestamps,
-                    )
+                    activeVideo =
+                        VideoTarget(
+                            uri,
+                            name,
+                            seriesTitle,
+                            requestHeaders,
+                            videoMimeType,
+                            audioUri,
+                            audioMimeType,
+                            subtitleEpisodeName,
+                            subtitleEpisodeNumber,
+                            sourceProgressIdentity,
+                            alternateSeriesTitle,
+                            onPlayNextEpisode,
+                            sourceSkipTimestamps,
+                        )
                 }
                 videoPermissionLauncher.launch(permission)
                 return
             }
         }
-        activeVideo = VideoTarget(
-            uri,
-            name,
-            seriesTitle,
-            requestHeaders,
-            videoMimeType,
-            audioUri,
-            audioMimeType,
-            subtitleEpisodeName,
-            subtitleEpisodeNumber,
-            sourceProgressIdentity,
-            alternateSeriesTitle,
-            onPlayNextEpisode,
-            sourceSkipTimestamps,
-        )
+        activeVideo =
+            VideoTarget(
+                uri,
+                name,
+                seriesTitle,
+                requestHeaders,
+                videoMimeType,
+                audioUri,
+                audioMimeType,
+                subtitleEpisodeName,
+                subtitleEpisodeNumber,
+                sourceProgressIdentity,
+                alternateSeriesTitle,
+                onPlayNextEpisode,
+                sourceSkipTimestamps,
+            )
     }
 
-    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) {
-            grantPersistedAccess(uri)
-            folderUri = uri.toString()
-            libraryLoading = true
-            libraryScanRequest += 1
-            scope.launch(Dispatchers.IO) { database.writeSetting("library.folderPath", uri.toString()) }
+    val folderPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) {
+                grantPersistedAccess(uri)
+                folderUri = uri.toString()
+                libraryLoading = true
+                libraryScanRequest += 1
+                scope.launch(Dispatchers.IO) { database.writeSetting("library.folderPath", uri.toString()) }
+            }
         }
-    }
-    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            grantPersistedAccess(uri)
-            val name = displayName(uri)
-            if (AnimeLibraryScanner.isVideoName(name)) openVideo(uri, name)
-            else scope.launch { snackbar.showSnackbar(localizeUiText("Choose a supported local video file.", language)) }
-        }
-    }
-    val importPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { selectedUris ->
-        val uris = selectedUris.distinct()
-        if (uris.isEmpty()) {
-            dictionaryImportBusy = false
-            dictionaryImportStatus = null
-        } else {
-            uris.forEach(::grantPersistedAccess)
-            dictionaryImportStatus = null
-            dictionaryImportBusy = true
-            scope.launch {
-                val failures = mutableListOf<String>()
-                try {
-                    uris.forEachIndexed { index, uri ->
-                        val name = displayName(uri)
-                        dictionaryImportStatus = "Importing ${index + 1} of ${uris.size}"
-                        try {
-                            withContext(Dispatchers.IO) { dictionaryRepository.importYomitanFile(uri) }
-                            dictionaryVersion += 1
-                        } catch (error: kotlinx.coroutines.CancellationException) {
-                            throw error
-                        } catch (_: Exception) {
-                            failures += name
-                        }
-                    }
-                } finally {
-                    dictionaryImportStatus = null
-                    dictionaryImportBusy = false
-                }
-                if (failures.isNotEmpty()) {
-                    snackbar.showSnackbar(
-                        failures.joinToString("\n") { localizeUiText("$it could not be imported. Choose a valid Yomitan dictionary ZIP.", language) },
-                    )
+    val videoPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                grantPersistedAccess(uri)
+                val name = displayName(uri)
+                if (AnimeLibraryScanner.isVideoName(name)) {
+                    openVideo(uri, name)
+                } else {
+                    scope.launch { snackbar.showSnackbar(localizeUiText("Choose a supported local video file.", language)) }
                 }
             }
         }
-    }
-    val subtitlePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            grantPersistedAccess(uri)
-            val callback = subtitlePickerCallback
-            subtitlePickerCallback = null
-            callback?.invoke(uri, displayName(uri))
-        }
-    }
-    val coverPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            grantPersistedAccess(uri)
-            val show = coverTarget
-            coverTarget = null
-            if (show != null) {
-                val existing = database.readSetting("library.customCovers") as? JSONObject ?: JSONObject()
-                val updated = JSONObject(existing.toString()).put(show, uri.toString())
+    val importPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { selectedUris ->
+            val uris = selectedUris.distinct()
+            if (uris.isEmpty()) {
+                dictionaryImportBusy = false
+                dictionaryImportStatus = null
+            } else {
+                uris.forEach(::grantPersistedAccess)
+                dictionaryImportStatus = null
+                dictionaryImportBusy = true
                 scope.launch {
-                    withContext(Dispatchers.IO) { database.writeSetting("library.customCovers", updated) }
-                    coverVersion += 1
+                    val failures = mutableListOf<String>()
+                    try {
+                        uris.forEachIndexed { index, uri ->
+                            val name = displayName(uri)
+                            dictionaryImportStatus = "Importing ${index + 1} of ${uris.size}"
+                            try {
+                                withContext(Dispatchers.IO) { dictionaryRepository.importYomitanFile(uri) }
+                                dictionaryVersion += 1
+                            } catch (error: kotlinx.coroutines.CancellationException) {
+                                throw error
+                            } catch (_: Exception) {
+                                failures += name
+                            }
+                        }
+                    } finally {
+                        dictionaryImportStatus = null
+                        dictionaryImportBusy = false
+                    }
+                    if (failures.isNotEmpty()) {
+                        snackbar.showSnackbar(
+                            failures.joinToString(
+                                "\n",
+                            ) { localizeUiText("$it could not be imported. Choose a valid Yomitan dictionary ZIP.", language) },
+                        )
+                    }
                 }
             }
         }
-    }
+    val subtitlePicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                grantPersistedAccess(uri)
+                val callback = subtitlePickerCallback
+                subtitlePickerCallback = null
+                callback?.invoke(uri, displayName(uri))
+            }
+        }
+    val coverPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                grantPersistedAccess(uri)
+                val show = coverTarget
+                coverTarget = null
+                if (show != null) {
+                    val existing = database.readSetting("library.customCovers") as? JSONObject ?: JSONObject()
+                    val updated = JSONObject(existing.toString()).put(show, uri.toString())
+                    scope.launch {
+                        withContext(Dispatchers.IO) { database.writeSetting("library.customCovers", updated) }
+                        coverVersion += 1
+                    }
+                }
+            }
+        }
     BackHandler(enabled = activeVideo != null || page != AppPage.Library) {
         if (activeVideo != null) {
             activeVideo = null
@@ -489,293 +522,330 @@ fun NekoApp(
     }
 
     NekoTheme(darkMode, palette, accent) {
-      ProvideNekoLanguage(language) {
-        val current = activeVideo
-        SideEffect {
-            activity.setSystemBarDarkIcons(enabled = !darkMode && current == null)
-        }
-        Box(Modifier.fillMaxSize()) {
-            // Use the platform visibility flag instead of the animated inset size.
-            // The inset can briefly reach zero during an IME transition, which
-            // made the bottom navigation flash back in or disappear late.
-            val imeVisible = WindowInsets.isImeVisible
-            val safeSides = if (detailScreen) {
-                WindowInsetsSides.Top + WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
-            } else {
-                WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+        ProvideNekoLanguage(language) {
+            val current = activeVideo
+            SideEffect {
+                activity.setSystemBarDarkIcons(enabled = !darkMode && current == null)
             }
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(safeSides))
-                    .windowInsetsPadding(WindowInsets.ime),
-            ) {
-                Box(
-                    Modifier.weight(1f).fillMaxWidth(),
-                    contentAlignment = Alignment.TopCenter,
+            Box(Modifier.fillMaxSize()) {
+                // Use the platform visibility flag instead of the animated inset size.
+                // The inset can briefly reach zero during an IME transition, which
+                // made the bottom navigation flash back in or disappear late.
+                val imeVisible = WindowInsets.isImeVisible
+                val safeSides =
+                    if (detailScreen) {
+                        WindowInsetsSides.Top + WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
+                    } else {
+                        WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                    }
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(safeSides))
+                        .windowInsetsPadding(WindowInsets.ime),
                 ) {
                     Box(
-                        Modifier.fillMaxHeight().widthIn(max = 720.dp).fillMaxWidth(),
+                        Modifier.weight(1f).fillMaxWidth(),
+                        contentAlignment = Alignment.TopCenter,
                     ) {
-                        LibraryScreen(
-                            database = database,
-                            extensionManager = extensionManager,
-                            aniList = aniList,
-                            folderUri = folderUri,
-                            episodes = libraryEpisodes,
-                            loading = !folderUriLoaded || libraryLoading,
-                            error = libraryError,
-                            coverVersion = coverVersion,
-                            progressRefreshKey = libraryProgressRefreshKey,
-                            onPickFolder = { folderPicker.launch(null) },
-                            onPickVideo = { videoPicker.launch(arrayOf("*/*")) },
-                            onOpenVideo = { uri, name, title, onNextEpisode ->
-                                openVideo(uri, name, title, onPlayNextEpisode = onNextEpisode)
-                            },
-                            onOpenSourceEntry = { entry, airingEpisode ->
-                                pendingSourceEntry = entry
-                                pendingSourceAiringEpisode = airingEpisode
-                                page = AppPage.Extensions
-                            },
-                            onPickCover = { show -> coverTarget = show; coverPicker.launch(arrayOf("image/*")) },
-                            onDetailScreenChanged = { detailScreen = it },
-                            isActive = page == AppPage.Library,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .then(
-                                    if (page == AppPage.Library) Modifier
-                                    else Modifier.alpha(0f).clearAndSetSemantics {},
-                                ),
-                        )
-                        if (page != AppPage.Library) {
-                            Box(
-                                Modifier
-                                    .fillMaxSize()
-                                    .background(MaterialTheme.colorScheme.background)
-                                    .clickable(
-                                        indication = null,
-                                        interactionSource = remember { MutableInteractionSource() },
-                                    ) {},
-                            ) {
-                                when (page) {
-                                    AppPage.Library -> Unit
-                                    AppPage.Dictionaries -> DictionaryScreen(
-                                        repository = dictionaryRepository,
-                                        refreshKey = dictionaryVersion,
-                                        onImportDictionary = {
-                                            dictionaryImportStatus = null
-                                            importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
-                                        },
-                                        dictionaryImportStatus = dictionaryImportStatus,
-                                        dictionaryImportBusy = dictionaryImportBusy,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                    AppPage.Extensions -> {
-                                        ExtensionsScreen(
-                                            manager = extensionManager,
-                                            database = database,
-                                            progressRefreshKey = libraryProgressRefreshKey,
-                                            aniList = aniList,
-                                            sourceEntryToOpen = pendingSourceEntry,
-                                            sourceEntryAiringEpisode = pendingSourceAiringEpisode,
-                                            onSourceEntryOpened = {
-                                                pendingSourceEntry = null
-                                                pendingSourceAiringEpisode = null
+                        Box(
+                            Modifier.fillMaxHeight().widthIn(max = 720.dp).fillMaxWidth(),
+                        ) {
+                            LibraryScreen(
+                                database = database,
+                                extensionManager = extensionManager,
+                                aniList = aniList,
+                                folderUri = folderUri,
+                                episodes = libraryEpisodes,
+                                loading = !folderUriLoaded || libraryLoading,
+                                error = libraryError,
+                                coverVersion = coverVersion,
+                                progressRefreshKey = libraryProgressRefreshKey,
+                                onPickFolder = { folderPicker.launch(null) },
+                                onPickVideo = { videoPicker.launch(arrayOf("*/*")) },
+                                onOpenVideo = { uri, name, title, onNextEpisode ->
+                                    openVideo(uri, name, title, onPlayNextEpisode = onNextEpisode)
+                                },
+                                onOpenSourceEntry = { entry, airingEpisode ->
+                                    pendingSourceEntry = entry
+                                    pendingSourceAiringEpisode = airingEpisode
+                                    page = AppPage.Extensions
+                                },
+                                onPickCover = { show ->
+                                    coverTarget = show
+                                    coverPicker.launch(arrayOf("image/*"))
+                                },
+                                onDetailScreenChanged = { detailScreen = it },
+                                isActive = page == AppPage.Library,
+                                modifier =
+                                    Modifier
+                                        .fillMaxSize()
+                                        .then(
+                                            if (page == AppPage.Library) {
+                                                Modifier
+                                            } else {
+                                                Modifier.alpha(0f).clearAndSetSemantics {}
                                             },
-                                            onReturnToLibrary = {
-                                                page = AppPage.Library
-                                                pendingSourceEntry = null
-                                                pendingSourceAiringEpisode = null
-                                                detailScreen = false
-                                            },
-                                            onPlayVideo = { uri, name, title, headers, episodeName, episodeNumber, progressIdentity, alternateTitle, onNextEpisode, sourceSkipTimestamps ->
-                                                openVideo(
-                                                    sourceUri = uri,
-                                                    name = name,
-                                                    seriesTitle = title,
-                                                    requestHeaders = headers,
-                                                    subtitleEpisodeName = episodeName,
-                                                    subtitleEpisodeNumber = episodeNumber,
-                                                    sourceProgressIdentity = progressIdentity,
-                                                    alternateSeriesTitle = alternateTitle,
-                                                    onPlayNextEpisode = onNextEpisode,
-                                                    sourceSkipTimestamps = sourceSkipTimestamps,
-                                                )
-                                            },
-                                            onDetailScreenChanged = { detailScreen = it },
-                                            modifier = Modifier.fillMaxSize(),
-                                        )
+                                        ),
+                            )
+                            if (page != AppPage.Library) {
+                                Box(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(MaterialTheme.colorScheme.background)
+                                        .clickable(
+                                            indication = null,
+                                            interactionSource = remember { MutableInteractionSource() },
+                                        ) {},
+                                ) {
+                                    when (page) {
+                                        AppPage.Library -> {
+                                            Unit
+                                        }
+
+                                        AppPage.Dictionaries -> {
+                                            DictionaryScreen(
+                                                repository = dictionaryRepository,
+                                                refreshKey = dictionaryVersion,
+                                                onImportDictionary = {
+                                                    dictionaryImportStatus = null
+                                                    importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+                                                },
+                                                dictionaryImportStatus = dictionaryImportStatus,
+                                                dictionaryImportBusy = dictionaryImportBusy,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        }
+
+                                        AppPage.Extensions -> {
+                                            ExtensionsScreen(
+                                                manager = extensionManager,
+                                                database = database,
+                                                progressRefreshKey = libraryProgressRefreshKey,
+                                                aniList = aniList,
+                                                sourceEntryToOpen = pendingSourceEntry,
+                                                sourceEntryAiringEpisode = pendingSourceAiringEpisode,
+                                                onSourceEntryOpened = {
+                                                    pendingSourceEntry = null
+                                                    pendingSourceAiringEpisode = null
+                                                },
+                                                onLibraryChanged = { libraryProgressRefreshKey++ },
+                                                onReturnToLibrary = {
+                                                    page = AppPage.Library
+                                                    pendingSourceEntry = null
+                                                    pendingSourceAiringEpisode = null
+                                                    detailScreen = false
+                                                },
+                                                onPlayVideo = {
+                                                    uri,
+                                                    name,
+                                                    title,
+                                                    headers,
+                                                    episodeName,
+                                                    episodeNumber,
+                                                    progressIdentity,
+                                                    alternateTitle,
+                                                    onNextEpisode,
+                                                    sourceSkipTimestamps,
+                                                    ->
+                                                    openVideo(
+                                                        sourceUri = uri,
+                                                        name = name,
+                                                        seriesTitle = title,
+                                                        requestHeaders = headers,
+                                                        subtitleEpisodeName = episodeName,
+                                                        subtitleEpisodeNumber = episodeNumber,
+                                                        sourceProgressIdentity = progressIdentity,
+                                                        alternateSeriesTitle = alternateTitle,
+                                                        onPlayNextEpisode = onNextEpisode,
+                                                        sourceSkipTimestamps = sourceSkipTimestamps,
+                                                    )
+                                                },
+                                                onDetailScreenChanged = { detailScreen = it },
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        }
+
+                                        AppPage.Settings -> {
+                                            SettingsScreen(
+                                                database = database,
+                                                dictionaries = dictionaryRepository,
+                                                anki = anki,
+                                                darkMode = darkMode,
+                                                language = language,
+                                                palette = palette,
+                                                accent = accent,
+                                                onDarkModeChanged = { value ->
+                                                    darkMode = value
+                                                    scope.launch(Dispatchers.IO) { database.writeSetting("appearance.dark", value) }
+                                                },
+                                                onLanguageChanged = { value ->
+                                                    language = value
+                                                    scope.launch(Dispatchers.IO) { database.writeSetting("appearance.language", value) }
+                                                },
+                                                onPaletteChanged = { value ->
+                                                    palette = value
+                                                    scope.launch(Dispatchers.IO) { database.writeSetting("appearance.palette", value) }
+                                                },
+                                                onAccentChanged = { value ->
+                                                    accent = value
+                                                    scope.launch(Dispatchers.IO) { database.writeSetting("appearance.accent", value) }
+                                                },
+                                                onImportDictionary = {
+                                                    dictionaryImportStatus = null
+                                                    importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+                                                },
+                                                dictionaryImportStatus = dictionaryImportStatus,
+                                                dictionaryImportBusy = dictionaryImportBusy,
+                                                refreshKey = dictionaryVersion,
+                                                onDetailScreenChanged = { detailScreen = it },
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        }
                                     }
-                                    AppPage.Settings -> SettingsScreen(
-                                        database = database,
-                                        dictionaries = dictionaryRepository,
-                                        anki = anki,
-                                        darkMode = darkMode,
-                                        language = language,
-                                        palette = palette,
-                                        accent = accent,
-                                        onDarkModeChanged = { value ->
-                                            darkMode = value
-                                            scope.launch(Dispatchers.IO) { database.writeSetting("appearance.dark", value) }
-                                        },
-                                        onLanguageChanged = { value ->
-                                            language = value
-                                            scope.launch(Dispatchers.IO) { database.writeSetting("appearance.language", value) }
-                                        },
-                                        onPaletteChanged = { value ->
-                                            palette = value
-                                            scope.launch(Dispatchers.IO) { database.writeSetting("appearance.palette", value) }
-                                        },
-                                        onAccentChanged = { value ->
-                                            accent = value
-                                            scope.launch(Dispatchers.IO) { database.writeSetting("appearance.accent", value) }
-                                        },
-                                        onImportDictionary = {
-                                            dictionaryImportStatus = null
-                                            importPicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
-                                        },
-                                        dictionaryImportStatus = dictionaryImportStatus,
-                                        dictionaryImportBusy = dictionaryImportBusy,
-                                        refreshKey = dictionaryVersion,
-                                        onDetailScreenChanged = { detailScreen = it },
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
                                 }
                             }
                         }
+                        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(8.dp))
                     }
-                    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(8.dp))
-                }
-                if (!imeVisible && !detailScreen) {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        tonalElevation = 0.dp,
-                    ) {
-                        AppPage.entries.forEach { destination ->
-                            val icon = when (destination) {
-                                AppPage.Library -> Icons.AutoMirrored.Filled.LibraryBooks
-                                AppPage.Dictionaries -> Icons.AutoMirrored.Filled.MenuBook
-                                AppPage.Extensions -> Icons.Default.VideoLibrary
-                                AppPage.Settings -> Icons.Default.Settings
-                            }
-                            NavigationBarItem(
-                                selected = page == destination,
-                                onClick = { page = destination; detailScreen = false },
-                                icon = { Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp)) },
-                                label = { Text(destination.label) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                ),
-                            )
-                        }
-                    }
-                }
-            }
-            if (current != null) {
-                NekoPlayerTheme(darkMode, palette, accent) {
-                    PlayerScreen(
-                        activity = activity,
-                        database = database,
-                        dictionaries = dictionaryRepository,
-                        anki = anki,
-                        uri = current.uri,
-                        displayName = current.displayName,
-                        seriesTitle = current.seriesTitle,
-                        videoMimeType = current.videoMimeType,
-                        audioUri = current.audioUri,
-                        audioMimeType = current.audioMimeType,
-                        requestHeaders = current.requestHeaders,
-                        subtitleEpisodeName = current.subtitleEpisodeName,
-                        subtitleEpisodeNumber = current.subtitleEpisodeNumber,
-                        sourceProgressIdentity = current.sourceProgressIdentity,
-                        alternateSeriesTitle = current.alternateSeriesTitle,
-                        sourceSkipTimestamps = current.sourceSkipTimestamps,
-                        onClose = { activeVideo = null },
-                        onPickSubtitle = { callback ->
-                            subtitlePickerCallback = callback
-                            subtitlePicker.launch(arrayOf("*/*"))
-                        },
-                        onNotify = { message -> Toast.makeText(activity, localizeUiText(message, language), Toast.LENGTH_SHORT).show() },
-                        onPlayNextEpisode = current.onPlayNextEpisode,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-            }
-            // Register after the underlying screens so Back closes the player first.
-            BackHandler(enabled = current != null) {
-                activeVideo = null
-            }
-        }
-        startupUpdateRelease?.takeIf { current == null }?.let { release ->
-            val cachedApk = downloadedStartupUpdate?.takeIf { it.isFile }
-            val releaseNotes = formatReleaseNotes(release.releaseNotes.orEmpty(), release.versionTag)
-            AlertDialog(
-                onDismissRequest = {
-                    if (!startupUpdateDownloading) dismissStartupUpdate()
-                },
-                title = { Text("Update available") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(
-                            "Update available: ${release.versionTag} · Installed: $appVersion",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (releaseNotes.isNotBlank()) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 240.dp)
-                                    .verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Text("What’s new", style = MaterialTheme.typography.titleSmall)
-                                Text(releaseNotes, style = MaterialTheme.typography.bodyMedium)
-                            }
-                        }
-                        if (release.apkUrl == null) {
-                            Text("No APK is attached to the latest release.")
-                        }
-                        startupUpdateError?.let { error ->
-                            Text(error, color = MaterialTheme.colorScheme.error)
-                        }
-                        if (startupUpdateDownloading) {
-                            LinearProgressIndicator(
-                                progress = { startupUpdateDownloadProgress },
-                                modifier = Modifier.fillMaxWidth().height(3.dp),
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    if (release.apkUrl != null) {
-                        TextButton(
-                            onClick = ::downloadOrInstallStartupUpdate,
-                            enabled = !startupUpdateDownloading,
+                    if (!imeVisible && !detailScreen) {
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                            tonalElevation = 0.dp,
                         ) {
-                            Text(
-                                when {
-                                    startupUpdateDownloading -> "Downloading update…"
-                                    cachedApk != null -> "Install update"
-                                    else -> "Download and install"
-                                },
-                            )
+                            AppPage.entries.forEach { destination ->
+                                val icon =
+                                    when (destination) {
+                                        AppPage.Library -> Icons.AutoMirrored.Filled.LibraryBooks
+                                        AppPage.Dictionaries -> Icons.AutoMirrored.Filled.MenuBook
+                                        AppPage.Extensions -> Icons.Default.VideoLibrary
+                                        AppPage.Settings -> Icons.Default.Settings
+                                    }
+                                NavigationBarItem(
+                                    selected = page == destination,
+                                    onClick = {
+                                        page = destination
+                                        detailScreen = false
+                                    },
+                                    icon = { Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp)) },
+                                    label = { Text(destination.label) },
+                                    colors =
+                                        NavigationBarItemDefaults.colors(
+                                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        ),
+                                )
+                            }
                         }
                     }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = ::dismissStartupUpdate,
-                        enabled = !startupUpdateDownloading,
-                    ) { Text("Later") }
-                },
-            )
+                }
+                if (current != null) {
+                    NekoPlayerTheme(darkMode, palette, accent) {
+                        PlayerScreen(
+                            activity = activity,
+                            database = database,
+                            dictionaries = dictionaryRepository,
+                            anki = anki,
+                            uri = current.uri,
+                            displayName = current.displayName,
+                            seriesTitle = current.seriesTitle,
+                            videoMimeType = current.videoMimeType,
+                            audioUri = current.audioUri,
+                            audioMimeType = current.audioMimeType,
+                            requestHeaders = current.requestHeaders,
+                            subtitleEpisodeName = current.subtitleEpisodeName,
+                            subtitleEpisodeNumber = current.subtitleEpisodeNumber,
+                            sourceProgressIdentity = current.sourceProgressIdentity,
+                            alternateSeriesTitle = current.alternateSeriesTitle,
+                            sourceSkipTimestamps = current.sourceSkipTimestamps,
+                            onClose = { activeVideo = null },
+                            onPickSubtitle = { callback ->
+                                subtitlePickerCallback = callback
+                                subtitlePicker.launch(arrayOf("*/*"))
+                            },
+                            onNotify = { message ->
+                                Toast.makeText(activity, localizeUiText(message, language), Toast.LENGTH_SHORT).show()
+                            },
+                            onPlayNextEpisode = current.onPlayNextEpisode,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+                // Register after the underlying screens so Back closes the player first.
+                BackHandler(enabled = current != null) {
+                    activeVideo = null
+                }
+            }
+            startupUpdateRelease?.takeIf { current == null }?.let { release ->
+                val cachedApk = downloadedStartupUpdate?.takeIf { it.isFile }
+                val releaseNotes = formatReleaseNotes(release.releaseNotes.orEmpty(), release.versionTag)
+                AlertDialog(
+                    onDismissRequest = {
+                        if (!startupUpdateDownloading) dismissStartupUpdate()
+                    },
+                    title = { Text("Update available") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text(
+                                "Update available: ${release.versionTag} · Installed: $appVersion",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (releaseNotes.isNotBlank()) {
+                                Column(
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 240.dp)
+                                            .verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text("What’s new", style = MaterialTheme.typography.titleSmall)
+                                    Text(releaseNotes, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                            if (release.apkUrl == null) {
+                                Text("No APK is attached to the latest release.")
+                            }
+                            startupUpdateError?.let { error ->
+                                Text(error, color = MaterialTheme.colorScheme.error)
+                            }
+                            if (startupUpdateDownloading) {
+                                LinearProgressIndicator(
+                                    progress = { startupUpdateDownloadProgress },
+                                    modifier = Modifier.fillMaxWidth().height(3.dp),
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        if (release.apkUrl != null) {
+                            TextButton(
+                                onClick = ::downloadOrInstallStartupUpdate,
+                                enabled = !startupUpdateDownloading,
+                            ) {
+                                Text(
+                                    when {
+                                        startupUpdateDownloading -> "Downloading update…"
+                                        cachedApk != null -> "Install update"
+                                        else -> "Download and install"
+                                    },
+                                )
+                            }
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = ::dismissStartupUpdate,
+                            enabled = !startupUpdateDownloading,
+                        ) { Text("Later") }
+                    },
+                )
+            }
         }
-      }
     }
 }

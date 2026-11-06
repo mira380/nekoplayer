@@ -2,10 +2,8 @@ package com.nekoplayer.app.ui
 
 import eu.kanade.tachiyomi.animesource.model.ChapterType
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
-
 import java.security.MessageDigest
 import java.util.Locale
-
 import kotlin.math.roundToLong
 
 internal data class PlaybackSkipPoint(
@@ -27,26 +25,48 @@ internal fun TimeStamp.toPlaybackSkipPointOrNull(): PlaybackSkipPoint? {
     return PlaybackSkipPoint(type, startMs, endMs)
 }
 
+internal fun episodeCompletionThresholdMs(
+    durationMs: Long,
+    endingEndMs: Long? = null,
+): Long? {
+    val validEndingEndMs =
+        endingEndMs?.takeIf {
+            it > 0L && (durationMs <= 0L || it <= durationMs)
+        }
+    if (validEndingEndMs != null) return validEndingEndMs
+    if (durationMs <= 0L) return null
+
+    // Without an ending marker, count completion in roughly the last 2–3 minutes
+    // of a standard-length episode, while scaling the window down for short videos.
+    val fallbackWindowMs = minOf(150_000L, maxOf(30_000L, durationMs / 10L))
+    return (durationMs - fallbackWindowMs).coerceAtLeast(1L)
+}
+
 internal fun formatPlayerTime(timeMs: Long): String {
     val totalSeconds = (timeMs.coerceAtLeast(0L) / 1000L)
     val seconds = totalSeconds % 60
     val minutes = (totalSeconds / 60) % 60
     val hours = totalSeconds / 3600
-    return if (hours > 0) String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
-    else String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
+    return if (hours > 0) {
+        String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
+    }
 }
 
-internal fun Long.saturatedPlus(other: Long): Long = when {
-    other > 0L && this > Long.MAX_VALUE - other -> Long.MAX_VALUE
-    other < 0L && this < Long.MIN_VALUE - other -> Long.MIN_VALUE
-    else -> this + other
-}
+internal fun Long.saturatedPlus(other: Long): Long =
+    when {
+        other > 0L && this > Long.MAX_VALUE - other -> Long.MAX_VALUE
+        other < 0L && this < Long.MIN_VALUE - other -> Long.MIN_VALUE
+        else -> this + other
+    }
 
-internal fun Long.saturatedMinus(other: Long): Long = when {
-    other > 0L && this < Long.MIN_VALUE + other -> Long.MIN_VALUE
-    other < 0L && this > Long.MAX_VALUE + other -> Long.MAX_VALUE
-    else -> this - other
-}
+internal fun Long.saturatedMinus(other: Long): Long =
+    when {
+        other > 0L && this < Long.MIN_VALUE + other -> Long.MIN_VALUE
+        other < 0L && this > Long.MAX_VALUE + other -> Long.MAX_VALUE
+        else -> this - other
+    }
 
 internal fun subtitleOffsetSettingsKeyFor(identity: String): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
@@ -54,8 +74,9 @@ internal fun subtitleOffsetSettingsKeyFor(identity: String): String {
     return "player.subtitleOffset.$stableHash"
 }
 
-internal fun formatSubtitleOffset(offsetMs: Long): String = when {
-    offsetMs > 0L -> "+${offsetMs} ms"
-    offsetMs < 0L -> "−${offsetMs.toString().drop(1)} ms"
-    else -> "0 ms"
-}
+internal fun formatSubtitleOffset(offsetMs: Long): String =
+    when {
+        offsetMs > 0L -> "+$offsetMs ms"
+        offsetMs < 0L -> "−${offsetMs.toString().drop(1)} ms"
+        else -> "0 ms"
+    }

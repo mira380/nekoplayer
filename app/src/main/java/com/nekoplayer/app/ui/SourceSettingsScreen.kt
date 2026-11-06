@@ -27,7 +27,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedTextField
@@ -473,20 +472,20 @@ private fun SeekBarPreferenceControl(preference: SeekBarPreference) {
         onClick = null,
         trailing = { Text(sliderValue.toInt().toString(), color = MaterialTheme.colorScheme.onSurfaceVariant) },
         extra = {
-            Slider(
+            GridSlider(
                 value = sliderValue.coerceIn(range),
-                onValueChange = { next ->
+                range = range,
+                onChange = { next ->
                     sliderValue = next
                     if (preference.updatesContinuously) {
                         persistSeekBarValue(preference, next.toInt()) { sliderValue = it.toFloat() }
                     }
                 },
-                onValueChangeFinished = {
+                snapStep = 1f,
+                onFinished = {
                     persistSeekBarValue(preference, sliderValue.toInt()) { sliderValue = it.toFloat() }
                 },
-                valueRange = range,
                 enabled = preference.isEnabled,
-                modifier = Modifier.padding(horizontal = 10.dp),
             )
         },
     )
